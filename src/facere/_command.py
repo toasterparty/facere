@@ -63,9 +63,9 @@ def run(
                 in_rule=in_rule,
             )
         except subprocess.TimeoutExpired as error:
-            raise subprocess.TimeoutExpired(
-                argv, error.timeout, error.output, error.stderr
-            ) from None
+            # Without pipes, communicate() reports the time remaining, not the limit set.
+            assert timeout is not None
+            raise subprocess.TimeoutExpired(argv, timeout, error.output, error.stderr) from None
     text = out.decode("utf-8", "surrogateescape")
     if returncode != 0:
         raise subprocess.CalledProcessError(

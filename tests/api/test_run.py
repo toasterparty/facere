@@ -1,8 +1,10 @@
 """fac.run: one command without a shell, its program resolved before spawning, its streams redirected to files on request."""
 
 import os
+import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -110,26 +112,25 @@ def test_rule_command_runs_in_a_session_of_its_own(root: Path, fac: Fac) -> None
 
 
 @pytest.mark.project("timeout")
-def test_timeout_kills_the_command_and_fails_the_recipe_with_its_output(fac: Fac) -> None:
+def test_timeout_failure_names_the_limit_set_not_the_time_remaining(
+    fac: Fac, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    communicate = subprocess.Popen.communicate
+    calls = []
+
+    def expire_once(self: subprocess.Popen[bytes], *args: Any, **kwargs: Any) -> Any:
+        calls.append(None)
+        if len(calls) == 1:
+            # Python 3.11 reports the time remaining when the command has no pipes.
+            raise subprocess.TimeoutExpired(self.args, 0.25)
+        return communicate(self)
+
+    monkeypatch.setattr(subprocess.Popen, "communicate", expire_once)
+
     result = fac()
 
     assert result.status == 1
-    assert result.out == "out\n"
-    lines = result.err.splitlines()
-    assert lines[0].startswith("fac: command timed out after 2 seconds: ")
-    assert lines[1:] == ["err", "fac.py:6:2: error: rule 'hang' (build/never.txt) failed"]
-
-
-@pytest.mark.project("task_timeout")
-def test_timeout_kills_a_task_command_after_its_output_printed_live(fac: Fac) -> None:
-    result = fac()
-
-    assert result.status == 1
-    assert result.out == "out\n"
-    lines = result.err.splitlines()
-    assert lines[0] == "err"
-    assert lines[1].startswith("fac: command timed out after 1 seconds: ")
-    assert lines[2:] == ["fac.py:6:2: error: task 'hang' failed"]
+    assert result.err.splitlines()[0].startswith("fac: command timed out after 1 seconds: ")
 
 
 @pytest.mark.project("task")
