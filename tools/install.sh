@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Ensure uv, plus Git bash and GNU make on Windows, is present; --update pulls them to latest.
+# Ensure uv, plus Git bash on Windows, is present; --update pulls them to latest.
 set -euo pipefail
 shopt -s nullglob
 SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )

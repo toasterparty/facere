@@ -6,9 +6,9 @@ SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 
 cd -- "$SCRIPT_DIR/.."
 
-set -a
-source ./project.env
-set +a
+while IFS='=' read -r key value; do
+    [[ -v $key ]] || export "$key=$value"
+done < ./project.env
 export PATH="$(cd "$HOME" && pwd)/.local/bin:$PATH"
 
 exec uv "$@"

@@ -1,5 +1,4 @@
-# Ensure Git bash and GNU make are available, then put bash on PATH. -Update pulls
-# them to latest.
+# Ensure Git bash is available, then put it on PATH. -Update pulls it to latest.
 param([switch]$Update)
 
 $ErrorActionPreference = "Stop"
@@ -16,7 +15,6 @@ function Install-Tool($id, $probe) {
 }
 
 Install-Tool "Git.Git" { [bool](& "$PSScriptRoot\find-bash.ps1") }
-Install-Tool "ezwinports.make" { [bool](Get-Command make.exe -ErrorAction SilentlyContinue) }
 
 $bash = & "$PSScriptRoot\find-bash.ps1"
 

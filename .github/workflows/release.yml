@@ -13,7 +13,7 @@ jobs:
         steps:
             - uses: actions/checkout@v7
             - uses: astral-sh/setup-uv@v10.3.3
-            - run: make test
+            - run: uvx facere test
 
     publish:
         needs: test
@@ -24,4 +24,4 @@ jobs:
         steps:
             - uses: actions/checkout@v7
             - uses: astral-sh/setup-uv@v10.3.3
-            - run: make publish
+            - run: uvx facere publish

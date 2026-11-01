@@ -47,7 +47,8 @@ extend-select = ["I"]  # Sort imports.
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 cache_dir = "build/test/.pytest_cache"
-addopts = ["--strict-markers", "-n", "auto"]
+# importlib keeps the repo root off sys.path, where its fac.py would shadow a fixture's `import fac`.
+addopts = ["--strict-markers", "--import-mode=importlib", "-n", "auto"]
 
 [tool.ty.src]
-include = ["src", "tests", "examples"]
+include = ["fac.py", "src", "tests", "examples"]

@@ -20,9 +20,4 @@ jobs:
             - uses: astral-sh/setup-uv@v10.3.3
               with:
                   python-version: ${{ matrix.python }}
-            # On Windows, install make into this shell before calling it.
-            - name: Test
-              shell: pwsh
-              run: |
-                  if ($IsWindows) { ./tools/install-bash.ps1 }
-                  make test
+            - run: uvx facere test
