@@ -1,0 +1,3 @@
+# Releasing
+
+Set `VERSION` in `src/facere/_version.py`, commit, then push a matching `v<version>` tag, such as `v0.2.0`. The tag runs the `Release` workflow, which tests and then publishes to PyPI through [trusted publishing](https://docs.pypi.org/trusted-publishers/) from the `pypi` environment. The workflow publishes `VERSION` whatever the tag says, so check the two match before pushing.

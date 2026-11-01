@@ -1,0 +1,7 @@
+import facere as fac
+
+
+@fac.rule
+def page(listed: list[str] = ["notes.txt"], out: fac.Output = fac.out("page.txt")):
+    with open(out, "w") as file:
+        file.write(" ".join(listed))
