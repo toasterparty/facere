@@ -48,7 +48,7 @@ A configuration compiles the same sources with other flags, into a directory of 
 ```python
 ZIG_VERSION = "0.16.0"
 CC = ["uvx", "--from", f"ziglang=={ZIG_VERSION}", "python-zig", "cc"]
-CONFIGS = {"debug": ["-O0", "-g"], "release": ["-O2", "-g0"]}
+CONFIGS = {"debug": ["-O0", "-g"], "release": ["-O2", "-s"]}
 SOURCES = fac.sources("src/*.c")
 
 OBJECT_FILE_RULES = []

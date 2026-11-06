@@ -58,7 +58,7 @@ import facere as fac
 
 ZIG_VERSION = "0.16.0"
 CC = ["uvx", "--from", f"ziglang=={ZIG_VERSION}", "python-zig", "cc"]
-CFLAGS = ["-O2", "-g0", "-Wall"]
+CFLAGS = ["-O2", "-s", "-Wall"]
 SOURCE = "src/main.c"
 OBJECT = fac.out("src/main.o")
 PROGRAM = fac.out("app")
@@ -76,7 +76,7 @@ def app(obj: fac.Input = OBJECT, program: fac.Output = PROGRAM):
 
 `app` reads the file `object_file` writes, so Facere executes `object_file` first, whatever order the functions are in.
 
-An edit now stops as soon as an output comes out the same. A comment leaves the object's bytes unchanged, so the compile executes and the link does not. `-g0` keeps that true by leaving out debug info, in which zig records the directory it compiled in:
+An edit now stops as soon as an output comes out the same. A comment leaves the object's bytes unchanged, so the compile executes and the link does not. `-s` keeps that true by stripping debug info, in which zig records where it compiled:
 
 ```
 $ echo '// comment' >> src/main.c
@@ -100,7 +100,7 @@ import facere as fac
 
 ZIG_VERSION = "0.16.0"
 CC = ["uvx", "--from", f"ziglang=={ZIG_VERSION}", "python-zig", "cc"]
-CFLAGS = ["-O2", "-g0", "-Wall"]
+CFLAGS = ["-O2", "-s", "-Wall"]
 SOURCES = fac.sources("src/*.c")
 HEADERS = fac.sources("src/*.h")
 PROGRAM = fac.out("app")
@@ -160,7 +160,7 @@ Facere compares more than input files. Make the greeting a setting of the build:
 
 ```python
 GREETING = os.environ.get("GREETING", "hello, world")
-CFLAGS = ["-O2", "-g0", "-Wall", f'-DGREETING="{GREETING}"']
+CFLAGS = ["-O2", "-s", "-Wall", f'-DGREETING="{GREETING}"']
 ```
 
 No file changes when `GREETING` does, yet a constant a recipe reads joins the rule's fingerprint, the hash that decides whether it is stale. The compiles therefore execute with each new value, and the link follows since `greeting.o` came out different:
@@ -192,8 +192,8 @@ Only what `fac.py` reads as it loads gets compared. Called inside the recipe, `o
 $ fac clean
 Finished in 19ms. Executed 1 task.
 $ fac -v
-uvx --from ziglang==0.16.0 python-zig cc -O2 -g0 -Wall '-DGREETING="hello, world"' -c src/greeting.c -o build/src/greeting.o
-uvx --from ziglang==0.16.0 python-zig cc -O2 -g0 -Wall '-DGREETING="hello, world"' -c src/main.c -o build/src/main.o
+uvx --from ziglang==0.16.0 python-zig cc -O2 -s -Wall '-DGREETING="hello, world"' -c src/greeting.c -o build/src/greeting.o
+uvx --from ziglang==0.16.0 python-zig cc -O2 -s -Wall '-DGREETING="hello, world"' -c src/main.c -o build/src/main.o
 uvx --from ziglang==0.16.0 python-zig cc build/src/greeting.o build/src/main.o -o build/app
 Finished in 202ms. Executed 3 rules.
 ```
@@ -214,7 +214,7 @@ import facere as fac
 ZIG_VERSION = "0.16.0"
 CC = ["uvx", "--from", f"ziglang=={ZIG_VERSION}", "python-zig", "cc"]
 GREETING = os.environ.get("GREETING", "hello, world")
-CFLAGS = ["-O2", "-g0", "-Wall", f'-DGREETING="{GREETING}"']
+CFLAGS = ["-O2", "-s", "-Wall", f'-DGREETING="{GREETING}"']
 SOURCES = fac.sources("src/*.c")
 HEADERS = fac.sources("src/*.h")
 PROGRAM = fac.out("app.exe" if sys.platform == "win32" else "app")

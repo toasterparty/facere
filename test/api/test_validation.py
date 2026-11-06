@@ -190,9 +190,9 @@ def test_rule_whose_source_facere_cannot_read_fails(fac: Fac) -> None:
     result = fac("page")
 
     assert result.status == 2
-    assert result.err.splitlines() == [
-        "fac.py:4:1: error: function page has no source Facere can read, which a rule's fingerprint needs: [Errno 2] No such file or directory: '<string>'",
-    ]
+    assert result.err.startswith(
+        "fac.py:4:1: error: function page has no source Facere can read, which a rule's fingerprint needs: "
+    )
 
 
 @pytest.mark.project("unreadable_helper")

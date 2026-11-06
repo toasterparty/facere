@@ -7,7 +7,7 @@ import facere as fac
 ZIG_VERSION = "0.16.0"
 CC = ["uvx", "--from", f"ziglang=={ZIG_VERSION}", "python-zig", "cc"]
 GREETING = os.environ.get("GREETING", "hello, world")
-CFLAGS = ["-O2", "-g0", "-Wall", f'-DGREETING="{GREETING}"']
+CFLAGS = ["-O2", "-s", "-Wall", f'-DGREETING="{GREETING}"']
 SOURCES = fac.sources("src/*.c")
 HEADERS = fac.sources("src/*.h")
 PROGRAM = fac.out("app.exe" if sys.platform == "win32" else "app")

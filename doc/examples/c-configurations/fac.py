@@ -11,7 +11,7 @@ CC = ["uvx", "--from", f"ziglang=={ZIG_VERSION}", "python-zig", "cc"]
 WARNINGS = ["-Wall", "-Wextra"]
 CONFIGS = {
     "debug": ["-O0", "-g", '-DBUILD_NAME="debug"'],
-    "release": ["-O2", "-g0", '-DBUILD_NAME="release"'],
+    "release": ["-O2", "-s", '-DBUILD_NAME="release"'],
 }
 SOURCES = fac.sources("src/*.c")
 HEADERS = fac.sources("src/*.h")
