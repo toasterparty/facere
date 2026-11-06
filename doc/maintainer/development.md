@@ -19,6 +19,7 @@ The first `fac` creates the project's environment in `.venv` and downloads depen
 | `coverage` | Run the tests serially under coverage, subprocesses included, and print the report |
 | `format` | Auto-format and fix lint |
 | `upgrade` | Upgrade the locked dependencies and the GitHub Actions pinned in `.github/workflows/` |
+| `bump` | Raise `VERSION`: `fac bump -- major`, `minor`, or `patch` |
 | `dist` | Build the sdist and wheel into `build/dist/` |
 | `publish` | Publish `build/dist/` to PyPI, building it first if stale (CI only) |
 

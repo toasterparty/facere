@@ -153,12 +153,13 @@ def minimum_version(version: str) -> None:
     width = max(len(required), len(running))
     if running + (0,) * (width - len(running)) >= required + (0,) * (width - len(required)):
         return
+    shown_required, shown_running = _format_versions(required, running)
     context = find_context()
     location, _ = find_caller_locations(context.fac_py if context else None)
     raise FacereError(
         Diagnostic(
             location,
-            f"this project needs Facere {version} or newer, and Facere {VERSION} is running: upgrade it with `uv tool upgrade facere`",
+            f"this project needs Facere {shown_required} or newer. Detected {shown_running}: run `uv tool upgrade facere`",
         )
     )
 
@@ -193,6 +194,12 @@ def _parse_version(version: str) -> tuple[int, ...]:
     if not all(part.isdecimal() for part in parts):
         raise ValueError(f'fac.minimum_version takes a version such as "0.1", not {version!r}')
     return tuple(int(part) for part in parts)
+
+
+def _format_versions(required: tuple[int, ...], running: tuple[int, ...]) -> tuple[str, str]:
+    """Return both versions as major.minor, unless only a later part tells them apart."""
+    width = None if required[:2] == running[:2] else 2
+    return ".".join(map(str, required[:width])), ".".join(map(str, running[:width]))
 
 
 def _declarator(

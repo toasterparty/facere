@@ -14,8 +14,11 @@ from pathlib import Path
 import facere as fac
 
 # Read by .github/workflows/ci.yml and .github/workflows/release.yml, so keep it on one line.
-MINIMUM_FACERE = "0.1.0"
+MINIMUM_FACERE = "0.2.0"
 
+VERSION_FILE = "src/facere/_version.py"
+VERSION_LINE = re.compile(r'^VERSION = "(\d+)\.(\d+)\.(\d+)"$', re.MULTILINE)
+VERSION_PARTS = ("major", "minor", "patch")
 DIST = "build/dist"
 TAGS_FILE = "build/action-tags.txt"
 
@@ -141,6 +144,23 @@ def upgrade() -> None:
         bumped = _bump_action_pins(text)
         with open(path, "w", encoding="utf-8", newline="") as file:
             file.write(bumped)
+
+
+@fac.task
+def bump(args: fac.Args, version_file: str = VERSION_FILE) -> None:
+    """Raise the part of `VERSION` named after --, major, minor, or patch, and zero the parts after it."""
+    if len(args) != 1 or args[0] not in VERSION_PARTS:
+        raise ValueError(f"bump takes one of {', '.join(VERSION_PARTS)}, not {list(args)}")
+    text = fac.read_text(version_file)
+    match = VERSION_LINE.search(text)
+    if match is None:
+        raise ValueError(f"{version_file} holds no line matching {VERSION_LINE.pattern}")
+    raised = VERSION_PARTS.index(args[0])
+    numbers = [int(number) for number in match.groups()]
+    bumped = [*numbers[:raised], numbers[raised] + 1, *[0] * (len(numbers) - raised - 1)]
+    version = ".".join(map(str, bumped))
+    fac.write_text(version_file, VERSION_LINE.sub(f'VERSION = "{version}"', text))
+    print(version)
 
 
 @fac.rule

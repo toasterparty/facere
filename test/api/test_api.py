@@ -7,7 +7,6 @@ from pathlib import Path
 import pytest
 
 import facere
-from facere._version import VERSION
 
 from ..helpers import Fac
 
@@ -119,12 +118,30 @@ def test_minimum_version_at_or_below_the_running_version_passes(fac: Fac) -> Non
 
 
 @pytest.mark.project("minimum_version_unmet")
-def test_minimum_version_above_the_running_version_fails_naming_the_upgrade(fac: Fac) -> None:
+def test_minimum_version_above_the_running_version_fails_naming_the_upgrade(
+    fac: Fac, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("facere._api.VERSION", "0.1.0")
+
     result = fac()
 
     assert result.status == 2
     assert result.err.splitlines() == [
-        f"fac.py:3:1: error: this project needs Facere 999.0 or newer, and Facere {VERSION} is running: upgrade it with `uv tool upgrade facere`",
+        "fac.py:3:1: error: this project needs Facere 999.0 or newer. Detected 0.1: run `uv tool upgrade facere`",
+    ]
+
+
+@pytest.mark.project("minimum_version_patch")
+def test_minimum_version_shows_the_patch_where_only_it_tells_the_versions_apart(
+    fac: Fac, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("facere._api.VERSION", "0.2.0")
+
+    result = fac()
+
+    assert result.status == 2
+    assert result.err.splitlines() == [
+        "fac.py:3:1: error: this project needs Facere 0.2.1 or newer. Detected 0.2.0: run `uv tool upgrade facere`",
     ]
 
 
