@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 class Kind(enum.Enum):
     INPUT = enum.auto()
     OUTPUT = enum.auto()
+    ARGS = enum.auto()
 
 
 class Running(enum.Enum):
@@ -27,7 +28,10 @@ class Location:
 
 @dataclass(frozen=True, slots=True)
 class Declaration:
-    """One application of @fac.rule or @fac.task, as the decorator received it."""
+    """One application of @fac.rule or @fac.task, as the decorator received it.
+
+    `location` is the innermost line of the root's fac.py that led to it, and `origin` the decorator's own line, which differs when a module declared it.
+    """
 
     is_task: bool
     fn: Callable[..., object]
@@ -36,6 +40,7 @@ class Declaration:
     rows: tuple[object, ...] | None
     values: dict[str, object]
     location: Location
+    origin: Location
 
 
 @dataclass(slots=True)
@@ -44,12 +49,15 @@ class Context:
     out_dir: str
     fac_py: str
     is_quiet: bool
+    is_verbose: bool
     declarations: list[Declaration] = field(default_factory=list)
+    env: dict[str, str | None] = field(default_factory=dict)
+    env_locations: dict[str, Location] = field(default_factory=dict)
     running: Running | None = None
 
     @property
     def state_dir(self) -> str:
-        return posixpath.join(self.out_dir, ".fac")
+        return posixpath.normpath(posixpath.join(self.out_dir, ".fac"))
 
 
 _current: Context | None = None
@@ -76,6 +84,16 @@ def activate(context: Context) -> Generator[None]:
         _current = previous
 
 
+def is_under_root(path: str, root: str) -> bool:
+    """Say whether the filesystem path `path` lies inside `root`, compared lexically, without resolving links or case."""
+    return os.path.abspath(path).startswith(os.path.join(root, ""))
+
+
+def is_within(path: str, directory: str) -> bool:
+    """Say whether `path` is `directory` or lies inside it, both as normalize returns them."""
+    return directory == "." or path == directory or path.startswith(f"{directory}/")
+
+
 def normalize(path: str, root: str) -> str:
     """Return `path` relative to `root` with `/`, or absolute where no relative path exists."""
     if not isinstance(path, str):
@@ -85,5 +103,4 @@ def normalize(path: str, root: str) -> str:
     if os.path.isabs(path):
         with contextlib.suppress(ValueError):
             path = os.path.relpath(path, root)
-        path = path.replace(os.sep, "/")
-    return posixpath.normpath(path)
+    return posixpath.normpath(path.replace(os.sep, "/"))

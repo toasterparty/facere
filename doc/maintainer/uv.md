@@ -2,24 +2,14 @@
 
 [uv](https://docs.astral.sh/uv/) manages this project's Python version, virtual environment, and dependencies under the `fac.py` tasks.
 
-## Invoking uv
+## Environments
 
-Call uv through the `tools/uv.sh` wrapper (`tools/uv.ps1` from Windows PowerShell), never as bare `uv`:
+The project's environment is `.venv` at the repo root, where uv puts it by default, so the tasks, plain `uv` commands, and editors share one environment with no setup. It installs the project as an editable redirect to the source tree; point your editor's interpreter here.
 
-```sh
-tools/uv.sh add --raw --dev pytest-cov
-tools/uv.sh run pytest
-```
+Where any other virtual environment lives depends on who uses it:
 
-```powershell
-tools/uv.ps1 add --raw --dev pytest-cov
-```
-
-The wrapper runs from the repo root and applies `project.env`, as the `fac.py` tasks do, which pins the virtual environment (`build/.venv`) and the bytecode cache (`build/pycache`). A bare `uv` would ignore all of that and create a `.venv` at the repo root, outside the isolated build tree.
-
-## Environment
-
-`build/.venv` installs the project as an editable redirect to the source tree; point your editor's interpreter here.
+- If a person would ever activate it, select it in an editor, or `uv add` to it, it is the project's environment and lives where uv puts it. Never relocate it with `UV_PROJECT_ENVIRONMENT`, since every developer would then have to set the variable to share it.
+- If only Facere or a script creates and uses it, as for an isolated tool or a test run under another Python version, it lives in `build/`, so deleting `build/` resets it. Setting `UV_PROJECT_ENVIRONMENT` in the code that creates it is fine, since no person has to remember it.
 
 ## The lockfile
 
@@ -31,12 +21,10 @@ Dependencies in `pyproject.toml` stay unpinned, since the lockfile holds the ver
 
 | Command | Purpose |
 | ------- | ------- |
-| `tools/uv.sh add --raw --dev <pkg>` | Add a development-only dependency |
-| `tools/uv.sh remove --dev <pkg>` | Remove a development-only dependency |
-| `tools/uv.sh lock --upgrade` | Upgrade all locked versions (also the `upgrade` task) |
-| `tools/uv.sh run <cmd>` | Run a command inside the project environment |
-| `tools/uv.sh sync` | Install the locked dependencies |
+| `uv add --raw --dev <pkg>` | Add a development-only dependency |
+| `uv remove --dev <pkg>` | Remove a development-only dependency |
+| `uv lock --upgrade` | Upgrade all locked versions (also the `upgrade` task) |
 
 ## Python version
 
-`requires-python` in `pyproject.toml` declares the oldest supported Python. uv resolves an interpreter that satisfies it, installing one if the machine has none, so you do not need a separately installed Python. Set `UV_PYTHON` to test another version, as CI does for each one in its matrix: `UV_PYTHON=3.11 uvx facere test`.
+`requires-python` in `pyproject.toml` declares the oldest supported Python, and `.python-version` names the one development and the release workflow use. uv installs that interpreter if the machine has none, so you do not need a separately installed Python. Set `UV_PYTHON` to test another version, as CI does for each one in its matrix: `UV_PYTHON=3.11 fac test`.

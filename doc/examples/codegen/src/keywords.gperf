@@ -1,0 +1,12 @@
+%{
+#include <string.h>
+#include "src/keywords.h"
+%}
+%struct-type
+%define lookup-function-name keyword_find
+%readonly-tables
+struct keyword;
+%%
+login, 1
+logout, 2
+greeting, 3

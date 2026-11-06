@@ -7,6 +7,10 @@ on:
 permissions:
     contents: read
 
+defaults:
+    run:
+        shell: bash
+
 jobs:
     test:
         strategy:
@@ -20,4 +24,11 @@ jobs:
             - uses: astral-sh/setup-uv@v10.3.3
               with:
                   python-version: ${{ matrix.python }}
+            - run: uvx facere==$(sed -n 's/^MINIMUM_FACERE = "\(.*\)"$/\1/p' fac.py) test
+
+    latest:
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v7
+            - uses: astral-sh/setup-uv@v10.3.3
             - run: uvx facere test

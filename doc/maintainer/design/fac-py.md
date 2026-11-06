@@ -1,0 +1,66 @@
+# The `fac.py` interface
+
+doit, SCons, and waf already offer Python build scripts and content hashing. What Facere adds is in the [requirements](../requirements.md), and [getting started](../../user/1-getting-started.md) shows a complete `fac.py`.
+
+The files are named `fac.py` because a `facere.py` would shadow the `facere` package in editors, which resolve a project's own modules before installed ones, breaking completion in every `fac.py`. `import facere as fac` makes the tool one name across `fac.py`, the `fac` command, and the code, as `np` does for numpy.
+
+## Annotations
+
+`fac.Input`, `fac.OrderOnly`, and `fac.Output` are `typing.Annotated` aliases of `str`, so a type checker sees plain strings.
+
+| Annotation | Holds | Facere uses it to |
+|---|---|---|
+| `fac.Input`, `list[fac.Input]` | files or directories the recipe reads | execute first the rule that outputs each one, require the rest to exist, and hash their content |
+| `fac.OrderOnly`, `list[fac.OrderOnly]` | files or directories the recipe may read, such as a generated header only some compiles include | execute first the rule that outputs each one, require the rest to exist, and hash their content only once the recipe reports reading them |
+| `fac.Output`, `list[fac.Output]` | files or directories the recipe writes and Facere tracks | rebuild them when changed or deleted by hand, reject two rules outputting one path, and execute this rule before any rule or task that inputs them |
+| `fac.VirtualInput`, `list[fac.VirtualInput]` | virtual outputs of a [store](./stores.md) the recipe reads through `fac.read` | execute first the rule that writes each one, require the rest to exist, and hash their values |
+| `fac.VirtualOutput`, `list[fac.VirtualOutput]` | virtual outputs of a store the recipe sets through `fac.write` | write them to their store once the recipe succeeds, rewrite them when changed or missing, and reject two rules writing one virtual output |
+| `fac.Args` | on a task, the arguments after `--` | pass them as a tuple of strings |
+| none | a value, such as a list of flags | hash it by value. A string naming an existing file under the root, or a path a rule outputs, fails collection, naming the annotation to add. A directory no rule outputs, such as a tool's cache, is a value |
+| `str`, `list[str]` | data that may look like a path, such as the entries a manifest lists | hash it by value, skipping the path check, so reading a file it names is the recipe's own business |
+
+## Rules and tasks
+
+- **Decorators.** `@fac.rule` and `@fac.task` return the function unchanged, so a recipe stays callable as plain Python, and may drop their parentheses. Both take `default=True`, and `name=` for a helper that names its rules after what they build. `@fac.rule` also takes `each=`, `max_jobs=`, and `terminal=True`. `always=True` executes its rules whenever they are built, for data Facere cannot see change, such as a download from a moving URL. `clear=True` deletes every output before the recipe executes, for a tool such as `ar r` or `uv build --out-dir` that keeps what an earlier execution left.
+- **`each=` and keyword arguments.** `each=` is read once at decoration and takes one dict per rule, each key filling the parameter it names, so a row reads as the call it makes and a misspelled key fails collection, naming it. Positional tuples would save a few characters per row, but they push `zip`, tuple unpacking, and parameter order onto every author, and a dict costs nothing measurable at collection. Keyword arguments to `fac.rule` fill the parameters they name in every rule, so a helper passes shared values once. A parameter named after one of `fac.rule`'s own options fails collection, since no keyword argument could reach it. Decorating one function twice, as a shipped helper does when a project calls it twice, defines both sets of rules.
+- **Tasks.** A task executes with the terminal, so a long test run reports as it goes and a debugger works. Without a terminal, as in CI, its commands share Facere's own standard streams, so it executes the same unattended. `@fac.rule(terminal=True)` gives a rule the same, for a rule that needs a person, such as signing with a hardware-token PIN: it records its outputs like any rule, so it executes only when stale, and without a terminal it fails at once, naming itself.
+- **Task arguments.** `fac test -- -k parser` forwards a filter to pytest, and `fac flash -- /dev/ttyUSB2` picks one of several boards. The task's own code decides what the arguments mean, typically falling back to a per-machine constant from a shared module kept out of version control, then to the tool's own default. Every task the targets reach that takes `fac.Args` receives the same arguments, and arguments after `--` that no task takes fail before anything executes.
+- **Long-running tasks.** A task that keeps running, such as an app opened by hand or a dev server, calls `fac.give_lock()` so other invocations need not wait for it. The call waits for every rule its target needs to finish, commits the state, re-checks the outputs the invocation built, and releases the lock, which Facere takes back before any later target. From then on, another invocation may rebuild files the task is using. A second call does nothing, and a call from a rule fails the rule, since a rule's record needs the lock.
+- **Limits.** `max_jobs=N` caps how many of a function's rules execute at once, such as memory-bound links. A cap shared across rules is a `threading.Semaphore` their recipes hold.
+
+## Recipes
+
+Facere calls a rule's or task's function in a worker thread with the root as working directory.
+
+`fac.run(*args, cwd=None, env=None, stdin=None, stdout=None, stderr=None, timeout=None, quiet=False)` spawns one command and raises `subprocess.CalledProcessError` on a non-zero exit, so a check of its output runs only after success. In a rule it returns the command's stdout decoded as UTF-8. `cwd` serves tools such as `zip` that store paths relative to where they run, and the command's relative arguments resolve against it for the undeclared-path check. `timeout` kills the command's session. Several commands are several calls, made from the recipe's thread or from threads it starts.
+
+`fac.read_text(path)` and `fac.write_text(path, text)` read and replace a text file in UTF-8, and write `\n` line endings on every OS, since `open`'s defaults follow the locale and the OS, so a rule writing text with them gives different bytes on different machines.
+
+`fac.write_archive(path, directory, top=None)` writes a `.zip`, `.tar`, or `.tar.gz`, chosen by `path`'s suffix, holding every file under `directory`, inside a directory named `top` or else `directory`'s own name. Members are sorted, times are fixed at the format's earliest, owners are empty, and modes are `0o755` for an executable file and `0o644` otherwise, so the same files give the same bytes on every machine, which `shutil.make_archive` does not.
+
+`fac.load()` returns the value the rule passed to `fac.save(value)` at its last success, or `None`, so a recipe can remember what a server last sent, such as an ETag. The value is kept with the rule's record, which a failure clears, stays out of the fingerprint, and must be one Facere can hash.
+
+## Paths
+
+A `fac.py` writes paths, and gets them back from Facere, relative to its own directory, so in `lib/fac.py`, `fac.sources("*.c")` lists `lib/`'s files as `a.c`. A shared module, imported once for every `fac.py` and so in no one's directory, writes its paths through `fac.from_root(path)`, relative to the root, and `fac.root(path)` converts a path relative to the `fac.py` to one relative to the root. Both return a string whose text is relative to the root and which every Facere function recognizes as such, so either may be passed anywhere.
+
+Facere converts every path to root-relative before calling a recipe, which receives paths only through its parameters, so recipe code and `fac.run` arguments never depend on which `fac.py` defined the rule. A path inside a value, such as an include directory in a flag list, reaches the command unchanged, so `f"-I{fac.root('include')}"` converts it first. A module constant reaches a recipe unchanged too, so a recipe needing a path takes it through an annotated parameter or calls `fac.out()`, which inside a recipe returns a root-relative path.
+
+`fac.out(path, suffix=None)` places a path in the current scope's output directory, mirroring its place under the root and optionally swapping its suffix, so `src/net/tcp.c` becomes `build/src/net/tcp.o`, returned as `../../build/src/net/tcp.o` in `src/net/fac.py`. A path already in the current scope's output directory keeps its place, and one elsewhere in the output directory fails collection, naming both directories, so a rule inputting another scope's output writes that path directly. `fac.out()`, short for `fac.out(".")`, mirrors the `fac.py`'s own directory, so in the root `fac.py` it is the output directory, while `fac.out(fac.from_root("."))` is the scope's output directory itself.
+
+The output directory may lie outside the root, on a tmpfs or beside a read-only checkout. Facere records each path inside it relative to the output directory, so moving either rebuilds nothing, while a recipe receives such a path relative to the root, as `../` paths, or absolute across Windows drives. A value embedding one, such as a flag, changes when the two move apart.
+
+`fac.sources(*patterns)` lists the files the globs match relative to the `fac.py`'s directory, or to the root for a pattern from `fac.from_root`, skipping hidden files unless the pattern names them, as `glob` does, so an editor's `.#main.c` lock never matches `*.c`. It reads no ignore file: what a glob skips is written beside it in Python.
+
+## Across files
+
+- **Other `fac.py` files** are never imported. A `fac.py` names what another builds by writing the path, or through a constant both import from a shared module, and importing a `fac.py` fails, naming the shared module to move its constants into.
+- **Shared code** is importable because the root is appended to `sys.path` during collection, after installed packages. The docs keep facts several `fac.py` files share, such as the project's configurations, in `tools/build.py`, imported as `from tools.build import ...`, which is easy to find from the root and clear of the PyPI package `build`. Code that drives Facere stays in `fac.py` files and extensions, and a component's own build settings live in an override in its own `fac.py`. A shared module defines rules and tasks only from functions a `fac.py` calls: it imports once, so rules defined at its import would join whichever scope imported it first.
+- **Overrides.** `@fac.override(function, scope=None)` in a `fac.py` adjusts every rule `function` defines, from any `fac.py`, shared module, or extension, that has an input under that `fac.py`'s directory, limited, when `scope` is given, to rules defined in a scope whose dotted name that pattern matches. Deleting the override reverts it, as a subclass refines a method its base never mentions. The decorated function is called once collection ends with each such rule, whose attributes are its parameters, and may reassign the rule's values and inputs, as in `rule.cflags = [*rule.cflags, "-Os"]`. Outputs stay fixed, since they identify a rule and key its record. Overrides apply shallower directories first, then in path order, and which rules an override receives is decided before any applies, so an input one adds never changes which others apply. `fac.rules`, validation, and fingerprints all see the adjusted values, so `compile_commands.json` records the flags actually used, and `--list` and `-v` name the overrides that changed a rule.
+- **Introspection.** `fac.rules(function, under=None, scope=None)` lists the arguments of every rule `function` defines, as dicts keyed by parameter name, with every path root-relative, limited to rules with an output under the directory `under`, and to rules defined in a scope the pattern `scope` matches. It returns a placeholder that Facere fills once collection ends, after overrides and before any hashing, so a rule taking it as a value sees the rules of every `fac.py` whatever the collection order. The placeholder is data about rules, so the path check never applies to it.
+
+## Settings
+
+Python binds a parameter's default when the rule is defined, so a rule defined in a loop keeps that pass's value, while it binds a closure variable or a module global only when the recipe executes, so every rule from the loop would see its last value. A module constant rebound after a rule reading it was defined, and a closure variable that is not a function, class, or module, therefore fail collection, naming the variable and the parameter to pass it through.
+
+A fact that differs between machines, such as where an SDK is installed, is not a setting: a rule fetches the tool into the tree, or locates it and records what it found in a file its consumers input. Facere reads no local settings file of its own: a project wanting per-machine settings imports them from a shared module it keeps out of version control.

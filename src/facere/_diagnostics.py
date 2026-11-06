@@ -4,9 +4,21 @@ import contextlib
 import inspect
 import os
 import sys
+import types
+from collections.abc import Callable
 from dataclasses import dataclass
+from typing import TYPE_CHECKING, TypeVar
 
 from facere._context import Location
+
+if TYPE_CHECKING:
+    from typing_extensions import override
+else:
+    _F = TypeVar("_F", bound=Callable[..., object])
+
+    def override(method: _F) -> _F:
+        """Stand in for `typing.override`, which Python 3.11 lacks and which only marks the method."""
+        return method
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,6 +42,7 @@ class FacereError(Exception):
         self.diagnostics = diagnostics
         self.detail = detail
 
+    @override
     def __str__(self) -> str:
         return "\n".join(_format_error(self, os.getcwd()))
 
@@ -65,20 +78,23 @@ def format_path(path: str, start_dir: str) -> str:
     return path.replace(os.sep, "/")
 
 
-def find_caller_location(fac_py: str | None) -> Location:
-    """Return where the innermost frame executing `fac_py` stands, else the caller of Facere's public function."""
+def find_caller_locations(fac_py: str | None) -> tuple[Location, Location]:
+    """Return where the innermost frame executing `fac_py` stands, else the caller of Facere's public function, paired with where that caller stands."""
     package_dir = os.path.dirname(__file__)
     frame = sys._getframe(1)
-    fallback = None
+    caller = None
     while frame is not None:
-        if fallback is None and os.path.dirname(frame.f_code.co_filename) != package_dir:
-            fallback = frame
+        if caller is None and os.path.dirname(frame.f_code.co_filename) != package_dir:
+            caller = frame
         if frame.f_code.co_filename == fac_py:
             break
         frame = frame.f_back
-    found = frame or fallback
-    assert found is not None
-    info = inspect.getframeinfo(found, context=0)
+    assert caller is not None
+    return _to_location(frame or caller), _to_location(caller)
+
+
+def _to_location(frame: types.FrameType) -> Location:
+    info = inspect.getframeinfo(frame, context=0)
     column = (
         info.positions.col_offset if info.positions and info.positions.col_offset is not None else 0
     )

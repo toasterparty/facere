@@ -13,33 +13,46 @@ import sys
 import traceback
 import types
 import typing
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import PurePath
 from typing import NamedTuple
 
-from facere._context import Context, Declaration, Kind, Location, normalize
+from facere._api import Args
+from facere._context import (
+    Context,
+    Declaration,
+    Kind,
+    Location,
+    is_under_root,
+    is_within,
+    normalize,
+)
 from facere._diagnostics import Diagnostic, FacereError, Note
 from facere._hash import (
     UnhashableValueError,
+    calc_class_text,
     calc_code_text,
     feed,
     feed_value,
     find_closure_values,
+    find_methods,
     find_read_globals,
     iter_strings,
 )
 from facere._version import VERSION
 
 MODULE_NAME = "__fac__"
-_RESERVED_OPTIONS = ("each", "name", "default", "max_jobs", "terminal", "always")
-_FINGERPRINT_FORMAT = b"facere fingerprint 2"
-_HASHABLE_FIX = "pass None, a bool, int, float, str, bytes, module, function, or class, or a tuple, list, dict, or set of them"
+_RESERVED_OPTIONS = ("each", "name", "default", "max_jobs", "terminal", "always", "clear")
+_FINGERPRINT_FORMAT = b"facere fingerprint 4"
+_UNREADABLE_SOURCE = (OSError, LookupError, SyntaxError, ValueError)
+_HASHABLE_TYPES = "Facere hashes only None, a bool, int, float, str, bytes, module, function, or class, or a tuple, list, dict, or set of them"
 
 
 class _Slot(enum.Enum):
     VALUE = enum.auto()
     TEXT = enum.auto()
+    ARGS = enum.auto()
 
 
 class _PathSlot(NamedTuple):
@@ -52,13 +65,32 @@ class _PathSlot(NamedTuple):
         return f"list[{name}]" if self.is_list else name
 
 
+class _Declared(typing.Protocol):
+    @property
+    def location(self) -> Location: ...
+
+    @property
+    def origin(self) -> Location: ...
+
+
+def _diagnose(subject: _Declared, message: str, notes: tuple[Note, ...] = ()) -> Diagnostic:
+    """Return an error at `subject`'s line in the root's fac.py, noting the decorator's own line when a module declared it."""
+    if subject.origin != subject.location:
+        notes = (Note(subject.origin, "declared here"), *notes)
+    return Diagnostic(subject.location, message, notes)
+
+
 @dataclass(frozen=True, slots=True, eq=False)
 class Definition:
-    """A rule, or a task when `is_task`, with every parameter filled."""
+    """A rule, or a task when `is_task`, with every parameter filled.
+
+    `args_slot` places a task's fac.Args parameter: an index into `args`, a key of `kwargs`, or None when it has none.
+    """
 
     is_task: bool
     name: str
     location: Location
+    origin: Location
     is_default: bool
     fn: Callable[..., object]
     args: tuple[object, ...]
@@ -68,10 +100,23 @@ class Definition:
     values: dict[str, object]
     text_values: dict[str, object]
     path_values: dict[str, object]
+    args_slot: int | str | None
 
     @property
     def label(self) -> str:
         return f"task '{self.name}'" if self.is_task else f"rule '{self.name}' ({self.outputs[0]})"
+
+    def calc_call(
+        self, task_args: tuple[str, ...] | None
+    ) -> tuple[tuple[object, ...], dict[str, object]]:
+        """Return the arguments to call the recipe with, `task_args` filling its fac.Args parameter unless None."""
+        if task_args is None or self.args_slot is None:
+            return self.args, self.kwargs
+        if isinstance(self.args_slot, str):
+            return self.args, {**self.kwargs, self.args_slot: task_args}
+        args = list(self.args)
+        args[self.args_slot] = task_args
+        return tuple(args), self.kwargs
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,10 +129,12 @@ class Project:
 
 def collect(context: Context) -> Project:
     """Load the root's fac.py and return its validated rules and tasks, raising one FacereError listing every problem found."""
-    _load(context)
+    imported = _load(context)
     errors: list[Diagnostic] = []
+    _validate_imports(context, imported, errors)
     definitions = tuple(_define_all(context, errors))
-    producers = _validate_outputs(context, definitions, errors)
+    _validate_outputs(context, definitions, errors)
+    producers = {output: definition for definition in definitions for output in definition.outputs}
     by_name: dict[str, list[Definition]] = {}
     for definition in definitions:
         by_name.setdefault(definition.name, []).append(definition)
@@ -101,7 +148,9 @@ def collect(context: Context) -> Project:
     return Project(definitions, by_name, producers, code_digests)
 
 
-def _load(context: Context) -> None:
+def _load(context: Context) -> list[str]:
+    """Execute the root's fac.py and return the project's own source files that it imported, itself included."""
+    already_imported = set(sys.modules)
     spec = importlib.util.spec_from_file_location(MODULE_NAME, context.fac_py)
     assert spec is not None
     module = importlib.util.module_from_spec(spec)
@@ -117,6 +166,16 @@ def _load(context: Context) -> None:
         raise FacereError(Diagnostic(location, f"invalid syntax: {error.msg}")) from None
     except (Exception, SystemExit) as error:  # noqa: BLE001 - any error in fac.py fails collection
         raise _to_load_error(context, error) from None
+    paths = {context.fac_py}
+    for name, imported in list(sys.modules.items()):
+        path = getattr(imported, "__file__", None)
+        if (
+            name not in already_imported
+            and isinstance(path, str)
+            and _is_project_source(context, path)
+        ):
+            paths.add(os.path.abspath(path))
+    return sorted(paths)
 
 
 def _to_load_error(context: Context, error: BaseException) -> FacereError:
@@ -125,16 +184,68 @@ def _to_load_error(context: Context, error: BaseException) -> FacereError:
     first = frames.index(in_fac_py[0]) if in_fac_py else 0
     report = traceback.TracebackException.from_exception(error)
     report.stack = traceback.StackSummary.from_list(frames[first:])
-    innermost = in_fac_py[-1] if in_fac_py else None
-    location = (
-        Location(context.fac_py, innermost.lineno or 1, (innermost.colno or 0) + 1)
-        if innermost
-        else None
-    )
-    message = (
-        f"loading fac.py raised {type(error).__name__}: fix the code the traceback above names"
-    )
+    location = None
+    if in_fac_py:
+        innermost = in_fac_py[-1]
+        location = Location(context.fac_py, innermost.lineno or 1, (innermost.colno or 0) + 1)
+    message = f"loading fac.py raised {type(error).__name__}"
     return FacereError(Diagnostic(location, message), detail="".join(report.format()))
+
+
+def _validate_imports(context: Context, imported: list[str], errors: list[Diagnostic]) -> None:
+    """Fail each import in the `imported` sources that resolves outside the root, though the root holds a module of that name."""
+    for path in imported:
+        with open(path, "rb") as file:
+            tree = ast.parse(file.read(), path)
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Import | ast.ImportFrom):
+                continue
+            location = Location(path, node.lineno, node.col_offset + 1)
+            for name in _find_imported_names(node):
+                diagnostic = _check_import(context, location, name)
+                if diagnostic is not None:
+                    errors.append(diagnostic)
+
+
+def _find_imported_names(node: ast.Import | ast.ImportFrom) -> list[str]:
+    if isinstance(node, ast.Import):
+        return [alias.name.partition(".")[0] for alias in node.names]
+    if node.level == 0 and node.module is not None:
+        return [node.module.partition(".")[0]]
+    return []
+
+
+def _check_import(context: Context, location: Location, name: str) -> Diagnostic | None:
+    candidates = [(f"{name}.py", f"{name}.py"), (f"{name}/__init__.py", f"{name}/")]
+    held = [shown for path, shown in candidates if os.path.isfile(os.path.join(context.root, path))]
+    module = sys.modules.get(name)
+    if not held or module is None or _is_from_root(context, module):
+        return None
+    cause = f"since an earlier sys.path entry shadows {held[0]}"
+    path = getattr(module, "__file__", None)
+    if not isinstance(path, str):
+        message = (
+            f"import {name} resolves to a built-in module, though the root holds {held[0]}, {cause}"
+        )
+        return Diagnostic(location, message)
+    message = f"import {name} resolves outside the root, though the root holds {held[0]}, {cause}"
+    return Diagnostic(location, message, (Note(Location(path, 1, 1), f"{name} resolves here"),))
+
+
+def _is_from_root(context: Context, module: types.ModuleType) -> bool:
+    paths = [getattr(module, "__file__", None), *getattr(module, "__path__", ())]
+    return any(isinstance(path, str) and is_under_root(path, context.root) for path in paths)
+
+
+def _is_project_source(context: Context, path: str) -> bool:
+    """Say whether `path` is Python the project wrote: under the root, outside the output directory, and in no hidden directory, where a virtual environment lives."""
+    if not path.endswith(".py") or not is_under_root(path, context.root):
+        return False
+    relative = normalize(path, context.root)
+    parts = relative.split("/")
+    return not is_within(relative, context.out_dir) and not any(
+        part.startswith(".") for part in parts
+    )
 
 
 def _define_all(context: Context, errors: list[Diagnostic]) -> Iterable[Definition]:
@@ -142,9 +253,7 @@ def _define_all(context: Context, errors: list[Diagnostic]) -> Iterable[Definiti
     for declaration in context.declarations:
         problems: list[str] = []
         definitions = _define(context, declaration, module_globals, problems)
-        errors.extend(
-            Diagnostic(declaration.location, problem) for problem in dict.fromkeys(problems)
-        )
+        errors.extend(_diagnose(declaration, problem) for problem in dict.fromkeys(problems))
         if not problems:
             yield from definitions
 
@@ -160,10 +269,13 @@ def _define(
     if not isinstance(fn, types.FunctionType):
         problems.append(f"@{decorator} takes a function defined with def, not {type(fn).__name__}")
         return []
-    if fn.__code__.co_filename == context.fac_py and fn.__globals__ is not module_globals:
+    if _is_foreign_fac_py(context, fn.__code__.co_filename):
         problems.append(
-            "fac.py ran a second time because a module imported it: move what you share into a shared module"
+            "this definition comes from another project's fac.py, which a module imported"
         )
+        return []
+    if fn.__code__.co_filename == context.fac_py and fn.__globals__ is not module_globals:
+        problems.append("fac.py ran a second time because a module imported it")
         return []
     signature = inspect.signature(fn)
     name = _calc_name(fn, declaration, problems)
@@ -172,20 +284,16 @@ def _define(
         if key in _RESERVED_OPTIONS:
             problems.append(f"{decorator} takes no {key}= option in Facere {VERSION}")
         elif key not in signature.parameters:
-            problems.append(
-                f"{decorator}({key}=...) names no parameter of {fn.__name__}: remove it or rename it to a parameter"
-            )
+            problems.append(f"{decorator}({key}=...) names no parameter of {fn.__name__}")
     if problems:
         return []
     definitions = []
-    rows = declaration.rows if declaration.rows is not None else ((),)
+    rows = declaration.rows if declaration.rows is not None else ({},)
     for index, row in enumerate(rows):
-        if not isinstance(row, tuple):
-            problems.append(
-                f"each= item {index} is a {type(row).__name__}, not a tuple: write each item as a tuple, such as (source, output)"
-            )
+        if not isinstance(row, dict):
+            problems.append(f"each= item {index} is a {type(row).__name__}, not a dict")
             continue
-        bound = _bind(signature, row, index, declaration.values, problems)
+        bound = _bind(signature, slots, row, index, declaration.values, problems)
         if bound is None:
             continue
         definition = _build_definition(
@@ -196,12 +304,16 @@ def _define(
     return definitions
 
 
+def _is_foreign_fac_py(context: Context, path: str) -> bool:
+    if os.path.basename(path) != "fac.py":
+        return False
+    return os.path.normcase(os.path.abspath(path)) != os.path.normcase(context.fac_py)
+
+
 def _calc_name(fn: types.FunctionType, declaration: Declaration, problems: list[str]) -> str:
     name = fn.__name__.removesuffix("_") if declaration.name is None else declaration.name
     if not isinstance(name, str) or not name or "/" in name or "\\" in name or name.startswith("-"):
-        problems.append(
-            f"the name {name!r} can't be typed as a target: pass name= a name without / or \\ that doesn't start with -"
-        )
+        problems.append(f"the name {name!r} can't be typed as a target")
     return str(name)
 
 
@@ -220,18 +332,18 @@ def _classify_parameters(
         if parameter.kind in (parameter.VAR_POSITIONAL, parameter.VAR_KEYWORD):
             star = "*" if parameter.kind is parameter.VAR_POSITIONAL else "**"
             problems.append(
-                f"{fn.__name__} takes {star}{parameter.name}, which no rule or task can fill: name each parameter"
+                f"{fn.__name__} takes {star}{parameter.name}, which no rule or task can fill"
             )
             continue
         if parameter.name in _RESERVED_OPTIONS:
             problems.append(
-                f"parameter {parameter.name} is named after a {decorator} option, so no keyword argument can fill it: rename it"
+                f"parameter {parameter.name} is named after a {decorator} option, so no keyword argument can fill it"
             )
             continue
         slot = _classify(hints.get(parameter.name, inspect.Parameter.empty))
         if slot is None:
             problems.append(
-                f"parameter {parameter.name} has an annotation Facere can't read: annotate it fac.Input, list[fac.Input], fac.Output, or list[fac.Output]"
+                f"parameter {parameter.name} has an annotation Facere can't read, and reads only fac.Input, list[fac.Input], fac.Output, list[fac.Output], and fac.Args"
             )
             continue
         slots[parameter.name] = slot
@@ -239,6 +351,10 @@ def _classify_parameters(
 
 
 def _classify(hint: object) -> _Slot | _PathSlot | None:
+    if hint == Args:
+        return _Slot.ARGS
+    if hint is str:
+        return _Slot.TEXT
     kind = _find_kind(hint)
     if kind is not None:
         return _PathSlot(kind, is_list=False)
@@ -249,8 +365,6 @@ def _classify(hint: object) -> _Slot | _PathSlot | None:
             return _PathSlot(kind, is_list=True)
         if args[0] is str:
             return _Slot.TEXT
-    if hint is str:
-        return _Slot.TEXT
     return None if _mentions_kind(hint) else _Slot.VALUE
 
 
@@ -259,7 +373,9 @@ def _find_kind(hint: object) -> Kind | None:
         return None
     base, *metadata = typing.get_args(hint)
     kinds = [item for item in metadata if isinstance(item, Kind)]
-    return kinds[0] if base is str and len(kinds) == 1 else None
+    if base is not str or len(kinds) != 1 or kinds[0] is Kind.ARGS:
+        return None
+    return kinds[0]
 
 
 def _mentions_kind(hint: object) -> bool:
@@ -270,35 +386,38 @@ def _mentions_kind(hint: object) -> bool:
 
 def _bind(
     signature: inspect.Signature,
-    row: tuple[object, ...],
+    slots: dict[str, _Slot | _PathSlot],
+    row: Mapping[typing.Any, object],
     index: int,
     values: dict[str, object],
     problems: list[str],
 ) -> dict[str, object] | None:
-    positional = [
-        p.name
-        for p in signature.parameters.values()
-        if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
+    unknown = [
+        f"each= item {index} fills {key!r}, which names no parameter"
+        for key in row
+        if key not in signature.parameters
     ]
-    if len(row) > len(positional):
-        problems.append(
-            f"each= item {index} holds {len(row)} values, and the function takes {len(positional)} positional parameters: drop the extra values"
-        )
-        return None
-    bound = dict(zip(positional, row, strict=False))
     conflicts = [
-        f"parameter {key} gets a value from both each= and keyword argument {key}=: pass it one way"
+        f"parameter {key} gets a value from both each= and keyword argument {key}="
         for key in values
-        if key in bound
+        if key in row
     ]
-    bound.update(values)
+    bound = {**row, **values}
+    filled_args = [
+        f"parameter {name} is annotated fac.Args, so only the command line fills it"
+        for name, slot in slots.items()
+        if slot is _Slot.ARGS and name in bound
+    ]
+    for name, slot in slots.items():
+        if slot is _Slot.ARGS and signature.parameters[name].default is inspect.Parameter.empty:
+            bound.setdefault(name, ())
     missing = [
-        f"parameter {p.name} has no value: give it a default, or pass it through each= or a keyword argument"
+        f"parameter {p.name} has no value"
         for p in signature.parameters.values()
         if p.name not in bound and p.default is p.empty
     ]
-    problems.extend([*conflicts, *missing])
-    if conflicts or missing:
+    problems.extend([*unknown, *conflicts, *filled_args, *missing])
+    if unknown or conflicts or filled_args or missing:
         return None
     return {p.name: bound.get(p.name, p.default) for p in signature.parameters.values()}
 
@@ -318,11 +437,16 @@ def _build_definition(
     values: dict[str, object] = {}
     text_values: dict[str, object] = {}
     path_values: dict[str, object] = {}
+    args_parameters = []
+    are_paths_valid = True
     for parameter, slot in slots.items():
         value = bound[parameter]
-        if isinstance(slot, _PathSlot):
+        if slot is _Slot.ARGS:
+            args_parameters.append(parameter)
+        elif isinstance(slot, _PathSlot):
             paths = _normalize_paths(context, parameter, slot, value, problems)
             if paths is None:
+                are_paths_valid = False
                 continue
             (inputs if slot.kind is Kind.INPUT else outputs).extend(paths)
             value = path_values[parameter] = paths if slot.is_list else paths[0]
@@ -332,25 +456,33 @@ def _build_definition(
             values[parameter] = value
         filled[parameter] = value
     if declaration.is_task and outputs:
+        problems.append(f"task {name} declares an output, but a task writes no tracked output")
+    if not declaration.is_task and not outputs and are_paths_valid:
+        problems.append(f"rule {name} declares no output")
+    if args_parameters and not declaration.is_task:
         problems.append(
-            f"task {name} declares an output, but a task writes no tracked output: make it a rule with @fac.rule, or drop the fac.Output annotation"
+            f"rule {name} takes {args_parameters[0]}, annotated fac.Args, but only a task receives the command line's arguments"
         )
-    if not declaration.is_task and not outputs:
+    if len(args_parameters) > 1:
         problems.append(
-            f"rule {name} declares no output: annotate the parameter its recipe writes fac.Output, or make it a task with @fac.task"
+            f"task {name} takes {len(args_parameters)} parameters annotated fac.Args, though only one receives the arguments after --"
         )
     if problems:
         return None
-    args = tuple(
-        filled[p.name] for p in signature.parameters.values() if p.kind is not p.KEYWORD_ONLY
-    )
+    positional = [p.name for p in signature.parameters.values() if p.kind is not p.KEYWORD_ONLY]
+    args = tuple(filled[parameter] for parameter in positional)
     kwargs = {
         p.name: filled[p.name] for p in signature.parameters.values() if p.kind is p.KEYWORD_ONLY
     }
+    args_slot = None
+    if args_parameters:
+        (parameter,) = args_parameters
+        args_slot = positional.index(parameter) if parameter in positional else parameter
     return Definition(
         is_task=declaration.is_task,
         name=name,
         location=declaration.location,
+        origin=declaration.origin,
         is_default=declaration.is_default,
         fn=declaration.fn,
         args=args,
@@ -360,6 +492,7 @@ def _build_definition(
         values=values,
         text_values=text_values,
         path_values=path_values,
+        args_slot=args_slot,
     )
 
 
@@ -373,7 +506,7 @@ def _normalize_paths(
             return [normalize(path, context.root) for path in paths]
     expected = "a list of paths" if slot.is_list else "a path"
     problems.append(
-        f"parameter {parameter} is annotated {slot.annotation} but holds {value!r}: pass {expected}, strings with /"
+        f"parameter {parameter} is annotated {slot.annotation} but holds {value!r}, not {expected}"
     )
     return None
 
@@ -382,31 +515,26 @@ def _calc_key(path: str) -> str:
     return path.casefold()
 
 
-def _is_within(path: str, directory: str) -> bool:
-    return directory == "." or path == directory or path.startswith(f"{directory}/")
-
-
 def _validate_outputs(
     context: Context, definitions: tuple[Definition, ...], errors: list[Diagnostic]
-) -> dict[str, Definition]:
+) -> None:
     claims: dict[str, list[tuple[Definition, str]]] = {}
     state_key = _calc_key(context.state_dir)
     for definition in definitions:
         for output in definition.outputs:
             key = _calc_key(output)
             claims.setdefault(key, []).append((definition, output))
-            if _is_within(key, state_key) or _is_within(state_key, key):
-                message = f"{definition.label} outputs {output}, which holds Facere's state: output a path inside the output directory instead"
-                errors.append(Diagnostic(definition.location, message))
+            if is_within(key, state_key) or is_within(state_key, key):
+                message = f"{definition.label} outputs {output}, which holds Facere's state"
+                errors.append(_diagnose(definition, message))
     for claimants in claims.values():
         if len(claimants) > 1:
             notes = tuple(
                 Note(definition.location, f"{definition.label} outputs {output}")
                 for definition, output in claimants
             )
-            message = f"{len(claimants)} outputs claim {claimants[0][1]}, compared without case: give each rule outputs of its own"
-            errors.append(Diagnostic(claimants[0][0].location, message, notes))
-    return {output: definition for definition in definitions for output in definition.outputs}
+            message = f"{len(claimants)} outputs claim {claimants[0][1]}, compared without case"
+            errors.append(_diagnose(claimants[0][0], message, notes))
 
 
 def _validate_names(by_name: dict[str, list[Definition]], errors: list[Diagnostic]) -> None:
@@ -426,9 +554,9 @@ def _validate_names(by_name: dict[str, list[Definition]], errors: list[Diagnosti
             for definition in clashing
         )
         errors.append(
-            Diagnostic(
-                clashing[0].location,
-                f"{len(clashing)} definitions share the name {name}: rename all but one, with name= or def",
+            _diagnose(
+                clashing[0],
+                f"{len(clashing)} definitions share the name {name}",
                 notes,
             )
         )
@@ -444,6 +572,7 @@ def _hash_values(
     trees: dict[str, ast.Module] = {}
     function_digests: dict[Callable[..., object], hashlib._Hash | None] = {}
     digests: dict[Definition, bytes] = {}
+    env = repr(sorted(context.env.items())).encode()
     for definition in definitions:
         if definition.fn not in function_digests:
             function_digests[definition.fn] = _hash_function(
@@ -451,17 +580,16 @@ def _hash_values(
             )
         function_digest = function_digests[definition.fn]
         digest = function_digest.copy() if function_digest else hashlib.sha256()
-        problems = [
-            problem
-            for kind, values, keys in (
-                ("parameter", definition.values, output_keys),
-                ("text parameter", definition.text_values, None),
-                ("path parameter", definition.path_values, None),
-            )
-            for problem in _feed_values(context, digest, kind, values, keys, definition.is_task)
-        ]
+        feed(digest, b"env", env)
+        problems = []
+        for kind, values, keys in (
+            ("parameter", definition.values, output_keys),
+            ("text parameter", definition.text_values, None),
+            ("path parameter", definition.path_values, None),
+        ):
+            problems.extend(_feed_values(context, digest, kind, values, keys, definition.is_task))
         errors.extend(
-            Diagnostic(definition.location, f"{definition.label} {problem}") for problem in problems
+            _diagnose(definition, f"{definition.label} {problem}") for problem in problems
         )
         if function_digest and not problems and not definition.is_task:
             digests[definition] = digest.digest()
@@ -479,24 +607,114 @@ def _hash_function(
     assert isinstance(fn, types.FunctionType)
     digest = hashlib.sha256(_FINGERPRINT_FORMAT)
     problems = []
-    if not definition.is_task:
+    if definition.is_task:
+        for kind, values in (
+            ("global", find_read_globals(fn)),
+            ("closure variable", find_closure_values(fn)),
+        ):
+            problems.extend(_feed_values(context, digest, kind, values, output_keys, True))
+    else:
         try:
             feed(digest, b"code", calc_code_text(fn, trees).encode())
-        except (OSError, LookupError, SyntaxError, ValueError) as error:
+        except _UNREADABLE_SOURCE as error:
             problems.append(
                 f"has no source Facere can read, which a rule's fingerprint needs: {error}"
             )
-    for kind, values in (
-        ("global", find_read_globals(fn)),
-        ("closure variable", find_closure_values(fn)),
-    ):
-        problems.extend(
-            _feed_values(context, digest, kind, values, output_keys, definition.is_task)
-        )
+        problems.extend(_feed_reached_code(context, digest, fn, output_keys, trees))
     errors.extend(
-        Diagnostic(definition.location, f"function {fn.__name__} {problem}") for problem in problems
+        _diagnose(definition, f"function {fn.__name__} {problem}") for problem in problems
     )
     return None if problems else digest
+
+
+def _feed_reached_code(
+    context: Context,
+    digest: hashlib._Hash,
+    fn: types.FunctionType,
+    output_keys: set[str],
+    trees: dict[str, ast.Module],
+) -> list[str]:
+    """Feed `digest` the values that `fn` reads, and the syntax tree and values of every function and class of the project's it reaches by name, returning what's wrong with them."""
+    problems = []
+    pending = [fn]
+    seen: set[object] = {fn}
+    while pending:
+        current = pending.pop(0)
+        suffix = "" if current is fn else f" through {current.__qualname__}"
+        for kind, values in (
+            (
+                "global",
+                find_read_globals(current, lambda module: _is_project_code(context, module)),
+            ),
+            ("closure variable", find_closure_values(current)),
+        ):
+            named = {f"{name}{suffix}": value for name, value in values.items()}
+            problems.extend(_feed_values(context, digest, kind, named, output_keys, False))
+            for value in values.values():
+                is_code = isinstance(value, types.FunctionType | type)
+                if not is_code or not _is_project_code(context, value) or value in seen:
+                    continue
+                seen.add(value)
+                problem = _feed_definition(digest, value, trees)
+                if problem is not None:
+                    problems.append(problem)
+                    continue
+                pending.extend(_find_callables(value, seen))
+    return problems
+
+
+def _feed_definition(
+    digest: hashlib._Hash, value: object, trees: dict[str, ast.Module]
+) -> str | None:
+    assert isinstance(value, types.FunctionType | type)
+    try:
+        text = (
+            calc_code_text(value, trees, keep_decorators=True)
+            if isinstance(value, types.FunctionType)
+            else calc_class_text(value, trees)
+        )
+    except _UNREADABLE_SOURCE as error:
+        return f"reaches {value.__qualname__}, which has no source Facere can read, which a rule's fingerprint needs: {error}"
+    feed(digest, b"reached", f"{value.__module__}.{value.__qualname__}".encode())
+    feed(digest, b"code", text.encode())
+    return None
+
+
+def _find_callables(value: object, seen: set[object]) -> list[types.FunctionType]:
+    """Return the functions whose reads join a fingerprint once `value` is reached: `value` itself, or a class's methods and those of the classes nested in it."""
+    if isinstance(value, types.FunctionType):
+        return [value]
+    assert isinstance(value, type)
+    callables = []
+    for method in find_methods(value):
+        if method not in seen:
+            seen.add(method)
+            callables.append(method)
+    for nested in vars(value).values():
+        if (
+            isinstance(nested, type)
+            and nested not in seen
+            and nested.__qualname__.startswith(f"{value.__qualname__}.")
+        ):
+            seen.add(nested)
+            callables.extend(_find_callables(nested, seen))
+    return callables
+
+
+def _is_project_code(context: Context, value: object) -> bool:
+    """Say whether `value` is a module, function, or class the project wrote, rather than Facere, the standard library, or an installed package."""
+    if isinstance(value, types.FunctionType):
+        path = value.__code__.co_filename
+    elif isinstance(value, type):
+        path = getattr(sys.modules.get(value.__module__), "__file__", None)
+    elif isinstance(value, types.ModuleType):
+        path = getattr(value, "__file__", None)
+    else:
+        return False
+    module = value.__name__ if isinstance(value, types.ModuleType) else value.__module__
+    if module == "facere" or module.startswith("facere."):
+        return False
+    return isinstance(path, str) and _is_project_source(context, os.path.abspath(path))
 
 
 def _feed_values(
@@ -515,13 +733,13 @@ def _feed_values(
             try:
                 feed_value(digest, value)
             except UnhashableValueError as error:
-                fix = (
-                    "write path.as_posix(), since Facere paths are strings with /"
+                cause = (
+                    "Facere paths are strings with /"
                     if isinstance(error.value, PurePath)
-                    else _HASHABLE_FIX
+                    else _HASHABLE_TYPES
                 )
                 problems.append(
-                    f"reads {kind} {name}, of type {error.type_name}, which Facere can't hash: {fix}"
+                    f"reads {kind} {name}, of type {error.type_name}, which Facere can't hash, since {cause}"
                 )
                 continue
         if output_keys is None or isinstance(value, types.ModuleType | types.FunctionType | type):
@@ -532,13 +750,9 @@ def _feed_values(
         if path is None:
             continue
         if kind == "parameter":
-            problems.append(
-                f"reads parameter {name}, which names the path {path} unannotated: annotate it fac.Input or list[fac.Input], or str or list[str] if its recipe never reads the file"
-            )
+            problems.append(f"reads parameter {name}, which names the path {path} unannotated")
         else:
-            problems.append(
-                f"reads {kind} {name}, which names the path {path}: pass the path through a parameter annotated fac.Input or list[fac.Input]"
-            )
+            problems.append(f"reads {kind} {name}, which names the path {path}")
     return problems
 
 
@@ -548,7 +762,9 @@ def _is_path(context: Context, text: str, output_keys: set[str]) -> bool:
     if _calc_key(posixpath.normpath(text)) in output_keys:
         return True
     path = os.path.abspath(os.path.join(context.root, text))
-    return path.startswith(os.path.join(context.root, "")) and os.path.isfile(path)
+    if not is_under_root(path, context.root) or not os.path.isfile(path):
+        return False
+    return not is_within(normalize(path, context.root), context.out_dir)
 
 
 def _validate_inputs(
@@ -562,17 +778,21 @@ def _validate_inputs(
             output = output_by_key.get(_calc_key(path))
             if output is not None:
                 rule = producers[output]
-                message = f"{definition.label} inputs {path}, which differs only in case from {output}: write the path as {rule.label} outputs it"
+                message = (
+                    f"{definition.label} inputs {path}, which differs only in case from {output}"
+                )
                 errors.append(
-                    Diagnostic(
-                        definition.location,
+                    _diagnose(
+                        definition,
                         message,
                         (Note(rule.location, f"{rule.label} outputs {output}"),),
                     )
                 )
             elif not os.path.exists(path):
-                message = f"{definition.label} inputs {path}, which doesn't exist, and no rule outputs it: create it, fix the path, or define the rule that outputs it"
-                errors.append(Diagnostic(definition.location, message))
+                message = (
+                    f"{definition.label} inputs {path}, which doesn't exist, and no rule outputs it"
+                )
+                errors.append(_diagnose(definition, message))
 
 
 def _validate_acyclic(
@@ -618,8 +838,4 @@ def _build_cycle_error(loop: list[Definition], inputs: list[str]) -> Diagnostic:
         )
         for index, (definition, path) in enumerate(zip(loop, inputs, strict=True))
     )
-    return Diagnostic(
-        loop[0].location,
-        f"dependency cycle: {names}: remove one of these inputs to break the loop",
-        notes,
-    )
+    return _diagnose(loop[0], f"dependency cycle: {names}", notes)

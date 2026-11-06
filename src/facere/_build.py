@@ -7,7 +7,7 @@ import shlex
 import subprocess
 import sys
 import traceback
-from dataclasses import dataclass
+from collections.abc import Callable
 
 from facere import _state
 from facere._collect import Definition, Project
@@ -15,6 +15,7 @@ from facere._command import write_output
 from facere._context import Context, Running, normalize
 from facere._diagnostics import Diagnostic, FacereError, Note, print_error
 from facere._hash import feed, hash_path
+from facere._summary import Summary
 
 
 class RecipeFailure(Exception):
@@ -27,26 +28,12 @@ class RecipeFailure(Exception):
         self.reason = reason
 
 
-@dataclass(slots=True)
-class Summary:
-    executed: int = 0
-    up_to_date: int = 0
-
-
 def resolve_targets(project: Project, root: str, targets: list[str]) -> list[Definition]:
-    """Return the definitions `targets` resolve to, in order, or the defaults when `targets` is empty."""
-    names_note = Note(None, f"names: {', '.join(sorted(project.by_name))}")
+    """Return the definitions `targets` resolve to, in order, or when `targets` is empty the defaults, else every rule."""
     if not targets:
-        defaults = [definition for definition in project.definitions if definition.is_default]
-        if not defaults:
-            raise FacereError(
-                Diagnostic(
-                    None,
-                    "fac.py declares no default, so name a target, or pass default=True to fac.rule or fac.task",
-                    (names_note,),
-                )
-            )
-        return defaults
+        definitions = project.definitions
+        defaults = [definition for definition in definitions if definition.is_default]
+        return defaults or [definition for definition in definitions if not definition.is_task]
     resolved: list[Definition] = []
     unknown: list[str] = []
     for target in targets:
@@ -60,18 +47,48 @@ def resolve_targets(project: Project, root: str, targets: list[str]) -> list[Def
             unknown.append(target)
     if unknown:
         listed = ", ".join(repr(target) for target in unknown)
-        raise FacereError(
-            Diagnostic(
-                None,
-                f"unknown target {listed}: name a rule or task, or give the path a rule outputs, relative to the root",
-                (names_note,),
-            )
-        )
+        names = ", ".join(sorted(project.by_name))
+        notes = (Note(None, f"names: {names}"),) if names else ()
+        raise FacereError(Diagnostic(None, f"unknown target {listed}", notes))
     return resolved
 
 
-def build(context: Context, project: Project, targets: list[Definition]) -> Summary:
-    """Build `targets` in order, raising RecipeFailure on the first failure."""
+def validate_task_args(resolved: list[Definition], task_args: tuple[str, ...] | None) -> None:
+    """Raise unless `task_args`, the arguments after `--`, are None or empty, or a task among the `resolved` targets takes fac.Args to receive them."""
+    if not bool(task_args):
+        return
+    tasks = list(dict.fromkeys(definition for definition in resolved if definition.is_task))
+    if any(task.args_slot is not None for task in tasks):
+        return
+    if not tasks:
+        raise FacereError(
+            Diagnostic(
+                None,
+                "-- passes arguments to the tasks among the targets, which name none",
+            )
+        )
+    first, *others = tasks
+    raise FacereError(
+        Diagnostic(
+            first.location,
+            f"{first.label} takes no arguments, and -- passes some",
+            tuple(Note(task.location, f"{task.label} takes none either") for task in others),
+        )
+    )
+
+
+def build(
+    context: Context,
+    project: Project,
+    targets: list[Definition],
+    summary: Summary,
+    progress_cb: Callable[[str], None],
+    task_args: tuple[str, ...] | None = None,
+) -> None:
+    """Build `targets` in order, `task_args` filling the fac.Args parameter of every task among them, and raise RecipeFailure on the first failure.
+
+    `summary` counts what ran and what was current, and names the definition an interrupt stopped, so it holds the invocation's progress even when this raises. `progress_cb` gets `[position/total] label` as each rule or task starts to execute, where the position counts every rule and task reached, executed or not.
+    """
     state_path = posixpath.join(context.state_dir, "state.db")
     records = _state.load(state_path)
     declared = {
@@ -79,11 +96,14 @@ def build(context: Context, project: Project, targets: list[Definition]) -> Summ
         for definition in project.definitions
         if not definition.is_task
     }
-    _state.remove(state_path, [key for key in records if key not in declared])
-    builder = _Builder(context, project, records, state_path)
+    try:
+        _state.remove(state_path, [key for key in records if key not in declared])
+    except OSError as error:
+        raise FacereError(Diagnostic(None, f"{error}")) from error
+    total = _calc_total(project.producers, targets)
+    builder = _Builder(context, project, records, state_path, summary, progress_cb, total)
     for target in targets:
-        builder.build(target)
-    return builder.summary
+        builder.build(target, task_args)
 
 
 def report_failure(failure: RecipeFailure, start_dir: str) -> None:
@@ -126,6 +146,43 @@ def _format_exception(error: BaseException) -> str:
     return "".join(report.format())
 
 
+def _calc_total(producers: dict[str, Definition], targets: list[Definition]) -> int:
+    """Return the rules and tasks building `targets` reaches, as _Builder.build counts them."""
+    checked: set[Definition] = set()
+    total = 0
+    for target in targets:
+        order = _order(producers, target, checked)
+        total += len(order) + target.is_task
+        checked.update(order)
+        if target.is_task:
+            checked.clear()
+    return total
+
+
+def _order(
+    producers: dict[str, Definition], target: Definition, checked: set[Definition]
+) -> list[Definition]:
+    """Return the rules `target` needs that aren't in `checked`, each after the rules that output its inputs."""
+    if target in checked:
+        return []
+    order = []
+    seen = {*checked, target}
+    stack = [(target, iter(target.inputs))]
+    while stack:
+        definition, inputs = stack[-1]
+        path = next(inputs, None)
+        if path is None:
+            stack.pop()
+            if not definition.is_task:
+                order.append(definition)
+            continue
+        rule = producers.get(path)
+        if rule is not None and rule not in seen:
+            seen.add(rule)
+            stack.append((rule, iter(rule.inputs)))
+    return order
+
+
 class _Builder:
     def __init__(
         self,
@@ -133,73 +190,60 @@ class _Builder:
         project: Project,
         records: dict[tuple[str, ...], _state.Record],
         state_path: str,
+        summary: Summary,
+        progress_cb: Callable[[str], None],
+        total: int,
     ) -> None:
         self.context = context
         self.project = project
         self.records = records
         self.state_path = state_path
         self.checked: set[Definition] = set()
-        self.summary = Summary()
+        self.summary = summary
+        self.progress_cb = progress_cb
+        self.total = total
+        self.position = 0
 
-    def build(self, target: Definition) -> None:
-        for rule in self._order(target):
+    def build(self, target: Definition, task_args: tuple[str, ...] | None) -> None:
+        for rule in _order(self.project.producers, target, self.checked):
             try:
                 self._ensure_up_to_date(rule)
             except OSError as error:
-                raise RecipeFailure(
-                    rule, reason=f"{error}: fix the path or its permissions"
-                ) from error
+                raise RecipeFailure(rule, reason=f"{error}") from error
         if target.is_task:
-            self._execute(target)
-            self.summary.executed += 1
+            self.position += 1
+            self._announce(target)
+            self._execute(target, task_args)
+            self.summary.tasks_run += 1
             self.checked.clear()
-
-    def _order(self, target: Definition) -> list[Definition]:
-        """Return the rules `target` needs that this batch hasn't checked, each after the rules that output its inputs."""
-        if target in self.checked:
-            return []
-        order = []
-        seen = {*self.checked, target}
-        stack = [(target, iter(target.inputs))]
-        while stack:
-            definition, inputs = stack[-1]
-            path = next(inputs, None)
-            if path is None:
-                stack.pop()
-                if not definition.is_task:
-                    order.append(definition)
-                continue
-            rule = self.project.producers.get(path)
-            if rule is not None and rule not in seen:
-                seen.add(rule)
-                stack.append((rule, iter(rule.inputs)))
-        return order
 
     def _ensure_up_to_date(self, rule: Definition) -> None:
         self.checked.add(rule)
+        self.position += 1
         fingerprint = self._calc_fingerprint(rule)
         key = _state.calc_key(rule.outputs)
         record = self.records.get(key)
         if record is not None:
             if record == (fingerprint, tuple(hash_path(output) for output in key)):
-                self.summary.up_to_date += 1
+                self.summary.outputs_current += len(key)
                 return
             _state.remove(self.state_path, [key])
         for output in rule.outputs:
             os.makedirs(os.path.dirname(output) or ".", exist_ok=True)
-        self._execute(rule)
+        self._announce(rule)
+        self._execute(rule, None)
         output_hashes = {output: hash_path(output) for output in key}
         missing = [output for output, content in output_hashes.items() if content is None]
         if missing:
             raise RecipeFailure(
                 rule,
-                reason=f"its recipe succeeded without writing {', '.join(missing)}: write every declared output, or fix the path",
+                reason=f"its recipe succeeded without writing {', '.join(missing)}",
             )
         record = self.records[key] = _state.Record(
             fingerprint, tuple(content for content in output_hashes.values() if content is not None)
         )
         _state.save(self.state_path, key, record)
-        self.summary.executed += 1
+        self.summary.rules_run += 1
 
     def _calc_fingerprint(self, rule: Definition) -> str:
         digest = hashlib.sha256(self.project.code_digests[rule])
@@ -208,17 +252,22 @@ class _Builder:
             if content is None:
                 raise RecipeFailure(
                     rule,
-                    reason=f"its input {path} is missing: restore it, or fix the rule that outputs it",
+                    reason=f"its input {path} is missing",
                 )
             feed(digest, b"path", path.encode("utf-8", "surrogateescape"))
             feed(digest, b"content", content.encode())
         return digest.hexdigest()
 
-    def _execute(self, definition: Definition) -> None:
+    def _announce(self, definition: Definition) -> None:
+        self.progress_cb(f"[{self.position}/{self.total}] {definition.label}")
+
+    def _execute(self, definition: Definition, task_args: tuple[str, ...] | None) -> None:
+        args, kwargs = definition.calc_call(task_args)
         self.context.running = Running.TASK if definition.is_task else Running.RULE
         try:
-            definition.fn(*definition.args, **definition.kwargs)
+            definition.fn(*args, **kwargs)
         except KeyboardInterrupt:
+            self.summary.stopped = definition.label
             raise
         except BaseException as error:
             raise RecipeFailure(definition, error=error) from error

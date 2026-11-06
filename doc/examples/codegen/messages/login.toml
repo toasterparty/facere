@@ -1,0 +1,3 @@
+[fields]
+user = "string"
+attempt = "int"

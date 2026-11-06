@@ -14,6 +14,7 @@ facere = "facere._cli:console_main"
 
 [dependency-groups]
 dev = [
+    "coverage",
     "pytest",
     "pytest-xdist",
     "ruff",
@@ -31,24 +32,73 @@ path = "src/facere/_version.py"
 "doc/user" = "facere/doc"
 
 [tool.hatch.build.targets.sdist]
-only-include = ["src", "tests", "examples", "doc", "README.md", "LICENSE", "COPYING"]
+only-include = ["src", "test", "doc", "README.md", "LICENSE", "COPYING"]
 
 [tool.ruff]
 line-length = 100
 cache-dir = "build/.ruff_cache"
+# Planned examples use features no release supports yet. Remove each once its README drops the planned status.
+extend-exclude = ["doc/examples/c-server-client", "doc/examples/codegen", "doc/examples/http-api/fac.py", "doc/examples/many-rows", "doc/examples/python-app", "doc/examples/sum"]
+
+[tool.ty.rules]
+blanket-ignore-comment = "error"
+dynamic-function-decorator-return = "error"
+missing-type-argument = "error"
+missing-override-decorator = "error"
+possibly-unresolved-reference = "warn"
+truthiness-test-of-none-union = "error"
+unsound-assignment = "error"
+unsound-return-statement = "error"
+unsound-yield = "error"
+unsupported-dynamic-base = "warn"
+
+# Potentially high false-positive rates
+division-by-zero = "warn"
+possibly-missing-attribute = "warn"
+possibly-missing-import = "warn"
+
+[tool.ty.analysis]
+strict-equality-semantics = true
+strict-generic-narrowing = true
+
+# Fixtures misuse the API on purpose, so a decorator's rejected argument leaves its return unknown.
+[[tool.ty.overrides]]
+include = ["test/*/test_*/**"]
+
+[tool.ty.overrides.rules]
+dynamic-function-decorator-return = "ignore"
+
+[tool.ty.terminal]
+error-on-warning = true
 
 [tool.ruff.lint]
-extend-select = ["I"]  # Sort imports.
+select = [
+    "E",       # pycodestyle errors
+    "F",       # Pyflakes
+    "B",       # flake8-bugbear
+    "I",       # import sorting
+    "UP",      # modern Python syntax
+    "SIM",     # simplification
+    "ANN",     # type annotations
+    "PYI",     # typing best practices
+    "PGH003",  # specific type-ignore codes
+    "PGH004",  # specific noqa codes
+]
+ignore = ["E501"]
 
 [tool.ruff.lint.per-file-ignores]
 # A fac.py declares paths as parameter defaults and writes outputs with bare open(), as doc/user/ shows.
-"tests/*/test_*/**" = ["B006", "B008", "SIM115"]
+# Fixtures also leave annotations off where a test checks that Facere rejects the missing annotation.
+"test/*/test_*/**" = ["ANN", "B006", "B008", "SIM115"]
+# Examples teach fac.py authoring, where an annotation is something Facere reads, never decoration.
+"doc/examples/**" = ["ANN"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["test"]
 cache_dir = "build/test/.pytest_cache"
 # importlib keeps the repo root off sys.path, where its fac.py would shadow a fixture's `import fac`.
 addopts = ["--strict-markers", "--import-mode=importlib", "-n", "auto"]
 
 [tool.ty.src]
-include = ["fac.py", "src", "tests", "examples"]
+include = ["fac.py", "src", "test", "doc/examples"]
+exclude = ["doc/examples/c-server-client", "doc/examples/codegen", "doc/examples/http-api/fac.py", "doc/examples/many-rows", "doc/examples/python-app", "doc/examples/sum"]

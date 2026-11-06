@@ -1,6 +1,6 @@
 """The state: a record of each rule's last success, kept in a SQLite database in the output directory.
 
-The database is open only while it is read or written, so a task may delete the output directory on any OS. A database Facere can't read counts as empty, which costs only rebuilds.
+The database is open only while it is read or written, so a task may delete the output directory on any OS. A database Facere can't read counts as empty, which costs only rebuilds, while one it can't write raises OSError.
 """
 
 import contextlib
@@ -42,7 +42,7 @@ def load(path: str) -> dict[tuple[str, ...], Record]:
 
 
 def save(path: str, key: tuple[str, ...], record: Record) -> None:
-    with _open(path) as connection, connection:
+    with _open(path) as connection:
         connection.execute(
             "INSERT OR REPLACE INTO records VALUES (?, ?, ?)",
             (_SEPARATOR.join(key), record.fingerprint, _SEPARATOR.join(record.output_hashes)),
@@ -52,7 +52,7 @@ def save(path: str, key: tuple[str, ...], record: Record) -> None:
 def remove(path: str, keys: list[tuple[str, ...]]) -> None:
     if not keys or not os.path.exists(path):
         return
-    with _open(path) as connection, connection:
+    with _open(path) as connection:
         connection.executemany(
             "DELETE FROM records WHERE outputs = ?", [(_SEPARATOR.join(key),) for key in keys]
         )
@@ -60,16 +60,18 @@ def remove(path: str, keys: list[tuple[str, ...]]) -> None:
 
 @contextlib.contextmanager
 def _open(path: str) -> Generator[sqlite3.Connection]:
+    """Yield a connection that commits when the block succeeds, raising OSError when SQLite fails."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
     try:
-        connection = _connect(path)
-    except sqlite3.DatabaseError:
-        os.remove(path)
-        connection = _connect(path)
-    try:
-        yield connection
-    finally:
-        connection.close()
+        try:
+            connection = _connect(path)
+        except sqlite3.DatabaseError:
+            os.remove(path)
+            connection = _connect(path)
+        with contextlib.closing(connection), connection:
+            yield connection
+    except sqlite3.Error as error:
+        raise OSError(f"{path}: {error}") from error
 
 
 def _connect(path: str) -> sqlite3.Connection:

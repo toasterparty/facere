@@ -3,6 +3,7 @@
 import contextlib
 import errno
 import os
+import shlex
 import shutil
 import signal
 import subprocess
@@ -27,13 +28,15 @@ def run(
 ) -> str:
     """Run one command without a shell and return its stdout decoded as UTF-8, raising subprocess.CalledProcessError on a non-zero exit.
 
-    Each of `args` is one string, or a list or tuple of strings that contributes each of its items in order, so `fac.run(CC, CFLAGS, "-c", source)` needs no `*`. The first string is the program, the rest its arguments. The program resolves through `PATH`, or against the root when it contains a separator, and raises FileNotFoundError when it doesn't resolve. The command inherits Facere's environment, with `env` setting variables over it and `None` unsetting one. `cwd` is relative to the root. `stdin`, `stdout`, and `stderr` name files, relative to the root, to feed the command and fill, and a file both `stdout` and `stderr` name receives both streams. In a rule, the command reads an empty stdin unless `stdin` names a file, and its output is captured, then printed whole once it ends, unless `quiet` is true and it succeeded. In a task, the command shares Facere's standard streams, so its stdout is printed rather than returned. `timeout` kills the command after that many seconds and raises subprocess.TimeoutExpired.
+    Each of `args` is one string, or a list or tuple of strings that contributes each of its items in order, so `fac.run(CC, CFLAGS, "-c", source)` needs no `*`. The first string is the program, the rest its arguments. The program resolves through `PATH`, or against the root when it contains a separator, and raises FileNotFoundError when it doesn't resolve. The command inherits Facere's environment, with what `fac.env` set over it, then `env` over both, where `None` unsets a variable. `cwd` is relative to the root. `stdin`, `stdout`, and `stderr` name files, relative to the root, to feed the command and fill, and a file both `stdout` and `stderr` name receives both streams. In a rule, the command reads an empty stdin unless `stdin` names a file, and its output is captured. On success it is printed whole unless `quiet` is true, and on failure it travels in the raised error, which Facere prints if it fails the recipe. In a task, the command shares Facere's standard streams, so its stdout is printed rather than returned. `timeout` kills the command after that many seconds and raises subprocess.TimeoutExpired.
     """
     context = get_context("fac.run")
     if context.running is None:
         raise RuntimeError("fac.run runs a command only from the recipe of a rule or task")
     argv = _flatten(args)
-    command_env = _build_env(env)
+    if context.is_verbose:
+        print(shlex.join(argv), file=sys.stderr, flush=True)
+    command_env = _build_env({**context.env, **(env or {})})
     program = _resolve_program(argv[0], context.root, command_env)
     in_rule = context.running is Running.RULE
     captured = subprocess.PIPE if in_rule else None
@@ -48,7 +51,7 @@ def run(
         if stderr is not None:
             stderr_stream = (
                 subprocess.STDOUT
-                if _is_same_path(stderr, stdout)
+                if stdout is not None and _is_same_path(stderr, stdout)
                 else files.enter_context(open(stderr, "wb"))
             )
         try:
@@ -86,7 +89,7 @@ def _write_bytes(stream: TextIO, data: bytes) -> None:
     if not data:
         return
     stream.flush()
-    buffer: IO[bytes] | None = getattr(stream, "buffer", None)
+    buffer = getattr(stream, "buffer", None)
     if buffer is None:
         stream.write(data.decode("utf-8", "replace"))
         stream.flush()
@@ -95,9 +98,7 @@ def _write_bytes(stream: TextIO, data: bytes) -> None:
     buffer.flush()
 
 
-def _is_same_path(path: str, other: str | None) -> bool:
-    if other is None:
-        return False
+def _is_same_path(path: str, other: str) -> bool:
     return os.path.normcase(os.path.normpath(path)) == os.path.normcase(os.path.normpath(other))
 
 
@@ -110,8 +111,8 @@ def _flatten(args: tuple[str | list[str] | tuple[str, ...], ...]) -> list[str]:
     return argv
 
 
-def _build_env(env: Mapping[str, str | None] | None) -> dict[str, str] | None:
-    if env is None:
+def _build_env(env: Mapping[str, str | None]) -> dict[str, str] | None:
+    if not env:
         return None
     merged = dict(os.environ)
     for key, value in env.items():
@@ -172,7 +173,9 @@ def _spawn(
         except BaseException:
             _kill(process, in_session)
             raise
-    return process.returncode, out or b"", err or b""
+    returncode = process.returncode
+    assert isinstance(returncode, int)
+    return returncode, out or b"", err or b""
 
 
 def _kill(process: subprocess.Popen[bytes], in_session: bool) -> None:

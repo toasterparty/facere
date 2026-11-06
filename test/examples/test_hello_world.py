@@ -1,0 +1,66 @@
+"""The hello-world example, which getting started builds up to, compiled with zig through uvx."""
+
+import re
+import shutil
+import sys
+from pathlib import Path
+
+import pytest
+
+from ..helpers import edit, run_fac
+
+_REPO = Path(__file__).parents[2]
+EXAMPLE = _REPO / "doc" / "examples" / "hello-world"
+GUIDE = _REPO / "doc" / "user" / "1-getting-started.md"
+PROGRAM = "app.exe" if sys.platform == "win32" else "app"
+
+
+def test_hello_world_is_the_project_getting_started_finishes_with() -> None:
+    listings = re.findall(r"^```python\n(.*?)^```", GUIDE.read_text(encoding="utf-8"), re.M | re.S)
+
+    assert listings[-1] == (EXAMPLE / "fac.py").read_text(encoding="utf-8")
+
+
+@pytest.mark.skipif(shutil.which("uvx") is None, reason="the example runs zig through uvx")
+def test_hello_world_rebuilds_exactly_what_changed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("GREETING", raising=False)
+    root = tmp_path / "hello-world"
+    shutil.copytree(EXAMPLE, root, ignore=shutil.ignore_patterns("build"))
+
+    def closing_line(*args: str) -> str:
+        result = run_fac(root, *args)
+        assert result.status == 0, result.err
+        return result.err.splitlines()[-1]
+
+    assert closing_line() == "Finished in <elapsed>. Executed 3 rules."
+    assert closing_line("app") == "Finished in <elapsed>. No work to do. 3 outputs up to date."
+
+    (root / "src" / "main.c").touch()
+    assert closing_line() == "Finished in <elapsed>. No work to do. 3 outputs up to date."
+
+    with (root / "src" / "greeting.c").open("a") as source:
+        source.write("// comment\n")
+    assert closing_line() == "Finished in <elapsed>. Executed 1 rule. 2 outputs up to date."
+
+    edit(root / "fac.py", "import sys\n", "import sys  # the platform names the program\n")
+    assert closing_line() == "Finished in <elapsed>. No work to do. 3 outputs up to date."
+
+    with (root / "build" / PROGRAM).open("ab") as program:
+        program.write(b"\0")
+    assert closing_line() == "Finished in <elapsed>. Executed 1 rule. 2 outputs up to date."
+
+    assert closing_line("build/src/main.o") == (
+        "Finished in <elapsed>. No work to do. 1 output up to date."
+    )
+
+    monkeypatch.setenv("GREETING", "bonjour")
+    assert closing_line() == "Finished in <elapsed>. Executed 3 rules."
+    assert run_fac(root, "run").out == "bonjour\n"
+    monkeypatch.delenv("GREETING")
+
+    ran = run_fac(root, "clean", "run")
+    assert ran.status == 0, ran.err
+    assert ran.out == "hello, world\n"
+    assert ran.err.splitlines()[-1] == "Finished in <elapsed>. Executed 2 tasks and 3 rules."

@@ -4,7 +4,7 @@
         {
             "label": "run",
             "type": "shell",
-            "command": "uvx facere run",
+            "command": "fac run",
             "group": {
                 "kind": "build",
                 "isDefault": true
@@ -12,28 +12,28 @@
             "problemMatcher": []
         },
         {
-            "label": "test",
+            "label": "lint",
             "type": "shell",
-            "command": "uvx facere test",
-            "group": "test",
+            "command": "fac lint",
             "problemMatcher": []
         },
         {
-            "label": "lint",
+            "label": "test",
             "type": "shell",
-            "command": "uvx facere lint",
+            "command": "fac test",
+            "group": "test",
             "problemMatcher": []
         },
         {
             "label": "format",
             "type": "shell",
-            "command": "uvx facere format",
+            "command": "fac format",
             "problemMatcher": []
         },
         {
             "label": "upgrade",
             "type": "shell",
-            "command": "uvx facere upgrade",
+            "command": "fac upgrade",
             "problemMatcher": []
         }
     ]

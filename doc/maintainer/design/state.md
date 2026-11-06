@@ -1,0 +1,13 @@
+# State and lock
+
+## State
+
+Fingerprints, output hashes, added inputs, and each store's stamp with its virtual output digests live in a SQLite file in `.fac/` inside the output directory. A rule's record is keyed by its output paths and virtual outputs, so editing its parameters, reordering `fac.sources()`, or adding a configuration never orphans it, and only removing or renaming an output does. Each invocation drops the records whose outputs no rule declares, and leaves their files in place, since Facere deletes nothing it does not track. Deleting the output directory forgets every record, so `git clean -fdx` returns a project to a fresh clone. It also forgets outputs that lie elsewhere, such as a toolchain in `tools/`, so their rules execute once more, and a recipe that can tell its output is already good, such as a toolchain whose `--version` matches, may skip its work.
+
+Once the time budget needs it, the state is stored as a few large blobs per table rather than a row per rule, so an invocation reads the whole state in one pass of a few milliseconds. Records would then be committed in batches about every 100 ms, each after the store writes its records describe, as [stores](./stores.md#writing) orders them, each appending only the records it changed, and folded into the blobs once at the end, so a long build never rewrites the whole state, and an interruption costs only its last batch of progress. The database is open only while a batch is committed, so nothing stays open inside the output directory and a task can delete it mid-run on Windows too.
+
+## Lock
+
+An exclusive lock keyed by a hash of the output directory's resolved absolute path makes a second concurrent `fac` on the same output directory wait for it, so two quick saves queue rather than fail. On POSIX it is `fcntl.flock` on `/tmp/facere-<hash>.lock`, never a path from `TMPDIR`, and on Windows a named mutex, `Local\facere-<hash>`, created through `ctypes` and shared by every invocation in one Windows session, so no environment variable can make two invocations miss each other's lock. The kernel releases either when its holder exits or is killed, so no lock goes stale. The holder writes its PID to `.fac/lock.pid` in the output directory and closes the file at once, only so the waiting invocation can name it, which it does in one line on standard error. `--lock-timeout SECONDS` makes it fail with status 2 once that long has passed.
+
+A recipe that calls `fac` on an output directory its invocation holds fails at once instead, since waiting would deadlock, detected through the lock's holder being the calling process or one of its ancestors, so Facere reads no environment variable to find it. A call with another `--out` runs normally.

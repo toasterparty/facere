@@ -7,13 +7,17 @@ on:
 permissions:
     contents: read
 
+defaults:
+    run:
+        shell: bash
+
 jobs:
     test:
         runs-on: ubuntu-latest
         steps:
             - uses: actions/checkout@v7
             - uses: astral-sh/setup-uv@v10.3.3
-            - run: uvx facere test
+            - run: uvx facere==$(sed -n 's/^MINIMUM_FACERE = "\(.*\)"$/\1/p' fac.py) test
 
     publish:
         needs: test
@@ -24,4 +28,4 @@ jobs:
         steps:
             - uses: actions/checkout@v7
             - uses: astral-sh/setup-uv@v10.3.3
-            - run: uvx facere publish
+            - run: uvx facere==$(sed -n 's/^MINIMUM_FACERE = "\(.*\)"$/\1/p' fac.py) publish
