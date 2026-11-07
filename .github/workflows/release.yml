@@ -1,8 +1,14 @@
 name: Release
 
 on:
-    push:
-        tags: ["v*"]
+    workflow_dispatch:
+        inputs:
+            release_type:
+                description: Release Type
+                type: choice
+                required: true
+                default: Patch
+                options: [Major, Minor, Patch]
 
 permissions:
     contents: read
@@ -12,20 +18,52 @@ defaults:
         shell: bash
 
 jobs:
-    test:
+    ci:
+        uses: ./.github/workflows/ci.yml
+
+    build:
         runs-on: ubuntu-latest
         steps:
             - uses: actions/checkout@v7
-            - uses: astral-sh/setup-uv@v10.3.3
-            - run: uvx facere==$(sed -n 's/^MINIMUM_FACERE = "\(.*\)"$/\1/p' fac.py) test
+              with:
+                  fetch-depth: 0
+            - uses: ./.github/actions/setup-fac
+            - run: fac build_release -- "$RELEASE_TYPE"
+              env:
+                  RELEASE_TYPE: ${{ inputs.release_type }}
+            - uses: actions/upload-artifact@v7
+              with:
+                  name: release
+                  path: build/release/
+                  if-no-files-found: error
+
+    push:
+        needs: [ci, build]
+        runs-on: ubuntu-latest
+        environment: release
+        steps:
+            - uses: actions/checkout@v7
+              with:
+                  fetch-depth: 0
+                  ssh-key: ${{ secrets.RELEASE_DEPLOY_KEY }}
+            - uses: ./.github/actions/setup-fac
+            - uses: actions/download-artifact@v8
+              with:
+                  name: release
+                  path: build/release/
+            - run: fac push_release
 
     publish:
-        needs: test
+        needs: push
         runs-on: ubuntu-latest
         environment: pypi
         permissions:
             id-token: write
         steps:
             - uses: actions/checkout@v7
-            - uses: astral-sh/setup-uv@v10.3.3
-            - run: uvx facere==$(sed -n 's/^MINIMUM_FACERE = "\(.*\)"$/\1/p' fac.py) publish
+            - uses: ./.github/actions/setup-fac
+            - uses: actions/download-artifact@v8
+              with:
+                  name: release
+                  path: build/release/
+            - run: fac publish_release

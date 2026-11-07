@@ -9,5 +9,5 @@ The user documentation in [`../user/`](../user/README.md) is part of the product
 - [Use cases](./use-cases.md) - before changing the interface, to check each stays straightforward
 - [Design](./design/README.md) - before implementing a feature or changing how one works
 - [Roadmap](./roadmap.md) - when choosing what to build next, or settling an open decision
-- [Releasing](./releasing.md) - when cutting a release
+- [Releasing](./releasing.md) - when cutting a release, or changing the workflows or the repository's GitHub settings
 - [`fac.py` style](./fac-py-style.md) - before writing or editing an example `fac.py` or a snippet of one in the user docs

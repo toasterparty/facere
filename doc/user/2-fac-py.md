@@ -45,7 +45,7 @@ Before executing any recipe, Facere loads `fac.py` and checks every rule, so a m
 
 ## Commands
 
-`fac.run` runs one command. In a rule it returns the command's standard output as text, and in a task, whose commands print live, it returns an empty string. It runs without a shell, so pass the program and each argument separately: `fac.run("cc", "-c", source)`, never `fac.run("cc -c main.c")`. A list or tuple of strings passes each of its elements as one argument. A command that exits non-zero fails the recipe.
+`fac.run` runs one command. In a rule it returns the command's standard output as text, and in a task, whose commands print live, it returns an empty string unless `quiet=True` *(0.3)*. It runs without a shell, so pass the program and each argument separately: `fac.run("cc", "-c", source)`, never `fac.run("cc -c main.c")`. A list or tuple of strings passes each of its elements as one argument. A command that exits non-zero fails the recipe.
 
 In a rule, a command reads an empty standard input and its output is printed once it finishes. Keyword arguments adjust that:
 
@@ -54,7 +54,7 @@ In a rule, a command reads an empty standard input and its output is printed onc
 | `stdin=`, `stdout=`, `stderr=` | Name a file to read standard input from or write a stream to. A file both `stdout=` and `stderr=` name gets both streams |
 | `env=` | Set environment variables over the inherited ones and those `fac.env` sets. `None` unsets a variable |
 | `cwd=` | Run in another directory, relative to the root |
-| `quiet=True` | Hide the command's output when it succeeds |
+| `quiet=True` | Hide the command's output when it succeeds. *(0.3)* In a task, `fac.run` also returns the standard output as text, and the command reads an empty standard input as in a rule, so it can't prompt |
 | `timeout=` | Kill the command after that many seconds, failing the recipe |
 
 *(0.2)* `fac.env(LC_ALL="C")`, called while `fac.py` loads, sets a variable for every command, or unsets it with `None`. Calls may repeat a variable's value, but one that changes it fails, naming both calls. Unlike a variable inherited from your shell, it joins every rule's fingerprint, so changing it re-executes them.

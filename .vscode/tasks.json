@@ -2,9 +2,9 @@
     "version": "2.0.0",
     "tasks": [
         {
-            "label": "run",
+            "label": "example",
             "type": "shell",
-            "command": "fac run",
+            "command": "fac example",
             "group": {
                 "kind": "build",
                 "isDefault": true

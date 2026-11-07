@@ -22,11 +22,14 @@ def mask_elapsed(text: str) -> str:
     return _ELAPSED.sub(r"\1 <elapsed>", text)
 
 
-def run_fac(root: Path, *args: str, python_flags: tuple[str, ...] = ()) -> Result:
-    """Run `python -m facere ARGS...` in a subprocess started in `root`."""
+def run_fac(
+    root: Path, *args: str, python_flags: tuple[str, ...] = (), stdin_text: str | None = None
+) -> Result:
+    """Run `python -m facere ARGS...` in a subprocess started in `root`, feeding it `stdin_text`."""
     completed = subprocess.run(
         [sys.executable, *python_flags, "-m", "facere", *args],
         cwd=root,
+        input=stdin_text,
         capture_output=True,
         text=True,
         check=False,

@@ -32,7 +32,7 @@ The files are named `fac.py` because a `facere.py` would shadow the `facere` pac
 
 Facere calls a rule's or task's function in a worker thread with the root as working directory.
 
-`fac.run(*args, cwd=None, env=None, stdin=None, stdout=None, stderr=None, timeout=None, quiet=False)` spawns one command and raises `subprocess.CalledProcessError` on a non-zero exit, so a check of its output runs only after success. In a rule it returns the command's stdout decoded as UTF-8. `cwd` serves tools such as `zip` that store paths relative to where they run, and the command's relative arguments resolve against it for the undeclared-path check. `timeout` kills the command's session. Several commands are several calls, made from the recipe's thread or from threads it starts.
+`fac.run(*args, cwd=None, env=None, stdin=None, stdout=None, stderr=None, timeout=None, quiet=False)` spawns one command and raises `subprocess.CalledProcessError` on a non-zero exit, so a check of its output runs only after success. In a rule, or in a task with `quiet=True`, it returns the command's stdout decoded as UTF-8. `cwd` serves tools such as `zip` that store paths relative to where they run, and the command's relative arguments resolve against it for the undeclared-path check. `timeout` kills the command's session. Several commands are several calls, made from the recipe's thread or from threads it starts.
 
 `fac.read_text(path)` and `fac.write_text(path, text)` read and replace a text file in UTF-8, and write `\n` line endings on every OS, since `open`'s defaults follow the locale and the OS, so a rule writing text with them gives different bytes on different machines.
 

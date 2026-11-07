@@ -1,0 +1,18 @@
+name: Set up fac
+description: Install uv and the release of Facere named by MINIMUM_FACERE in the root fac.py
+
+inputs:
+    python-version:
+        description: The Python version uv uses, or empty for the project's own
+        required: false
+
+runs:
+    using: composite
+    steps:
+        - uses: astral-sh/setup-uv@v10.3.3
+          with:
+              python-version: ${{ inputs.python-version }}
+        - shell: bash
+          run: |
+              uv tool install "facere==$(sed -n 's/^MINIMUM_FACERE = "\(.*\)"$/\1/p' fac.py)"
+              uv tool dir --bin >> "$GITHUB_PATH"

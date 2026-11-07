@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from ..helpers import Fac
+from ..helpers import Fac, run_fac
 
 
 @pytest.mark.project("answer")
@@ -190,6 +190,40 @@ def test_task_command_shares_facere_streams_so_run_returns_nothing(fac: Fac) -> 
 
     assert result.status == 0, result.err
     assert result.out == "hello\n"
+
+
+@pytest.mark.project("task_quiet")
+def test_quiet_task_command_returns_its_stdout_without_printing_it(fac: Fac) -> None:
+    result = fac()
+
+    assert result.status == 0, result.err
+    assert result.out == "read 42\n"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="sessions are POSIX")
+@pytest.mark.project("task_quiet_session")
+def test_quiet_task_command_runs_in_a_session_a_timeout_can_kill_whole(fac: Fac) -> None:
+    result = fac()
+
+    assert result.status == 0, result.err
+    assert result.out == "True\n"
+
+
+@pytest.mark.project("task_quiet_stdin")
+def test_quiet_task_command_ignores_typed_stdin_unless_stdin_names_a_file(root: Path) -> None:
+    result = run_fac(root, stdin_text="typed")
+
+    assert result.status == 0, result.err
+    assert result.out == "'' 'fed'\n"
+
+
+@pytest.mark.project("task_quiet_failure")
+def test_quiet_task_command_that_fails_shows_the_output_it_hid(fac: Fac) -> None:
+    result = fac()
+
+    assert result.status == 1
+    assert "from stdout\n" in result.out
+    assert "from stderr\n" in result.err
 
 
 @pytest.mark.project("outside_recipe")

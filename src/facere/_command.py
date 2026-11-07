@@ -28,7 +28,7 @@ def run(
 ) -> str:
     """Run one command without a shell and return its stdout decoded as UTF-8, raising subprocess.CalledProcessError on a non-zero exit.
 
-    Each of `args` is one string, or a list or tuple of strings that contributes each of its items in order, so `fac.run(CC, CFLAGS, "-c", source)` needs no `*`. The first string is the program, the rest its arguments. The program resolves through `PATH`, or against the root when it contains a separator, and raises FileNotFoundError when it doesn't resolve. The command inherits Facere's environment, with what `fac.env` set over it, then `env` over both, where `None` unsets a variable. `cwd` is relative to the root. `stdin`, `stdout`, and `stderr` name files, relative to the root, to feed the command and fill, and a file both `stdout` and `stderr` name receives both streams. In a rule, the command reads an empty stdin unless `stdin` names a file, and its output is captured. On success it is printed whole unless `quiet` is true, and on failure it travels in the raised error, which Facere prints if it fails the recipe. In a task, the command shares Facere's standard streams, so its stdout is printed rather than returned. `timeout` kills the command after that many seconds and raises subprocess.TimeoutExpired.
+    Each of `args` is one string, or a list or tuple of strings that contributes each of its items in order, so `fac.run(CC, CFLAGS, "-c", source)` needs no `*`. The first string is the program, the rest its arguments. The program resolves through `PATH`, or against the root when it contains a separator, and raises FileNotFoundError when it doesn't resolve. The command inherits Facere's environment, with what `fac.env` set over it, then `env` over both, where `None` unsets a variable. `cwd` is relative to the root. `stdin`, `stdout`, and `stderr` name files, relative to the root, to feed the command and fill, and a file both `stdout` and `stderr` name receives both streams. In a rule, the command reads an empty stdin unless `stdin` names a file, and its output is captured. On success it is printed whole unless `quiet` is true, and on failure it travels in the raised error, which Facere prints if it fails the recipe. In a task, the command shares Facere's standard streams, so its stdout is printed rather than returned, unless `quiet` is true, which runs it as in a rule and returns its stdout. `timeout` kills the command after that many seconds and raises subprocess.TimeoutExpired.
     """
     context = get_context("fac.run")
     if context.running is None:
@@ -39,9 +39,10 @@ def run(
     command_env = _build_env({**context.env, **(env or {})})
     program = _resolve_program(argv[0], context.root, command_env)
     in_rule = context.running is Running.RULE
-    captured = subprocess.PIPE if in_rule else None
+    is_captured = in_rule or quiet
+    captured = subprocess.PIPE if is_captured else None
     with contextlib.ExitStack() as files:
-        stdin_stream: _Stream = subprocess.DEVNULL if in_rule else None
+        stdin_stream: _Stream = subprocess.DEVNULL if is_captured else None
         stdout_stream: _Stream = captured
         stderr_stream: _Stream = captured
         if stdin is not None:
@@ -63,7 +64,7 @@ def run(
                 stdout=stdout_stream,
                 stderr=stderr_stream,
                 timeout=timeout,
-                in_rule=in_rule,
+                is_captured=is_captured,
             )
         except subprocess.TimeoutExpired as error:
             # Without pipes, communicate() reports the time remaining, not the limit set.
@@ -149,12 +150,13 @@ def _spawn(
     stdout: _Stream,
     stderr: _Stream,
     timeout: float | None,
-    in_rule: bool,
+    is_captured: bool,
 ) -> tuple[int, bytes, bytes]:
-    if not in_rule:
+    if not is_captured:
         sys.stdout.flush()
         sys.stderr.flush()
-    in_session = in_rule and sys.platform != "win32"
+    # Killing the whole session closes the pipes, which a surviving grandchild would hold open.
+    in_session = is_captured and sys.platform != "win32"
     with subprocess.Popen(
         argv,
         cwd=cwd,

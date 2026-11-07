@@ -32,7 +32,7 @@ path = "src/facere/_version.py"
 "doc/user" = "facere/doc"
 
 [tool.hatch.build.targets.sdist]
-only-include = ["src", "test", "doc", "README.md", "LICENSE", "COPYING"]
+only-include = ["src", "test", "doc", "release.py", "README.md", "LICENSE", "COPYING"]
 
 [tool.ruff]
 line-length = 100
@@ -100,5 +100,5 @@ cache_dir = "build/test/.pytest_cache"
 addopts = ["--strict-markers", "--import-mode=importlib", "-n", "auto"]
 
 [tool.ty.src]
-include = ["fac.py", "src", "test", "doc/examples"]
+include = ["fac.py", "release.py", "src", "test", "doc/examples"]
 exclude = ["doc/examples/c-server-client", "doc/examples/codegen", "doc/examples/http-api/fac.py", "doc/examples/many-rows", "doc/examples/python-app", "doc/examples/sum"]

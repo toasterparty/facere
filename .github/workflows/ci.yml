@@ -2,7 +2,9 @@ name: CI
 
 on:
     push:
+        branches: [main, "hotfix/**"]
     pull_request:
+    workflow_call:
 
 permissions:
     contents: read
@@ -21,14 +23,23 @@ jobs:
         runs-on: ${{ matrix.os }}
         steps:
             - uses: actions/checkout@v7
-            - uses: astral-sh/setup-uv@v10.3.3
+            - uses: ./.github/actions/setup-fac
               with:
                   python-version: ${{ matrix.python }}
-            - run: uvx facere==$(sed -n 's/^MINIMUM_FACERE = "\(.*\)"$/\1/p' fac.py) test
+            - run: fac ci
 
+    # Outside ci-pass and releases, so a broken release can't block the release that fixes it.
     latest:
+        if: github.event_name != 'workflow_dispatch'
         runs-on: ubuntu-latest
         steps:
             - uses: actions/checkout@v7
             - uses: astral-sh/setup-uv@v10.3.3
-            - run: uvx facere test
+            - run: uvx facere ci
+
+    ci-pass:
+        if: always()
+        needs: test
+        runs-on: ubuntu-latest
+        steps:
+            - run: test "${{ needs.test.result }}" = success
