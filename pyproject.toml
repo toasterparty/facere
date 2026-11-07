@@ -6,7 +6,17 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = "LGPL-3.0-or-later"
 license-files = ["LICENSE", "COPYING"]
+authors = [{ name = "toasterparty" }]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+]
 dependencies = []
+
+[project.urls]
+Repository = "https://github.com/toasterparty/facere"
+Documentation = "https://github.com/toasterparty/facere/tree/main/doc/user"
 
 [project.scripts]
 fac = "facere._cli:console_main"
@@ -22,7 +32,7 @@ dev = [
 ]
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling==1.33.0"]
 build-backend = "hatchling.build"
 
 [tool.hatch.version]
@@ -38,38 +48,14 @@ only-include = ["src", "test", "doc", "release.py", "README.md", "LICENSE", "COP
 line-length = 100
 cache-dir = "build/.ruff_cache"
 # Planned examples use features no release supports yet. Remove each once its README drops the planned status.
-extend-exclude = ["doc/examples/c-server-client", "doc/examples/codegen", "doc/examples/http-api/fac.py", "doc/examples/many-rows", "doc/examples/python-app", "doc/examples/sum"]
-
-[tool.ty.rules]
-blanket-ignore-comment = "error"
-dynamic-function-decorator-return = "error"
-missing-type-argument = "error"
-missing-override-decorator = "error"
-possibly-unresolved-reference = "warn"
-truthiness-test-of-none-union = "error"
-unsound-assignment = "error"
-unsound-return-statement = "error"
-unsound-yield = "error"
-unsupported-dynamic-base = "warn"
-
-# Potentially high false-positive rates
-division-by-zero = "warn"
-possibly-missing-attribute = "warn"
-possibly-missing-import = "warn"
-
-[tool.ty.analysis]
-strict-equality-semantics = true
-strict-generic-narrowing = true
-
-# Fixtures misuse the API on purpose, so a decorator's rejected argument leaves its return unknown.
-[[tool.ty.overrides]]
-include = ["test/*/test_*/**"]
-
-[tool.ty.overrides.rules]
-dynamic-function-decorator-return = "ignore"
-
-[tool.ty.terminal]
-error-on-warning = true
+extend-exclude = [
+    "doc/examples/c-server-client",
+    "doc/examples/codegen",
+    "doc/examples/http-api/fac.py",
+    "doc/examples/many-rows",
+    "doc/examples/python-app",
+    "doc/examples/sum",
+]
 
 [tool.ruff.lint]
 select = [
@@ -93,12 +79,54 @@ ignore = ["E501"]
 # Examples teach fac.py authoring, where an annotation is something Facere reads, never decoration.
 "doc/examples/**" = ["ANN"]
 
+[tool.ty.src]
+include = ["fac.py", "release.py", "src", "test", "doc/examples"]
+exclude = [
+    "doc/examples/c-server-client",
+    "doc/examples/codegen",
+    "doc/examples/http-api/fac.py",
+    "doc/examples/many-rows",
+    "doc/examples/python-app",
+    "doc/examples/sum",
+]
+
+[tool.ty.rules]
+blanket-ignore-comment = "error"
+dynamic-function-decorator-return = "error"
+missing-type-argument = "error"
+missing-override-decorator = "error"
+possibly-unresolved-reference = "warn"
+truthiness-test-of-none-union = "error"
+unsound-assignment = "error"
+unsound-return-statement = "error"
+unsound-yield = "error"
+unsupported-dynamic-base = "warn"
+division-by-zero = "warn"
+possibly-missing-attribute = "warn"
+possibly-missing-import = "warn"
+
+[tool.ty.analysis]
+strict-equality-semantics = true
+strict-generic-narrowing = true
+
+[tool.ty.terminal]
+error-on-warning = true
+
+# Fixtures misuse the API on purpose, so a decorator's rejected argument leaves its return unknown.
+[[tool.ty.overrides]]
+include = ["test/*/test_*/**"]
+
+[tool.ty.overrides.rules]
+dynamic-function-decorator-return = "ignore"
+
 [tool.pytest.ini_options]
 testpaths = ["test"]
 cache_dir = "build/test/.pytest_cache"
 # importlib keeps the repo root off sys.path, where its fac.py would shadow a fixture's `import fac`.
 addopts = ["--strict-markers", "--import-mode=importlib", "-n", "auto"]
+markers = ["project(name): copy the project NAME, in the directory named after the test module, into the root"]
 
-[tool.ty.src]
-include = ["fac.py", "release.py", "src", "test", "doc/examples"]
-exclude = ["doc/examples/c-server-client", "doc/examples/codegen", "doc/examples/http-api/fac.py", "doc/examples/many-rows", "doc/examples/python-app", "doc/examples/sum"]
+[tool.coverage.run]
+source = ["facere"]
+parallel = true
+patch = ["subprocess"]

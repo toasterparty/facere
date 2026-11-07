@@ -1,9 +1,15 @@
+import importlib.util
 import re
+import shutil
 import subprocess
 import sys
 from collections.abc import Callable
 from pathlib import Path
+from types import ModuleType
 from typing import NamedTuple
+
+REPO = Path(__file__).parents[1]
+EXAMPLES = REPO / "doc" / "examples"
 
 
 class Result(NamedTuple):
@@ -35,6 +41,30 @@ def run_fac(
         check=False,
     )
     return Result(completed.returncode, completed.stdout, mask_elapsed(completed.stderr))
+
+
+def closing_line(root: Path, *args: str) -> str:
+    """Return the last line of stderr from `run_fac(root, *args)`, which must succeed."""
+    result = run_fac(root, *args)
+    assert result.status == 0, result.err
+    return result.err.splitlines()[-1]
+
+
+def copy_example(name: str, tmp_path: Path) -> Path:
+    """Return a copy under `tmp_path` of the example `name`, less anything a run generated."""
+    root = tmp_path / name
+    generated = shutil.ignore_patterns("build", "__pycache__", "table.txt")
+    shutil.copytree(EXAMPLES / name, root, ignore=generated)
+    return root
+
+
+def load_module(path: Path) -> ModuleType:
+    """Return the module at `path`, which `--import-mode=importlib` leaves off `sys.path`."""
+    spec = importlib.util.spec_from_file_location(path.stem, path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def edit(path: Path, old: str, new: str) -> None:

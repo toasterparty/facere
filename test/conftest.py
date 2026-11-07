@@ -6,10 +6,6 @@ import pytest
 
 @pytest.hookimpl(tryfirst=True)
 def pytest_configure(config: pytest.Config) -> None:
-    config.addinivalue_line(
-        "markers",
-        "project(name): copy the project NAME, in the directory named after the test module, into the root",
-    )
     if config.option.basetemp is None:
         basetemp = config.rootpath / "build" / "test" / "tmp"
         basetemp.parent.mkdir(parents=True, exist_ok=True)

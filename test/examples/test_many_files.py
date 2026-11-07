@@ -1,16 +1,12 @@
 """The many-files example, which needs only Python."""
 
-import shutil
 from pathlib import Path
 
-from ..helpers import edit, run_fac
-
-EXAMPLE = Path(__file__).parents[2] / "doc" / "examples" / "many-files"
+from ..helpers import copy_example, edit, run_fac
 
 
 def test_many_files_rebuilds_exactly_the_rows_the_table_changed(tmp_path: Path) -> None:
-    root = tmp_path / "many-files"
-    shutil.copytree(EXAMPLE, root, ignore=shutil.ignore_patterns("build", "table.txt"))
+    root = copy_example("many-files", tmp_path)
     edit(root / "fac.py", "ROW_COUNT = 1500", "ROW_COUNT = 100")
 
     first = run_fac(root)

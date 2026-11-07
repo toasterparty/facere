@@ -3,23 +3,23 @@
 import ast
 import re
 from collections.abc import Callable, Iterator
-from pathlib import Path
 
-_REPO = Path(__file__).parents[2]
+from ..helpers import EXAMPLES, REPO
+
 _SNIPPET = re.compile(r"^```python\n(.*?)^```", re.MULTILINE | re.DOTALL)
 _FAC_DECORATORS = {"fac.rule", "fac.task"}
 
 
 def _load_sources() -> Iterator[tuple[str, ast.Module]]:
-    for path in sorted((_REPO / "doc" / "examples").glob("**/fac.py")):
-        yield path.relative_to(_REPO).as_posix(), ast.parse(path.read_text(encoding="utf-8"))
-    for path in sorted((_REPO / "doc" / "user").glob("*.md")):
+    for path in sorted(EXAMPLES.glob("**/fac.py")):
+        yield path.relative_to(REPO).as_posix(), ast.parse(path.read_text(encoding="utf-8"))
+    for path in sorted((REPO / "doc" / "user").glob("*.md")):
         text = path.read_text(encoding="utf-8")
         for match in _SNIPPET.finditer(text):
             if match[1].startswith("# Bad"):
                 continue
             line = text.count("\n", 0, match.start(1)) + 1
-            yield f"{path.relative_to(_REPO).as_posix()}:{line}", ast.parse(match[1])
+            yield f"{path.relative_to(REPO).as_posix()}:{line}", ast.parse(match[1])
 
 
 def _find(is_violation: Callable[[ast.AST], bool]) -> list[str]:

@@ -5,13 +5,40 @@ Free of Facere and git, so `test/test_release.py` covers them directly.
 
 import re
 
-__all__ = ["CHOICES", "calc_next_version", "validate_release"]
+__all__ = [
+    "CHOICES",
+    "calc_next_version",
+    "parse_release_type",
+    "parse_version",
+    "replace_version",
+    "validate_release",
+]
 
-# The options of the release_type input in .github/workflows/release.yml.
 CHOICES = ("Major", "Minor", "Patch")
 
 _VERSION = re.compile(r"(\d+)\.(\d+)\.(\d+)")
+_VERSION_LINE = re.compile(r'^VERSION = "(.+)"$', re.MULTILINE)
 _HOTFIX_PREFIX = "hotfix/"
+
+
+def parse_version(text: str) -> str:
+    """Return the version the version file's text holds, raising ValueError if it holds none."""
+    match = _VERSION_LINE.search(text)
+    if match is None:
+        raise ValueError(f"no line matching {_VERSION_LINE.pattern} in:\n{text}")
+    return str(match[1])
+
+
+def replace_version(text: str, version: str) -> str:
+    """Return the version file's text with its version changed to `version`."""
+    return _VERSION_LINE.sub(f'VERSION = "{version}"', text)
+
+
+def parse_release_type(args: tuple[str, ...]) -> str:
+    """Return the one argument given after `--`, raising ValueError on any other count."""
+    if len(args) != 1:
+        raise ValueError(f"expected one of {', '.join(CHOICES)} after --, not {list(args)}")
+    return args[0]
 
 
 def calc_next_version(current: str, choice: str) -> str:

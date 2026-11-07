@@ -1,7 +1,5 @@
 """The http-api example, publishing to the fake CMS in its `tools/`, served from this process on a free port."""
 
-import importlib.util
-import shutil
 import threading
 import urllib.request
 from collections.abc import Iterator
@@ -10,9 +8,7 @@ from typing import Protocol, cast
 
 import pytest
 
-from ..helpers import edit, run_fac
-
-EXAMPLE = Path(__file__).parents[2] / "doc" / "examples" / "http-api"
+from ..helpers import EXAMPLES, copy_example, edit, load_module, run_fac
 
 pytestmark = pytest.mark.skip(reason="planned: stores are in no release yet")
 
@@ -30,10 +26,7 @@ class _Cms(Protocol):
 @pytest.fixture
 def cms() -> Iterator[_Cms]:
     """Yield a running `FakeCms`, whose `requests` the test clears before each run it inspects."""
-    spec = importlib.util.spec_from_file_location("fake_cms", EXAMPLE / "tools" / "fake_cms.py")
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    module = load_module(EXAMPLES / "http-api" / "tools" / "fake_cms.py")
     with module.FakeCms(port=0) as server:
         thread = threading.Thread(target=server.serve_forever)
         thread.start()
@@ -44,8 +37,7 @@ def cms() -> Iterator[_Cms]:
 
 @pytest.fixture
 def example(tmp_path: Path, cms: _Cms) -> Path:
-    root = tmp_path / "http-api"
-    shutil.copytree(EXAMPLE, root, ignore=shutil.ignore_patterns("build", "__pycache__"))
+    root = copy_example("http-api", tmp_path)
     edit(root / "fac.py", '"http://127.0.0.1:8000/pages"', f'"{cms.url}"')
     return root
 

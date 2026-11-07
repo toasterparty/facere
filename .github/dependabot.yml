@@ -8,7 +8,11 @@ updates:
       directories: ["/", "/.github/actions/*"]
       patterns: ["*"]
       multi-ecosystem-group: weekly
+      cooldown:
+          default-days: 7
     - package-ecosystem: uv
       directory: /
       patterns: ["*"]
       multi-ecosystem-group: weekly
+      cooldown:
+          default-days: 7

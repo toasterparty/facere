@@ -1,6 +1,6 @@
 # Releasing
 
-Run the `Release` workflow from `main` and pick a release type. It runs CI, builds the release, pushes the version commit and its tag in one atomic push, then publishes to PyPI through [trusted publishing](https://docs.pypi.org/trusted-publishers/). To try the build step locally, run `fac build_release -- Minor`: it builds in a scratch clone and writes only under `build/`.
+Run the `Release` workflow from `main` and pick a release type. It runs CI, builds the release, pushes the version commit and its tag in one atomic push, then publishes to PyPI through [trusted publishing](https://docs.pypi.org/trusted-publishers/). To try the build step locally, run `fac build_release -- Minor`: it builds in a scratch clone and writes only under `build/`. Every CI run rehearses that step, so a broken one fails before release day.
 
 | Failure | Remote state | Recovery |
 | ------- | ------------ | -------- |

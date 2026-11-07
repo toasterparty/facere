@@ -21,6 +21,6 @@ A `fac.py` needs only `import`, module constants, functions, the two decorators,
 | `posixpath` or `os.path` splitting to get a file's stem | `PurePosixPath(path).stem` |
 | `functools`, closures, `lambda`, `map`, or regex lookarounds | A loop or a helper function, or a module under the root that the `fac.py` imports |
 
-`test/examples/test_style.py` enforces the rows a syntax tree can show.
+`test/doc/test_style.py` enforces the rows a syntax tree can show.
 
 Where an example needs something beyond this list, the gap is a candidate for Facere to fill, as `fac.write_text` was and `fac.write_archive` will be: raise it rather than teach the workaround.

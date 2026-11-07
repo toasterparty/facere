@@ -21,25 +21,47 @@ jobs:
                 os: [ubuntu-latest, windows-latest]
                 python: ["3.11", "3.15"]
         runs-on: ${{ matrix.os }}
+        timeout-minutes: 20
         steps:
             - uses: actions/checkout@v7
+              with:
+                  persist-credentials: false
             - uses: ./.github/actions/setup-fac
               with:
                   python-version: ${{ matrix.python }}
             - run: fac ci
 
+    release-rehearsal:
+        runs-on: ubuntu-latest
+        timeout-minutes: 20
+        steps:
+            - uses: actions/checkout@v7
+              with:
+                  fetch-depth: 0
+                  persist-credentials: false
+            - uses: ./.github/actions/setup-fac
+            # build_release refuses other branches. Nothing leaves this runner.
+            - run: git switch --force-create main
+            - run: fac build_release -- Patch
+            - run: fac test_sdist
+
     # Outside ci-pass and releases, so a broken release can't block the release that fixes it.
     latest:
         if: github.event_name != 'workflow_dispatch'
         runs-on: ubuntu-latest
+        timeout-minutes: 20
         steps:
             - uses: actions/checkout@v7
+              with:
+                  persist-credentials: false
             - uses: astral-sh/setup-uv@v10.3.3
             - run: uvx facere ci
 
     ci-pass:
         if: always()
-        needs: test
+        needs: [test, release-rehearsal]
         runs-on: ubuntu-latest
+        timeout-minutes: 5
         steps:
             - run: test "${{ needs.test.result }}" = success
+            - run: test "${{ needs.release-rehearsal.result }}" = success

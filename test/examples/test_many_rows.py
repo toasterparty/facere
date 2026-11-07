@@ -1,26 +1,22 @@
 """The many-rows example, which needs only Python."""
 
-import shutil
 from pathlib import Path
 
 import pytest
 
-from ..helpers import edit, run_fac
-
-EXAMPLE = Path(__file__).parents[2] / "doc" / "examples" / "many-rows"
+from ..helpers import copy_example, edit, run_fac
 
 pytestmark = pytest.mark.skip(reason="planned: stores are in no release yet")
 
 
-def _copy_example(tmp_path: Path) -> Path:
-    root = tmp_path / "many-rows"
-    shutil.copytree(EXAMPLE, root, ignore=shutil.ignore_patterns("build", "table.txt"))
-    edit(root / "fac.py", "ROW_COUNT = 1500", "ROW_COUNT = 100")
-    return root
+@pytest.fixture
+def root(tmp_path: Path) -> Path:
+    example = copy_example("many-rows", tmp_path)
+    edit(example / "fac.py", "ROW_COUNT = 1500", "ROW_COUNT = 100")
+    return example
 
 
-def test_many_rows_rewrites_exactly_the_rows_the_table_changed(tmp_path: Path) -> None:
-    root = _copy_example(tmp_path)
+def test_many_rows_rewrites_exactly_the_rows_the_table_changed(root: Path) -> None:
     rows = root / "build" / "rows.txt"
 
     first = run_fac(root)
@@ -49,10 +45,8 @@ def test_many_rows_rewrites_exactly_the_rows_the_table_changed(tmp_path: Path) -
 
 
 def test_many_rows_reruns_every_row_when_the_store_changes_and_none_when_a_task_does(
-    tmp_path: Path,
+    root: Path,
 ) -> None:
-    root = _copy_example(tmp_path)
-
     first = run_fac(root)
     edit(root / "fac.py", 'prog="fac invalidate --"', 'prog="invalidate"')
     task_edited = run_fac(root)

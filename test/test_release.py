@@ -1,12 +1,10 @@
-import importlib.util
-from pathlib import Path
-
 import pytest
 
-_SPEC = importlib.util.spec_from_file_location("release", Path(__file__).parents[1] / "release.py")
-assert _SPEC is not None and _SPEC.loader is not None
-release = importlib.util.module_from_spec(_SPEC)
-_SPEC.loader.exec_module(release)
+from facere._version import VERSION
+
+from .helpers import REPO, load_module
+
+release = load_module(REPO / "release.py")
 
 
 def test_patch_raises_the_last_part() -> None:
@@ -54,3 +52,30 @@ def test_hotfix_branch_releases_only_a_patch() -> None:
 def test_one_point_zero_is_blocked() -> None:
     with pytest.raises(ValueError, match="is blocked"):
         release.validate_release("1.0.0", "Major", "main")
+
+
+def test_version_is_read_from_the_package_version_file() -> None:
+    text = (REPO / "src" / "facere" / "_version.py").read_text(encoding="utf-8")
+
+    assert release.parse_version(text) == VERSION
+
+
+def test_text_without_a_version_line_is_rejected() -> None:
+    with pytest.raises(ValueError, match="no line matching"):
+        release.parse_version('VERSION = 1\nOTHER_VERSION = "1.2.3"\n')
+
+
+def test_replacing_the_version_leaves_other_lines_alone() -> None:
+    text = 'OTHER = "x"\nVERSION = "0.1.0"\nLAST = 2\n'
+
+    assert release.replace_version(text, "0.2.0") == 'OTHER = "x"\nVERSION = "0.2.0"\nLAST = 2\n'
+
+
+def test_release_type_is_the_one_argument_after_the_separator() -> None:
+    assert release.parse_release_type(("Minor",)) == "Minor"
+
+
+@pytest.mark.parametrize("args", [(), ("Minor", "Patch")])
+def test_release_type_arguments_other_than_one_are_rejected(args: tuple[str, ...]) -> None:
+    with pytest.raises(ValueError, match="expected one of Major, Minor, Patch after --"):
+        release.parse_release_type(args)

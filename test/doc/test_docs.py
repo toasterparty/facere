@@ -1,12 +1,12 @@
 """The user docs read in filename order, each page linking to its neighbors, and no relative link dangles."""
 
 import re
-from pathlib import Path
 
 import pytest
 
-_REPO = Path(__file__).parents[2]
-_USER = _REPO / "doc" / "user"
+from ..helpers import REPO
+
+_USER = REPO / "doc" / "user"
 _LINK = re.compile(r"\]\((\.{1,2}/[^)#]*)(?:#([^)]*))?\)")
 _NAV = re.compile(r"\[[^\]]*\]\(\./([^)]+)\)")
 
@@ -35,14 +35,14 @@ def test_every_page_is_numbered_but_the_readme() -> None:
 @pytest.mark.parametrize("tree", ["doc/user", "doc/maintainer", "doc/examples"])
 def test_relative_markdown_links_reach_a_file_and_its_heading(tree: str) -> None:
     broken = []
-    for page in (_REPO / tree).glob("**/*.md"):
+    for page in (REPO / tree).glob("**/*.md"):
         for target, anchor in _LINK.findall(page.read_text(encoding="utf-8")):
             path = page.parent / target
             if not path.exists():
-                broken.append(f"{page.relative_to(_REPO)}: {target}")
+                broken.append(f"{page.relative_to(REPO)}: {target}")
             elif anchor and path.suffix == ".md":
                 headings = re.findall(r"^#+ (.*)$", path.read_text(encoding="utf-8"), re.M)
                 if anchor not in {_heading_anchor(heading) for heading in headings}:
-                    broken.append(f"{page.relative_to(_REPO)}: {target}#{anchor}")
+                    broken.append(f"{page.relative_to(REPO)}: {target}#{anchor}")
 
     assert broken == []

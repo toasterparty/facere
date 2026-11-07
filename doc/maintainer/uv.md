@@ -13,7 +13,7 @@ Where any other virtual environment lives depends on who uses it:
 
 ## The lockfile
 
-`uv.lock` pins the exact resolved versions of every dependency and is committed to the repo. The tasks run `uv run --locked`, which fails if the lockfile is out of date with `pyproject.toml`, so local, CI, and release builds stay identical. A hand edit to `pyproject.toml` leaves the lockfile stale, so change dependencies through uv.
+`uv.lock` pins the exact resolved versions of every dependency and is committed to the repo. The tasks run `uv run --locked`, which fails if the lockfile is out of date with `pyproject.toml`, so local, CI, and release environments stay identical. It leaves out the build backend, which `uv build` installs for itself, so `[build-system]` pins that exactly. A hand edit to `pyproject.toml` leaves the lockfile stale, so change dependencies through uv.
 
 Dependencies in `pyproject.toml` stay unpinned, since the lockfile holds the versions. Pass `--raw` to `add`: uv otherwise writes a `>=` bound, and no setting turns that off.
 

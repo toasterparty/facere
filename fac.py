@@ -7,6 +7,7 @@ import glob
 import os
 import re
 import shutil
+import tarfile
 import tempfile
 import tomllib
 from functools import cache
@@ -16,12 +17,10 @@ import facere as fac
 import release
 
 # Read by .github/actions/setup-fac/action.yml, so keep it on one line.
-MINIMUM_FACERE = "0.2.0"
+MINIMUM_FACERE = "0.3.0"
 
 VERSION_FILE = "src/facere/_version.py"
-VERSION_LINE = re.compile(r'^VERSION = "(.+)"$', re.MULTILINE)
 DIST = "build/dist"
-CAPTURE_FILE = "build/captured.txt"
 
 RELEASE_DIR = "build/release"
 RELEASE_DIST = f"{RELEASE_DIR}/dist"
@@ -46,7 +45,7 @@ def _validate_released_facere() -> None:
     )
 
 
-def _list_package_files() -> list[str]:
+def _find_package_files() -> list[str]:
     """Return what the sdist holds, as pyproject.toml's only-include lists it, less caches and build outputs."""
     with open("pyproject.toml", "rb") as file:
         included = tomllib.load(file)["tool"]["hatch"]["build"]["targets"]["sdist"]["only-include"]
@@ -59,6 +58,11 @@ def _list_package_files() -> list[str]:
     return sorted(paths)
 
 
+def _remove_dir(path: str) -> None:
+    if os.path.exists(path):
+        shutil.rmtree(path)
+
+
 def _uv(*args: str, env: dict[str, str] | None = None) -> str:
     return fac.run("uv", *args, env=env)
 
@@ -67,16 +71,10 @@ def _uv_run(*args: str, env: dict[str, str] | None = None) -> str:
     return _uv("run", "--locked", *args, env=env)
 
 
-# fac.run(quiet=True) captures in a task only in a release newer than MINIMUM_FACERE.
-def _capture(*args: str) -> str:
-    os.makedirs(os.path.dirname(CAPTURE_FILE), exist_ok=True)
-    fac.run(*args, stdout=CAPTURE_FILE)
-    return fac.read_text(CAPTURE_FILE)
-
-
 @cache
 def _fetch_latest_release(repo: str) -> tuple[int, ...]:
-    tags = _capture("git", "ls-remote", "--tags", "--refs", f"https://github.com/{repo}")
+    url = f"https://github.com/{repo}"
+    tags = fac.run("git", "ls-remote", "--tags", "--refs", url, quiet=True)
     return max(tuple(map(int, match.groups())) for match in RELEASE_TAG.finditer(tags))
 
 
@@ -91,27 +89,13 @@ def _bump_action_pins(text: str) -> str:
     return ACTION_PIN.sub(bump, text)
 
 
-def _parse_version(text: str) -> str:
-    match = VERSION_LINE.search(text)
-    if match is None:
-        raise ValueError(f"no line matching {VERSION_LINE.pattern} in:\n{text}")
-    return str(match[1])
+def _fetch_current_branch() -> str:
+    return fac.run("git", "branch", "--show-current", quiet=True).strip()
 
 
-def _write_version(version_file: str, version: str) -> None:
-    text = fac.read_text(version_file)
-    fac.write_text(version_file, VERSION_LINE.sub(f'VERSION = "{version}"', text))
-
-
-def _parse_release_type(args: tuple[str, ...]) -> str:
-    if len(args) != 1:
-        raise ValueError(f"expected one of {', '.join(release.CHOICES)} after --, not {list(args)}")
-    return args[0]
-
-
-def _validate_wheel(folder: str, version: str) -> None:
-    (wheel,) = glob.glob(f"{folder}/*.whl")
-    reported = _capture("uvx", "--isolated", "--from", wheel, "fac", "--version").strip()
+def _validate_wheel(directory: str, version: str) -> None:
+    (wheel,) = glob.glob(f"{directory}/*.whl")
+    reported = fac.run("uvx", "--isolated", "--from", wheel, "fac", "--version", quiet=True).strip()
     if reported != version:
         raise ValueError(f"{wheel} reports version {reported}, not {version}")
 
@@ -129,7 +113,9 @@ def _build_release_in(scratch: str, version: str, version_file: str) -> None:
         f"user.email={RELEASE_EMAIL}",
     ]
     fac.run("git", "clone", "--quiet", ".", scratch)
-    _write_version(os.path.join(scratch, version_file), version)
+    scratch_version_file = os.path.join(scratch, version_file)
+    bumped = release.replace_version(fac.read_text(scratch_version_file), version)
+    fac.write_text(scratch_version_file, bumped)
     fac.run(git, "commit", "--quiet", "--all", "--message", message)
     fac.run(git, "tag", "--annotate", "--message", message, tag)
     fac.run(git, "bundle", "create", "--quiet", os.path.abspath(RELEASE_BUNDLE), f"refs/tags/{tag}")
@@ -140,7 +126,7 @@ def _build_release_in(scratch: str, version: str, version_file: str) -> None:
 
 fac.minimum_version(MINIMUM_FACERE)
 _validate_released_facere()
-PACKAGE_FILES = _list_package_files()
+PACKAGE_FILES = _find_package_files()
 
 
 @fac.task(default=True)
@@ -163,36 +149,31 @@ def test() -> None:
 
 
 @fac.task
-def ci(folder: fac.Input = DIST, version_file: fac.Input = VERSION_FILE) -> None:
+def ci(directory: fac.Input = DIST, version_file: fac.Input = VERSION_FILE) -> None:
     """Run what a pull request must pass: `test`, then a check of the wheel `dist` builds."""
     test()
-    _validate_wheel(folder, _parse_version(fac.read_text(version_file)))
+    _validate_wheel(directory, release.parse_version(fac.read_text(version_file)))
+
+
+@fac.task
+def test_sdist(directory: fac.Input = DIST) -> None:
+    """Run the tests from the unpacked sdist `dist` builds, which holds what a downstream packager gets."""
+    (sdist,) = glob.glob(f"{directory}/*.tar.gz")
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as scratch:
+        with tarfile.open(sdist) as archive:
+            archive.extractall(scratch, filter="data")
+        (unpacked,) = glob.glob(f"{scratch}/*")
+        _uv("run", "--directory", unpacked, "pytest")
 
 
 @fac.task
 def coverage() -> None:
-    cov_dir = os.path.abspath("build/cov")
-    rcfile = os.path.join(cov_dir, "coveragerc")
-    if os.path.exists(cov_dir):
-        shutil.rmtree(cov_dir)
-    os.makedirs(cov_dir)
-    with open(rcfile, "w", encoding="utf-8", newline="\n") as file:
-        file.write(
-            f"[run]\ndata_file = {cov_dir}/.coverage\nsource = facere\nparallel = true\npatch = subprocess\n"
-        )
-    env = {"COVERAGE_RCFILE": rcfile}
-    # The test imports the repo's own fac.py once coverage puts the root on sys.path.
-    _uv_run(
-        "coverage",
-        "run",
-        "-m",
-        "pytest",
-        "-q",
-        "-n0",
-        "--deselect",
-        "test/api/test_api.py::test_importing_fac_py_fails_saying_it_ran_twice",
-        env=env,
-    )
+    data_dir = os.path.abspath("build/cov")
+    _remove_dir(data_dir)
+    # Absolute, since a test's commands run elsewhere. Safe path keeps the root, whose fac.py
+    # would shadow a fixture's `import fac`, off the sys.path of `coverage run -m`.
+    env = {"COVERAGE_FILE": os.path.join(data_dir, ".coverage"), "PYTHONSAFEPATH": "1"}
+    _uv_run("coverage", "run", "-m", "pytest", "-q", "-n0", env=env)
     _uv_run("coverage", "combine", "-q", env=env)
     _uv_run("coverage", "report", "-m", env=env)
 
@@ -215,21 +196,19 @@ def upgrade() -> None:
 
 
 @fac.rule
-def dist(files: list[fac.Input] = PACKAGE_FILES, folder: fac.Output = DIST) -> None:
-    if os.path.exists(folder):
-        shutil.rmtree(folder)
-    _uv("build", "--out-dir", folder)
+def dist(files: list[fac.Input] = PACKAGE_FILES, directory: fac.Output = DIST) -> None:
+    _remove_dir(directory)
+    _uv("build", "--out-dir", directory)
 
 
 @fac.task
 def build_release(args: fac.Args, version_file: str = VERSION_FILE) -> None:
     """Build a release of the type named after -- in a scratch clone, writing only under `build/`."""
-    choice = _parse_release_type(args)
-    current = _parse_version(_capture("git", "show", f"HEAD:{version_file}"))
+    choice = release.parse_release_type(args)
+    current = release.parse_version(fac.run("git", "show", f"HEAD:{version_file}", quiet=True))
     version = release.calc_next_version(current, choice)
-    release.validate_release(version, choice, _capture("git", "branch", "--show-current").strip())
-    if os.path.exists(RELEASE_DIR):
-        shutil.rmtree(RELEASE_DIR)
+    release.validate_release(version, choice, _fetch_current_branch())
+    _remove_dir(RELEASE_DIR)
     os.makedirs(RELEASE_DIR)
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as scratch:
         _build_release_in(scratch, version, version_file)
@@ -239,7 +218,7 @@ def build_release(args: fac.Args, version_file: str = VERSION_FILE) -> None:
 def push_release() -> None:
     """Push what `build_release` built: the branch and tag land together, or a moved branch rejects both."""
     tag = f"v{fac.read_text(RELEASE_VERSION)}"
-    branch = _capture("git", "branch", "--show-current").strip()
+    branch = _fetch_current_branch()
     fac.run("git", "fetch", "--quiet", RELEASE_BUNDLE, f"refs/tags/{tag}:refs/tags/{tag}")
     fac.run(
         "git",
