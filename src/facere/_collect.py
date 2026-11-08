@@ -13,7 +13,7 @@ import sys
 import traceback
 import types
 import typing
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Container, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import PurePath
 from typing import NamedTuple
@@ -48,8 +48,6 @@ _RESERVED_OPTIONS = ("each", "name", "default", "max_jobs", "terminal", "always"
 _FINGERPRINT_FORMAT = b"facere fingerprint 4"
 _UNREADABLE_SOURCE = (OSError, LookupError, SyntaxError, ValueError)
 _HASHABLE_TYPES = "Facere hashes only None, a bool, int, float, str, bytes, module, function, or class, or a tuple, list, dict, or set of them"
-
-
 _PATH_ANNOTATIONS = {
     Kind.INPUT: "fac.Input",
     Kind.ORDER_ONLY: "fac.OrderOnly",
@@ -155,13 +153,13 @@ def collect(context: Context) -> Project:
     for definition in definitions:
         by_name.setdefault(definition.name, []).append(definition)
     _validate_names(by_name, errors)
-    code_digests = _hash_values(context, definitions, producers, errors)
-    _validate_inputs(definitions, producers, errors)
+    producers_by_key = {calc_path_key(output): rule for output, rule in producers.items()}
+    code_digests = _hash_values(context, definitions, producers_by_key.keys(), errors)
+    _validate_inputs(context, definitions, producers, errors)
     if not errors:
         _validate_acyclic(definitions, producers, errors)
     if errors:
         raise FacereError(*errors)
-    producers_by_key = {calc_path_key(output): rule for output, rule in producers.items()}
     shared_modules = frozenset(calc_path_key(normalize(path, context.root)) for path in imported)
     return Project(definitions, by_name, producers, producers_by_key, code_digests, shared_modules)
 
@@ -586,10 +584,9 @@ def _validate_names(by_name: dict[str, list[Definition]], errors: list[Diagnosti
 def _hash_values(
     context: Context,
     definitions: tuple[Definition, ...],
-    producers: dict[str, Definition],
+    output_keys: Container[str],
     errors: list[Diagnostic],
 ) -> dict[Definition, bytes]:
-    output_keys = {calc_path_key(output) for output in producers}
     trees: dict[str, ast.Module] = {}
     function_digests: dict[Callable[..., object], hashlib._Hash | None] = {}
     digests: dict[Definition, bytes] = {}
@@ -620,7 +617,7 @@ def _hash_values(
 def _hash_function(
     context: Context,
     definition: Definition,
-    output_keys: set[str],
+    output_keys: Container[str],
     trees: dict[str, ast.Module],
     errors: list[Diagnostic],
 ) -> hashlib._Hash | None:
@@ -652,7 +649,7 @@ def _feed_reached_code(
     context: Context,
     digest: hashlib._Hash,
     fn: types.FunctionType,
-    output_keys: set[str],
+    output_keys: Container[str],
     trees: dict[str, ast.Module],
 ) -> list[str]:
     """Feed `digest` the values that `fn` reads, and the syntax tree and values of every function and class of the project's it reaches by name, returning what's wrong with them."""
@@ -743,7 +740,7 @@ def _feed_values(
     digest: hashlib._Hash,
     kind: str,
     values: dict[str, object],
-    output_keys: set[str] | None,
+    output_keys: Container[str] | None,
     is_task: bool,
 ) -> list[str]:
     """Feed `values` to `digest` unless `is_task`, and return what's wrong with them, checking paths unless `output_keys` is None."""
@@ -777,7 +774,7 @@ def _feed_values(
     return problems
 
 
-def _is_path(context: Context, text: str, output_keys: set[str]) -> bool:
+def _is_path(context: Context, text: str, output_keys: Container[str]) -> bool:
     if not text or "\0" in text:
         return False
     if calc_path_key(posixpath.normpath(text)) in output_keys:
@@ -788,12 +785,27 @@ def _is_path(context: Context, text: str, output_keys: set[str]) -> bool:
     return not is_within(normalize(path, context.root), context.out_dir)
 
 
+def _holds_out_dir(context: Context, path: str) -> bool:
+    out_key = calc_path_key(context.out_dir)
+    key = calc_path_key(path)
+    if key == "." and (out_key.startswith("../") or os.path.isabs(out_key)):
+        return False
+    return is_within(out_key, key)
+
+
 def _validate_inputs(
-    definitions: tuple[Definition, ...], producers: dict[str, Definition], errors: list[Diagnostic]
+    context: Context,
+    definitions: tuple[Definition, ...],
+    producers: dict[str, Definition],
+    errors: list[Diagnostic],
 ) -> None:
     output_by_key = {calc_path_key(output): output for output in producers}
     for definition in definitions:
         for path in definition.prerequisites:
+            if not definition.is_task and _holds_out_dir(context, path):
+                message = f"{definition.label} inputs {path}, which holds the output directory {context.out_dir}, so its content changes on every build"
+                errors.append(_diagnose(definition, message))
+                continue
             if path in producers:
                 continue
             output = output_by_key.get(calc_path_key(path))

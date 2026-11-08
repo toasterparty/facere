@@ -29,7 +29,7 @@ class UndeclaredPathError(Exception):
 
 
 def validate_command_args(context: Context, argv: list[str], cwd: str | None) -> None:
-    """Raise UndeclaredPathError for a path in `argv` the running rule doesn't declare: a program with a separator, which resolves against the root, or any other argument or part of one split at `=` or `,`, which resolves against `cwd`."""
+    """Raise UndeclaredPathError for a path in `argv` the running rule doesn't declare: a program holding a separator, against the root, or an argument or its parts split at `=` and `,`, against `cwd`."""
     recipe = context.running
     assert recipe is not None
     if recipe.is_task:
@@ -43,7 +43,7 @@ def validate_command_args(context: Context, argv: list[str], cwd: str | None) ->
 
 
 def validate_program(context: Context, program: str) -> None:
-    """Raise UndeclaredPathError when `program`, resolved to an absolute path, is one the running rule doesn't declare."""
+    """Raise UndeclaredPathError when the resolved, absolute `program` is one the running rule doesn't declare."""
     recipe = context.running
     assert recipe is not None
     if not recipe.is_task:
@@ -62,21 +62,21 @@ def _on_audit(event: str, args: tuple[object, ...]) -> None:
     if event != "open":
         return
     context = find_context()
-    recipe = context.running if context is not None else None
-    if context is None or recipe is None or recipe.is_task:
+    if context is None:
         return
-    if recipe.thread_id != threading.get_ident():
+    recipe = context.running
+    if recipe is None or recipe.is_task or recipe.thread_id != threading.get_ident():
         return
     path, _, flags = args
     if not isinstance(path, str | bytes | os.PathLike) or not isinstance(flags, int):
         return
     absolute = os.path.abspath(os.fsdecode(cast("str | bytes | os.PathLike[str]", path)))
+    key = calc_path_key(normalize(absolute, context.root))
     access = flags & _WRITE_ACCESS
-    is_read = access != os.O_WRONLY
-    if is_read and calc_path_key(normalize(absolute, context.root)) not in recipe.shared_modules:
+    if access != os.O_WRONLY and key not in recipe.shared_modules:
         _validate_used(context, recipe, absolute, "opened")
     if access != os.O_RDONLY:
-        recipe.written.add(calc_path_key(normalize(absolute, context.root)))
+        recipe.written.add(key)
 
 
 def _validate_used(context: Context, recipe: Recipe, path: str, action: str) -> None:

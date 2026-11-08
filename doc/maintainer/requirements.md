@@ -94,6 +94,7 @@ MUST, MUST NOT, SHOULD, SHOULD NOT, and MAY are to be interpreted as in BCP 14 (
 - Losing any of Facere's state, its record of past builds, between invocations MUST cost only rebuilds, never stale output.
 - A rule MAY output any path or virtual output, and the output directory MAY lie anywhere but the root.
 - Facere's state MUST lie in the output directory, so deleting the directory forgets all of it.
+- A rule's input holding the output directory MUST fail collection, since its content changes on every build.
 - Besides the terminal's interrupt, which MUST still stop everything at once, Facere MUST accept a request to stop gracefully: it starts no new recipe, lets running rules finish and records them, and stops a task's commands.
 - A second invocation on the same output directory MUST wait for the first rather than fail or corrupt its state, unless waiting would deadlock, which MUST fail at once. While it waits, Facere MUST name the invocation it waits for, and the user MUST be able to bound the wait, so a caller with a deadline of its own can tell a wait from a hang.
 - A task that keeps running, such as a server restarted on every save, MUST be able to let other invocations proceed while it runs.

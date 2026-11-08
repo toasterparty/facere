@@ -49,7 +49,7 @@ class UndeclaredUse(NamedTuple):
 class Recipe:
     """The recipe executing now, with what the undeclared-path check and fac.add_inputs track of it.
 
-    Every collection of paths is keyed by calc_path_key. `tracked` holds its rule's inputs and outputs, `exempt` the paths its `str` parameters hold, `shared_modules` what a recipe may open but no command may name, since a recipe's reach decides whether a fingerprint holds one, and `output_keys` every output in the project. `reported` maps the key of each path fac.add_inputs kept to that path, `reported_names` holds the file name of every path it was given outside `tracked`, those it dropped included, and `undeclared` the first use the undeclared-path check rejected, which fails the rule however the recipe treats the error.
+    Every path is keyed by calc_path_key. `tracked` holds the rule's inputs and outputs, `exempt` what its `str` parameters hold, and `output_keys` every output in the project. A recipe may open a shared module, but no command may name one, since only the recipe's reach puts one in a fingerprint. `reported_names` holds the file name of every path reported outside `tracked`, dropped ones included. `undeclared`, the first use the check rejected, fails the rule however the recipe treats the error.
     """
 
     is_task: bool

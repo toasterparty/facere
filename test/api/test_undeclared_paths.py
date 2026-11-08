@@ -123,6 +123,21 @@ def test_opening_an_undeclared_file_fails(fac: Fac) -> None:
     assert result.err == _error("4:2", "opened", "tool.cfg") + "\n"
 
 
+@pytest.mark.project("opened")
+def test_opening_an_undeclared_file_to_read_and_write_fails(root: Path, fac: Fac) -> None:
+    edit(root / "fac.py", 'fac.read_text("tool.cfg")', 'open("tool.cfg", "r+").read()')
+
+    result = fac()
+
+    assert result.status == 1
+    assert result.err == _error("4:2", "opened", "tool.cfg") + "\n"
+
+
+@pytest.mark.project("open_in_thread")
+def test_opening_from_a_thread_the_recipe_starts_goes_unchecked(fac: Fac) -> None:
+    assert fac().err == EXECUTED_ONE
+
+
 @pytest.mark.project("swallowed")
 def test_except_exception_cannot_hide_the_failure(fac: Fac) -> None:
     result = fac()

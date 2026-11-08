@@ -173,7 +173,7 @@ def _remove_shadowed(
     context: Context, state_path: str, records: dict[tuple[str, ...], _state.Record]
 ) -> dict[tuple[str, ...], _state.Record]:
     """Forget each record that names a file name a file new since the last invocation has, whether or not this invocation's targets reach its rule, and return the records left."""
-    if not any(record.added_names for record in records.values()):
+    if not _has_added_names(records):
         return records
     listing = _list_files(context.out_dir)
     saved = _state.load_listing(state_path)
@@ -186,6 +186,11 @@ def _remove_shadowed(
     _state.remove(state_path, list(shadowed))
     _state.save_listing(state_path, listing)
     return {key: record for key, record in records.items() if key not in shadowed}
+
+
+def _has_added_names(records: dict[tuple[str, ...], _state.Record]) -> bool:
+    """Say whether any record holds a file name a new file could shadow, which alone makes the tree's listing worth keeping."""
+    return any(record.added_names for record in records.values())
 
 
 def _to_bytes(data: bytes | str | None) -> bytes:
@@ -266,7 +271,7 @@ class _Builder:
         """Save the tree as this invocation leaves it, so a file its recipes wrote never counts as new, even when one failed. Losing the listing costs only rebuilds."""
         if not self.has_executed:
             return
-        if any(record.added_names for record in self.records.values()):
+        if _has_added_names(self.records):
             with contextlib.suppress(OSError):
                 _state.save_listing(self.state_path, _list_files(self.context.out_dir))
 

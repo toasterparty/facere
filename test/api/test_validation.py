@@ -120,6 +120,27 @@ def test_output_holding_the_state_fails(fac: Fac) -> None:
     ]
 
 
+@pytest.mark.project("out_dir_input")
+def test_rule_input_holding_the_output_directory_fails(fac: Fac) -> None:
+    result = fac("tree")
+
+    assert result.status == 2
+    assert result.err.splitlines() == [
+        "fac.py:4:2: error: rule 'tree' (build/tree.tar) inputs ., which holds the output directory build, so its content changes on every build",
+        "fac.py:9:2: error: rule 'build_dir' (build/build.tar) inputs build, which holds the output directory build, so its content changes on every build",
+    ]
+
+
+@pytest.mark.project("out_dir_input")
+def test_root_input_passes_once_the_output_directory_lies_outside_the_root(fac: Fac) -> None:
+    result = fac("--out", "../elsewhere", "tree")
+
+    assert result.status == 2
+    assert result.err.splitlines() == [
+        "fac.py:9:2: error: rule 'build_dir' (../elsewhere/build.tar) inputs ../elsewhere, which holds the output directory ../elsewhere, so its content changes on every build",
+    ]
+
+
 @pytest.mark.project("shared_function_name")
 def test_two_functions_sharing_a_name_fail(fac: Fac) -> None:
     result = fac("docs")
