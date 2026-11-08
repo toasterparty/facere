@@ -8,7 +8,7 @@ import time
 import types
 from collections.abc import Generator
 
-from facere import _build, _collect
+from facere import _build, _bytecode, _collect
 from facere._context import Context, activate, is_under_root, normalize
 from facere._diagnostics import Diagnostic, FacereError, Note, format_path, print_error
 from facere._status import pin_status
@@ -125,6 +125,7 @@ def _enter_root(root: str, pycache_prefix: str) -> Generator[None]:
         os.chdir(root)
         sys.path.append(root)
         sys.pycache_prefix = pycache_prefix
+        _bytecode.ensure_checked(root)
         yield
     finally:
         os.chdir(start_dir)

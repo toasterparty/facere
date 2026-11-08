@@ -14,4 +14,5 @@ Markdown pages rendered to HTML and gathered into one directory, ready to serve.
 | Add `pages/news.md`, then `fac` | news's page, `index`, `site` | The glob lists a new page |
 | Delete `build/site`, then `fac` | `site` | An output no longer matches its recorded hash |
 | `fac serve -- 8000` | whatever is stale, then the server | A task executes live, after the rules it needs, until you stop it |
+| Raise `fac.minimum_version` past the running Facere, then `fac` | none, failing, naming how to upgrade | A project declares the oldest Facere it needs |
 | `fac clean`, then `fac` | `clean`, then 4 rules | Deleting `build/` forgets every record |

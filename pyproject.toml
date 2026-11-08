@@ -50,7 +50,6 @@ cache-dir = "build/.ruff_cache"
 # Planned examples use features no release supports yet. Remove each once its README drops the planned status.
 extend-exclude = [
     "doc/examples/c-server-client",
-    "doc/examples/codegen",
     "doc/examples/http-api/fac.py",
     "doc/examples/many-rows",
     "doc/examples/python-app",
@@ -83,7 +82,6 @@ ignore = ["E501"]
 include = ["fac.py", "release.py", "src", "test", "doc/examples"]
 exclude = [
     "doc/examples/c-server-client",
-    "doc/examples/codegen",
     "doc/examples/http-api/fac.py",
     "doc/examples/many-rows",
     "doc/examples/python-app",

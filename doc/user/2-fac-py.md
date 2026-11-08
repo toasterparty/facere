@@ -7,6 +7,7 @@ A rule is a function decorated with `@fac.rule`, and its signature declares what
 | Annotation | Holds |
 | --- | --- |
 | `fac.Input`, `list[fac.Input]` | Inputs, the files or directories the rule reads |
+| `fac.OrderOnly`, `list[fac.OrderOnly]` | *(0.4)* Files or directories a rule's recipe may read, such as a generated header only some compiles include. They are built first, and a change to one makes the rule stale only once the recipe reports reading it through `fac.add_inputs` |
 | `fac.Output`, `list[fac.Output]` | Outputs, the files or directories the rule writes. Every rule has at least one output, a file or a virtual output |
 | `fac.VirtualInput`, `list[fac.VirtualInput]` | *(planned)* Virtual outputs of a [store](./5-virtual-outputs.md) the rule reads |
 | `fac.VirtualOutput`, `list[fac.VirtualOutput]` | *(planned)* Virtual outputs of a store the rule writes |
@@ -79,6 +80,7 @@ Facere compares content, never timestamps. A rule executes when any of these cha
 
 - the content of an input
 - the files in a directory input, when one appears or disappears
+- *(0.4)* the content of a file its recipe last reported through `fac.add_inputs`, or a new file under the root with the name of one it reported, since a tool searching a path may find that first
 - its recipe's code, or that of a function or class in your project the recipe reaches by name, such as a helper in `fac.py` or a shared module *(0.2)*
 - a value or module constant the recipe reads, directly or through such a function
 - a variable `fac.env` sets *(0.2)*

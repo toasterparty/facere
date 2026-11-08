@@ -9,14 +9,21 @@ import sqlite3
 from collections.abc import Generator
 from typing import NamedTuple
 
-_SCHEMA_VERSION = 1
-_SCHEMA = "CREATE TABLE IF NOT EXISTS records (outputs TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, output_hashes TEXT NOT NULL) WITHOUT ROWID"
+_SCHEMA_VERSION = 2
+_SCHEMA = """
+CREATE TABLE IF NOT EXISTS records (outputs TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, output_hashes TEXT NOT NULL, added_inputs TEXT NOT NULL, added_names TEXT NOT NULL) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS listing (id INTEGER PRIMARY KEY CHECK (id = 0), paths TEXT NOT NULL);
+"""
 _SEPARATOR = "\0"
 
 
 class Record(NamedTuple):
+    """A rule's last success. `added_inputs` pairs each input its recipe reported with that input's hash, and `added_names` holds the path key of the file name of each one reported, those outside the root included."""
+
     fingerprint: str
     output_hashes: tuple[str, ...]
+    added_inputs: tuple[tuple[str, str], ...]
+    added_names: tuple[str, ...]
 
 
 def calc_key(outputs: tuple[str, ...]) -> tuple[str, ...]:
@@ -31,21 +38,27 @@ def load(path: str) -> dict[tuple[str, ...], Record]:
             if connection.execute("PRAGMA user_version").fetchone()[0] != _SCHEMA_VERSION:
                 return {}
             rows = connection.execute(
-                "SELECT outputs, fingerprint, output_hashes FROM records"
+                "SELECT outputs, fingerprint, output_hashes, added_inputs, added_names FROM records"
             ).fetchall()
     except sqlite3.DatabaseError:
         return {}
     return {
-        tuple(outputs.split(_SEPARATOR)): Record(fingerprint, tuple(hashes.split(_SEPARATOR)))
-        for outputs, fingerprint, hashes in rows
+        _split(outputs): Record(fingerprint, _split(hashes), _pair(_split(added)), _split(names))
+        for outputs, fingerprint, hashes, added, names in rows
     }
 
 
 def save(path: str, key: tuple[str, ...], record: Record) -> None:
     with _open(path) as connection:
         connection.execute(
-            "INSERT OR REPLACE INTO records VALUES (?, ?, ?)",
-            (_SEPARATOR.join(key), record.fingerprint, _SEPARATOR.join(record.output_hashes)),
+            "INSERT OR REPLACE INTO records VALUES (?, ?, ?, ?, ?)",
+            (
+                _SEPARATOR.join(key),
+                record.fingerprint,
+                _SEPARATOR.join(record.output_hashes),
+                _SEPARATOR.join(item for pair in record.added_inputs for item in pair),
+                _SEPARATOR.join(record.added_names),
+            ),
         )
 
 
@@ -56,6 +69,36 @@ def remove(path: str, keys: list[tuple[str, ...]]) -> None:
         connection.executemany(
             "DELETE FROM records WHERE outputs = ?", [(_SEPARATOR.join(key),) for key in keys]
         )
+
+
+def load_listing(path: str) -> frozenset[str]:
+    """Return the files save_listing last saved, or none where it saved none."""
+    if not os.path.exists(path):
+        return frozenset()
+    try:
+        with contextlib.closing(sqlite3.connect(path)) as connection:
+            row = connection.execute("SELECT paths FROM listing").fetchone()
+    except sqlite3.DatabaseError:
+        return frozenset()
+    return frozenset(_split(row[0])) if row else frozenset()
+
+
+def save_listing(path: str, listing: frozenset[str]) -> None:
+    """Replace the saved listing, unless the state is gone, as after a task deleted the output directory."""
+    if not os.path.exists(path):
+        return
+    with _open(path) as connection:
+        connection.execute(
+            "INSERT OR REPLACE INTO listing VALUES (0, ?)", (_SEPARATOR.join(sorted(listing)),)
+        )
+
+
+def _split(text: str) -> tuple[str, ...]:
+    return tuple(text.split(_SEPARATOR)) if text else ()
+
+
+def _pair(items: tuple[str, ...]) -> tuple[tuple[str, str], ...]:
+    return tuple(zip(items[::2], items[1::2], strict=True))
 
 
 @contextlib.contextmanager
@@ -79,10 +122,10 @@ def _connect(path: str) -> sqlite3.Connection:
     try:
         if connection.execute("PRAGMA user_version").fetchone()[0] != _SCHEMA_VERSION:
             connection.executescript(
-                f"DROP TABLE IF EXISTS records; {_SCHEMA}; PRAGMA user_version = {_SCHEMA_VERSION};"
+                f"DROP TABLE IF EXISTS records; DROP TABLE IF EXISTS listing; {_SCHEMA} PRAGMA user_version = {_SCHEMA_VERSION};"
             )
         else:
-            connection.execute(_SCHEMA)
+            connection.executescript(_SCHEMA)
     except BaseException:
         connection.close()
         raise

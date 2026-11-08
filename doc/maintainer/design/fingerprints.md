@@ -5,7 +5,7 @@ Timestamps cannot decide what is stale. `git checkout` stamps every file it touc
 | Node | Declared by | Up to date when |
 |---|---|---|
 | Source | an input no rule outputs, a [store](./stores.md)'s virtual output included | always, and must exist |
-| Rule | `@fac.rule` | its recorded fingerprint matches and its outputs are intact |
+| Rule | `@fac.rule` | its recorded fingerprint matches, its [added inputs](#added-inputs) are unchanged, and its outputs are intact |
 | Rule that always executes | `@fac.rule(always=True)` | never, though rules downstream re-execute only when its outputs' content changed |
 | Task | `@fac.task` | never: it executes whenever requested |
 
@@ -17,7 +17,6 @@ Timestamps cannot decide what is stale. `git checkout` stamps every file it touc
 - the variables `fac.env` sets for every command
 - the path and content of each input
 - the store, key, and value digest of each virtual input, and the code of the store of each virtual output
-- the path and content of each input the recipe added at its last execution, order-only inputs it reported reading included
 
 Hashing other rules' outputs, virtual outputs included, rather than whether those rules executed, means a rule that re-executes to identical bytes leaves everything downstream untouched.
 
@@ -25,9 +24,9 @@ A value hashes by its type: `None`, `bool`, `int`, `float`, `str`, and `bytes` b
 
 ## Added inputs
 
-`fac.add_inputs(paths)`, called in a recipe after its tool has run, reports the files the recipe read, usually by parsing a depfile. They are recorded after each success and checked on the next invocation, as in ninja. Facere normalizes each path to root-relative with `/` and drops any outside the root, such as system headers, so a depfile's `src/a/../b.h` and MSVC's absolute paths need no cleanup. An order-only input the report lists joins the fingerprint, and one it omits only orders the build, so a generated header declared on every compile of a library re-executes just the compiles that include it. A declared `fac.Input` always counts, so a recipe that reads one in Python never loses it. An added input that no longer exists makes the rule stale rather than failing as a missing source. The core parses no format of its own.
+`fac.add_inputs(paths)`, called in a recipe after its tool has run, reports the files the recipe read, usually by parsing a depfile. They are recorded after each success and checked on the next invocation, as in ninja. Facere normalizes each path to root-relative with `/` and drops any outside the root and the output directory that no rule outputs, such as system headers, so a depfile's `src/a/../b.h` and MSVC's absolute paths need no cleanup. An order-only input the report lists joins the rule's record, and one it omits only orders the build, so a generated header declared on every compile of a library re-executes just the compiles that include it. A declared `fac.Input` always counts, so a recipe that reads one in Python never loses it. An added input that no longer exists makes the rule stale rather than failing as a missing source, while one missing when the recipe reports it fails the rule, since a rule that recorded it would never settle. Only a rule's recipe may report, since a task records nothing. The core parses no format of its own.
 
-Facere also keeps the file name of every added input, those outside the root included, and a new file under the root with one of those names makes the rule stale, since a tool searching a path may find it first, as a new root `stdlib.h` would shadow the header a compile found. New files show up as the difference between the tree's listing and the previous invocation's, so an invocation that finds none pays nothing, and a false match costs one re-execute.
+Facere also keeps the file name of every added input, those outside the root included, and a new file under the root with one of those names makes the rule stale, since a tool searching a path may find it first, as a new root `stdlib.h` would shadow the header a compile found. New files show up as the difference between the tree's listing and the saved one. An invocation saves the listing when it finds a difference and again as it ends, failed or not, if it executed anything, so a file a recipe wrote under the root never counts as new. An invocation that finds no difference and executes nothing pays one walk of the tree, and a false match costs one re-execute. A match forgets the rule's record at once, so it stays stale though this invocation's targets do not reach it. A project whose recipes report nothing never walks the tree.
 
 When an added input is output by a rule none of whose outputs the reporting rule inputs, the invocation fails naming both: the first may have raced on it, and without the input the next one might too. A file inside a directory output counts as that rule's output.
 
@@ -39,7 +38,7 @@ Each hash is cached against the file's size, mtime, ctime, and inode, as git's i
 
 Declared outputs are what let Facere catch two rules writing one file and notice a recipe that succeeded without producing its file. Outputs are hashed after each success and re-verified on the next invocation, so an output edited, truncated, or deleted by hand gets rebuilt. What a rule declares is what Facere tracks: a rule unpacking a vendor toolchain can declare only its driver, and let the recipe's own check, such as an assertion on the driver's `--version` output, vouch for the rest.
 
-A rule's fingerprint is taken before its recipe starts, and that fingerprint, not one taken afterward, is what a success records. An input that changed during the recipe then mismatches on the next invocation and rebuilds the rule, and one that did not change costs nothing. Inputs a recipe adds through `fac.add_inputs` have no earlier hash, so they join the record as hashed after the recipe.
+A rule's fingerprint is taken before its recipe starts, and that fingerprint, not one taken afterward, is what a success records. An input that changed during the recipe then mismatches on the next invocation and rebuilds the rule, and one that did not change costs nothing. An added input in the rule's record keeps the hash taken as the rule was checked, and one not in the record has no earlier hash, so it joins the record as hashed after the recipe.
 
 ## Undeclared paths
 
@@ -47,7 +46,15 @@ A recipe using an undeclared file under the root fails, naming the parameter to 
 
 `fac.run` checks every argument, the program included, and each part of a flag split at `=` and `,`, as in `--output-file=build/x.c` and `-Wl,-Map=build/fw.map`, against the files under the root outside the output directory and every path a rule outputs, wherever it lies, a file inside a directory output included. A Python audit hook, as PEP 578 defines, sees each file the recipe's own thread opens for reading and checks it the same way. Facere installs the hook once per process, on the first invocation, since PEP 578 hooks cannot be removed, and checks an event only when raised on the thread of a recipe the active invocation is executing, so repeated `fac.main()` calls, a test suite's included, pay for one hook.
 
-Exempt are paths a parameter annotated `str` holds, shared modules, which Facere hashes, files outside the root that no rule outputs, scratch files in the output directory that no rule outputs, such as a depfile, and files the recipe itself wrote earlier in its execution, such as an archive's extracted tree it verifies. Writes stay with the damage checks below, so a rule declaring only part of what it unpacks still executes. A task records nothing, so its commands and opens go unchecked, and a cleanup task may name any output without building it first.
+Exempt are:
+
+- paths a parameter annotated `str` holds
+- shared modules a recipe opens, as printing a traceback does. A command given one fails, since its code joins a fingerprint only where the recipe reaches it by name
+- files that no rule outputs, outside the root, in the output directory, such as a depfile, or in a hidden directory, where `sys.executable` lies in a project's `.venv`
+- files the recipe reported through `fac.add_inputs` before using them, which covers a recipe that discovers what to read in Python
+- files the recipe itself wrote from Python earlier in its execution, such as an archive's extracted tree it verifies
+
+Writes stay with the damage checks below, so a rule declaring only part of what it unpacks still executes. A task records nothing, so its commands and opens go unchecked, and a cleanup task may name any output without building it first.
 
 ## Undeclared writes
 
@@ -65,7 +72,8 @@ The user docs list these in [hidden inputs](../../user/7-best-practices.md#hidde
 - **Programs** stay out of the fingerprint unless the project declares them, as an input or as a version in a value. Facere does not hash what a command launches on its own: that would see only the launcher, not `as` and `ld` behind `gcc` or zig behind `uvx`, and would rebuild everything when the launcher alone is upgraded.
 - **Windows has no change time** in `os.stat`, so the hash cache misses a same-size file replaced with its old mtime, the `cp -p` case ctime catches on Linux.
 - **Paths joined to a flag** without `=` or `,`, such as `-Ibuild/gen`, escape the undeclared-path check, as do files opened from threads a recipe starts itself.
-- **Shadowing from hidden directories.** A new file in a hidden directory is never listed, so it can shadow a file a rule read without making the rule stale.
+- **Files a command wrote** under the root, outside the output directory, are not known as the recipe's own, so using one later in that recipe fails unless the recipe reports it first.
+- **Shadowing the listing misses.** A new file in a hidden directory or the output directory is never listed, and one that appears while an invocation executes counts as that invocation's own, so either can shadow a file a rule read without making the rule stale.
 - **Incomplete added inputs.** A recipe that omits a rule-built file its tool reached indirectly, such as a header found through an include path, leaves the rule stale when that file changes.
 - **Undeclared inputs**, files a command's program reads without its arguments naming them, such as a config file a tool finds on its own, go unnoticed, as in every tool short of tracing tools like tup and the ptrace-based fac, or sandboxed ones like Bazel.
 - **Dependencies known only after a scan**, such as the imports of C++20 modules, have no mechanism like ninja's `dyndep`, and neither does a generator that chooses its own output names, such as protoc emitting a file per service.

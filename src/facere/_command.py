@@ -11,7 +11,8 @@ import sys
 from collections.abc import Mapping
 from typing import IO, TextIO
 
-from facere._context import Running, get_context
+from facere._context import get_context
+from facere._undeclared import validate_command_args, validate_program
 
 _Stream = int | IO[bytes] | None
 
@@ -31,14 +32,17 @@ def run(
     Each of `args` is one string, or a list or tuple of strings that contributes each of its items in order, so `fac.run(CC, CFLAGS, "-c", source)` needs no `*`. The first string is the program, the rest its arguments. The program resolves through `PATH`, or against the root when it contains a separator, and raises FileNotFoundError when it doesn't resolve. The command inherits Facere's environment, with what `fac.env` set over it, then `env` over both, where `None` unsets a variable. `cwd` is relative to the root. `stdin`, `stdout`, and `stderr` name files, relative to the root, to feed the command and fill, and a file both `stdout` and `stderr` name receives both streams. In a rule, the command reads an empty stdin unless `stdin` names a file, and its output is captured. On success it is printed whole unless `quiet` is true, and on failure it travels in the raised error, which Facere prints if it fails the recipe. In a task, the command shares Facere's standard streams, so its stdout is printed rather than returned, unless `quiet` is true, which runs it as in a rule and returns its stdout. `timeout` kills the command after that many seconds and raises subprocess.TimeoutExpired.
     """
     context = get_context("fac.run")
-    if context.running is None:
+    recipe = context.running
+    if recipe is None:
         raise RuntimeError("fac.run runs a command only from the recipe of a rule or task")
     argv = _flatten(args)
+    validate_command_args(context, argv, cwd)
     if context.is_verbose:
         print(shlex.join(argv), file=sys.stderr, flush=True)
     command_env = _build_env({**context.env, **(env or {})})
     program = _resolve_program(argv[0], context.root, command_env)
-    in_rule = context.running is Running.RULE
+    validate_program(context, program)
+    in_rule = not recipe.is_task
     is_captured = in_rule or quiet
     captured = subprocess.PIPE if is_captured else None
     with contextlib.ExitStack() as files:

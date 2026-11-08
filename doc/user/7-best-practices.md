@@ -1,6 +1,6 @@
 # Best practices
 
-Facere checks what it can see: undeclared paths *(planned)*, two rules outputting one path, an output changed after its rule finished *(planned)*, an output edited by hand. These practices cover what it cannot see. What your project builds is your decision, so each states what Facere will do, and you choose the rebuilds you want.
+Facere checks what it can see: undeclared paths *(0.4)*, two rules outputting one path, an output changed after its rule finished *(planned)*, an output edited by hand. These practices cover what it cannot see. What your project builds is your decision, so each states what Facere will do, and you choose the rebuilds you want.
 
 ## Hidden inputs
 
@@ -8,14 +8,14 @@ These stay out of every fingerprint, so a change to one executes nothing until y
 
 - **What a recipe reads while it executes** besides its inputs and values, such as an environment variable through `os.environ`, the time, the user, the host name, or the network.
 - **Variables inherited from your shell**, which every command receives.
-- **Files read without being declared**, such as a header a compile includes or a config file a tool finds on its own. Declare them as inputs, or report what a tool read through `fac.add_inputs` *(planned)*. Facere will fail a recipe that uses an undeclared file under the root *(planned)*. That check cannot see a path glued to its flag, as in `-Ibuild/gen`, or a file opened from a thread the recipe starts.
+- **Files read without being declared**, such as a header a compile includes or a config file a tool finds on its own. Declare them as inputs, or report what a tool read through `fac.add_inputs` *(0.4)*. Facere fails a recipe that uses an undeclared file under the root *(0.4)*, by naming it in a command or opening it in Python, unless the recipe reported it first. That check cannot see a path glued to its flag, as in `-Ibuild/gen`, a file opened from a thread the recipe starts, or a file in a hidden directory that no rule outputs. It also cannot see that a command wrote a file under the root, so keep scratch files in the output directory.
 - **Code outside your project.** The standard library, Facere, and installed packages are hashed by name only, so upgrading Python, Facere, or a package executes nothing.
 - **Code reached other than by name**, through a computed name such as `getattr(module, name)` or `importlib.import_module`, or through a value, such as a dict of handler functions.
 - **Programs.** No program a command launches joins the fingerprint, so upgrading a compiler executes nothing. Declare one as an input, as with `compiler: fac.Input = shutil.which("cc")`, or pin its version in a value. Either way, what it runs indirectly, such as `as` and `ld` behind `gcc`, and the shared libraries it loads, stay out.
 - **Files a rule writes but does not declare**, which Facere neither tracks nor rebuilds when edited by hand.
 - **What a store cannot see** *(planned)*. Facere sees a store's virtual outputs only through its own `read` and `stamp`, so a `read` that skips part of its file, or a `stamp` that misses a change, leaves that part or that change untracked.
 
-Two planned features bring narrower gaps of their own. A new file in a hidden directory can shadow a header that `fac.add_inputs` recorded without making its rule stale, and on Windows, which has no change time, the hash cache misses a same-size file replaced with its old modification time.
+Two features bring narrower gaps of their own. A new file in a hidden directory or the output directory, or one that appears while Facere is executing recipes, can shadow a header that `fac.add_inputs` *(0.4)* recorded without making its rule stale. On Windows, which has no change time, the hash cache *(planned)* will miss a same-size file replaced with its old modification time.
 
 Facere works the same whether or not a recipe reads one of these: a header stamped with `datetime.now()` in its recipe holds the time of the rule's last execution. To make a change execute the rule instead, read the value at module level, where it joins the fingerprint: `STAMP = datetime.now().isoformat()` then executes what reads it on every invocation, and `os.environ.get("FLAVOR")` whenever the variable changes. Pass a per-run value to a task after `--` *(0.2)*.
 
@@ -103,7 +103,7 @@ os.makedirs(obj_dir, exist_ok=True)
 fac.run(CC, "-c", src, "-o", obj)
 ```
 
-Give each path its own argument, or put it after `=`. `fac.run` *(planned)* checks each argument and the parts of a flag split at `=` and `,`, so a path glued to its flag, as in `-Tsrc/link.ld`, escapes the check, and editing an undeclared linker script never relinks the program.
+Give each path its own argument, or put it after `=`. `fac.run` *(0.4)* checks each argument and the parts of a flag split at `=` and `,`, so a path glued to its flag, as in `-Tsrc/link.ld`, escapes the check, and editing an undeclared linker script never relinks the program.
 
 ## Identical outputs
 
@@ -163,7 +163,7 @@ def gcc_version(path: fac.Output = GCC_VERSION):
 
 Name every scratch file after one of the rule's own outputs, since output paths are unique. Facere cannot see writes: two rules writing one undeclared path, such as a shared depfile name, race under `-j` *(planned)* and the invocation still passes. Never read another rule's scratch file, since that orders nothing.
 
-Once a tool succeeds, report what it read through `fac.add_inputs` *(planned)*, or editing a header it read re-executes nothing. For C, `fac.c.makefile_deps` *(planned)* reads that list from the compiler's depfile.
+Once a tool succeeds, report what it read through `fac.add_inputs` *(0.4)*, or editing a header it read re-executes nothing. For C, `fac.c.makefile_deps` *(0.4)* reads that list from the compiler's depfile. Never report a file the recipe deletes, since a file gone when reported, or removed afterward, fails the rule.
 
 ```python
 # Bad: every compile writes the same depfile

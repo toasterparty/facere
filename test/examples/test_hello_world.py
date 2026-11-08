@@ -38,6 +38,10 @@ def test_hello_world_rebuilds_exactly_what_changed(
         source.write("// comment\n")
     assert closing_line(root) == "Finished in <elapsed>. Executed 1 rule. 2 outputs up to date."
 
+    with (root / "src" / "greeting.h").open("a") as header:
+        header.write("// comment\n")
+    assert closing_line(root) == "Finished in <elapsed>. Executed 2 rules. 1 output up to date."
+
     edit(root / "fac.py", "import sys\n", "import sys  # the platform names the program\n")
     assert closing_line(root) == "Finished in <elapsed>. No work to do. 3 outputs up to date."
 

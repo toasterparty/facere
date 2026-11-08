@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from ..helpers import Fac, edit
+from ..helpers import Fac, edit, run_fac
 
 
 @pytest.mark.project("shout")
@@ -183,6 +183,38 @@ def test_changed_shared_module_constant_a_helper_reads_reruns_the_rule(
     edit(root / "textutil.py", 'MARK = "*"', 'MARK = "_"')
 
     result = fac()
+
+    assert result.err == "Finished in <elapsed>. Executed 1 rule.\n"
+    assert (root / "build" / "a.txt").read_text() == "_HI!_"
+
+
+@pytest.mark.project("helpers")
+def test_shared_module_edit_keeping_size_and_mtime_runs_the_new_code(root: Path, fac: Fac) -> None:
+    fac()
+    path = root / "textutil.py"
+    before = path.stat()
+    edit(path, 'MARK = "*"', 'MARK = "_"')
+    os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+
+    result = fac()
+
+    assert result.err == "Finished in <elapsed>. Executed 1 rule.\n"
+    assert (root / "build" / "a.txt").read_text() == "_HI!_"
+
+
+@pytest.mark.project("helpers")
+def test_shared_module_edit_keeping_size_and_mtime_runs_the_new_code_when_python_trusts_hashes(
+    root: Path,
+) -> None:
+    trusting = ("--check-hash-based-pycs", "never")
+    for _ in range(2):
+        assert run_fac(root, python_flags=trusting).status == 0
+    path = root / "textutil.py"
+    before = path.stat()
+    edit(path, 'MARK = "*"', 'MARK = "_"')
+    os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+
+    result = run_fac(root, python_flags=trusting)
 
     assert result.err == "Finished in <elapsed>. Executed 1 rule.\n"
     assert (root / "build" / "a.txt").read_text() == "_HI!_"

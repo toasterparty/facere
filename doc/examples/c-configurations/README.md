@@ -8,6 +8,6 @@ One C program compiled twice from the same sources, each configuration with flag
 | `fac` | none | Every fingerprint matches |
 | `fac build/release/app` | none, or the release build alone | A path names one program and what it needs |
 | Change release's `BUILD_NAME`, then `fac` | release's 2 compiles and link | Both compiles read the flag, and debug's flags did not change |
-| Edit `src/greeting.h`, then `fac` | 4 compiles, then a link for each configuration whose objects changed | Every compile inputs every header |
+| Edit `src/greeting.h`, then `fac` | the compiles that include it, then a link for each configuration whose objects changed | Each compile reports the headers its depfile lists |
 | `fac run_release -- a b` | the release build if stale, then the program | A task always executes, and gets what follows `--` |
 | `fac clean`, then `fac` | `clean`, then 4 compiles, 2 links | Deleting `build/` forgets every record |

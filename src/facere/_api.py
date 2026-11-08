@@ -1,5 +1,6 @@
 """The decorators and helpers a fac.py calls to define rules and tasks."""
 
+import errno
 import glob
 import os
 import posixpath
@@ -11,10 +12,12 @@ from facere._context import (
     Context,
     Declaration,
     Kind,
+    calc_path_key,
     find_context,
     get_context,
     is_under_root,
     is_within,
+    is_within_any,
     normalize,
 )
 from facere._diagnostics import Diagnostic, FacereError, Note, find_caller_locations
@@ -22,6 +25,8 @@ from facere._version import VERSION
 
 Input = Annotated[str, Kind.INPUT]
 """Annotates a parameter holding a file or directory the rule or task reads, as a path relative to the root. Use `list[fac.Input]` for several."""
+OrderOnly = Annotated[str, Kind.ORDER_ONLY]
+"""Annotates a rule's parameter holding a file or directory its recipe may read, as a path relative to the root. It is built first, but a change to it makes the rule stale only once the recipe reports reading it through `fac.add_inputs`. Use `list[fac.OrderOnly]` for several."""
 Output = Annotated[str, Kind.OUTPUT]
 """Annotates a parameter holding a file or directory the rule writes, as a path relative to the root. Use `list[fac.Output]` for several."""
 Args = Annotated[tuple[str, ...], Kind.ARGS]
@@ -55,7 +60,7 @@ def rule(
 ) -> _F | Callable[[_F], _F]:
     """Define rules from a function, returned unchanged.
 
-    The function's signature declares what each rule reads and writes: a parameter annotated `fac.Input` or `list[fac.Input]` holds the files or directories it reads, one annotated `fac.Output` or `list[fac.Output]` files or directories it writes, and any other parameter a value. `each=` takes an iterable of dicts, read once here, and defines one rule per dict, each key filling the parameter it names. Keyword arguments fill the parameters they name in every rule, and defaults fill the rest. `name=` replaces the function's name, less one trailing underscore, on the command line, and `default=True` builds the rules when `fac` gets no targets, in place of every rule.
+    The function's signature declares what each rule reads and writes: a parameter annotated `fac.Input` or `list[fac.Input]` holds the files or directories it reads, one annotated `fac.OrderOnly` or `list[fac.OrderOnly]` those it may read, one annotated `fac.Output` or `list[fac.Output]` files or directories it writes, and any other parameter a value. `each=` takes an iterable of dicts, read once here, and defines one rule per dict, each key filling the parameter it names. Keyword arguments fill the parameters they name in every rule, and defaults fill the rest. `name=` replaces the function's name, less one trailing underscore, on the command line, and `default=True` builds the rules when `fac` gets no targets, in place of every rule.
     """
     rows = None if each is None else tuple(each)
     return _declarator(fn, is_task=False, name=name, is_default=default, rows=rows, values=values)
@@ -97,6 +102,37 @@ def out(path: str = ".", suffix: str | None = None) -> str:
     if suffix is None:
         return mirrored
     return PurePosixPath(mirrored).with_suffix(suffix).as_posix()
+
+
+def add_inputs(paths: Iterable[str]) -> None:
+    """Report files the running rule's recipe read, usually what a tool's depfile lists, so a change to any of them makes the rule stale.
+
+    Call it once its tool has run or before reading a file in Python. Each path is relative to the root, or absolute, and any spelling of one counts, such as `src/a/../b.h`. A new file under the root with the name of a reported file makes the rule stale. A file outside the root and the output directory that no rule outputs is otherwise dropped. Raises FileNotFoundError for a kept path that doesn't exist.
+    """
+    context = get_context("fac.add_inputs")
+    recipe = context.running
+    if recipe is None or recipe.is_task:
+        raise RuntimeError(
+            "fac.add_inputs reports inputs only from the recipe of a rule, since a task records nothing"
+        )
+    if isinstance(paths, str):
+        raise TypeError(f"fac.add_inputs takes a list of paths, not the string {paths!r}")
+    for path in paths:
+        relative = normalize(path, context.root)
+        key = calc_path_key(relative)
+        if is_within_any(key, recipe.tracked):
+            continue
+        recipe.reported_names.add(calc_path_key(posixpath.basename(relative)))
+        absolute = os.path.join(context.root, relative)
+        if not (
+            is_under_root(absolute, context.root)
+            or is_within(relative, context.out_dir)
+            or is_within_any(key, recipe.output_keys)
+        ):
+            continue
+        if not os.path.exists(absolute):
+            raise FileNotFoundError(errno.ENOENT, "fac.add_inputs got a missing file", relative)
+        recipe.reported[key] = relative
 
 
 def read_text(path: str) -> str:

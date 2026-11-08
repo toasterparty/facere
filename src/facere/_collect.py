@@ -24,6 +24,7 @@ from facere._context import (
     Declaration,
     Kind,
     Location,
+    calc_path_key,
     is_under_root,
     is_within,
     normalize,
@@ -49,6 +50,13 @@ _UNREADABLE_SOURCE = (OSError, LookupError, SyntaxError, ValueError)
 _HASHABLE_TYPES = "Facere hashes only None, a bool, int, float, str, bytes, module, function, or class, or a tuple, list, dict, or set of them"
 
 
+_PATH_ANNOTATIONS = {
+    Kind.INPUT: "fac.Input",
+    Kind.ORDER_ONLY: "fac.OrderOnly",
+    Kind.OUTPUT: "fac.Output",
+}
+
+
 class _Slot(enum.Enum):
     VALUE = enum.auto()
     TEXT = enum.auto()
@@ -61,7 +69,7 @@ class _PathSlot(NamedTuple):
 
     @property
     def annotation(self) -> str:
-        name = "fac.Input" if self.kind is Kind.INPUT else "fac.Output"
+        name = _PATH_ANNOTATIONS[self.kind]
         return f"list[{name}]" if self.is_list else name
 
 
@@ -96,11 +104,17 @@ class Definition:
     args: tuple[object, ...]
     kwargs: dict[str, object]
     inputs: tuple[str, ...]
+    order_only: tuple[str, ...]
     outputs: tuple[str, ...]
     values: dict[str, object]
     text_values: dict[str, object]
     path_values: dict[str, object]
     args_slot: int | str | None
+
+    @property
+    def prerequisites(self) -> tuple[str, ...]:
+        """Return the paths that must be built before this definition executes."""
+        return (*self.inputs, *self.order_only)
 
     @property
     def label(self) -> str:
@@ -124,7 +138,9 @@ class Project:
     definitions: tuple[Definition, ...]
     by_name: dict[str, list[Definition]]
     producers: dict[str, Definition]
+    producers_by_key: dict[str, Definition]
     code_digests: dict[Definition, bytes]
+    shared_modules: frozenset[str]
 
 
 def collect(context: Context) -> Project:
@@ -145,7 +161,9 @@ def collect(context: Context) -> Project:
         _validate_acyclic(definitions, producers, errors)
     if errors:
         raise FacereError(*errors)
-    return Project(definitions, by_name, producers, code_digests)
+    producers_by_key = {calc_path_key(output): rule for output, rule in producers.items()}
+    shared_modules = frozenset(calc_path_key(normalize(path, context.root)) for path in imported)
+    return Project(definitions, by_name, producers, producers_by_key, code_digests, shared_modules)
 
 
 def _load(context: Context) -> list[str]:
@@ -343,7 +361,7 @@ def _classify_parameters(
         slot = _classify(hints.get(parameter.name, inspect.Parameter.empty))
         if slot is None:
             problems.append(
-                f"parameter {parameter.name} has an annotation Facere can't read, and reads only fac.Input, list[fac.Input], fac.Output, list[fac.Output], and fac.Args"
+                f"parameter {parameter.name} has an annotation Facere can't read, and reads only fac.Input, list[fac.Input], fac.OrderOnly, list[fac.OrderOnly], fac.Output, list[fac.Output], and fac.Args"
             )
             continue
         slots[parameter.name] = slot
@@ -431,8 +449,7 @@ def _build_definition(
     bound: dict[str, object],
     problems: list[str],
 ) -> Definition | None:
-    inputs: list[str] = []
-    outputs: list[str] = []
+    paths_by_kind: dict[Kind, list[str]] = {kind: [] for kind in _PATH_ANNOTATIONS}
     filled: dict[str, object] = {}
     values: dict[str, object] = {}
     text_values: dict[str, object] = {}
@@ -448,13 +465,20 @@ def _build_definition(
             if paths is None:
                 are_paths_valid = False
                 continue
-            (inputs if slot.kind is Kind.INPUT else outputs).extend(paths)
-            value = path_values[parameter] = paths if slot.is_list else paths[0]
+            paths_by_kind[slot.kind].extend(paths)
+            value = paths if slot.is_list else paths[0]
+            if slot.kind is not Kind.ORDER_ONLY:
+                path_values[parameter] = value
         elif slot is _Slot.TEXT:
             text_values[parameter] = value
         else:
             values[parameter] = value
         filled[parameter] = value
+    outputs = paths_by_kind[Kind.OUTPUT]
+    if declaration.is_task and paths_by_kind[Kind.ORDER_ONLY]:
+        problems.append(
+            f"task {name} declares a fac.OrderOnly input, which only a rule's record can use, since a task records nothing"
+        )
     if declaration.is_task and outputs:
         problems.append(f"task {name} declares an output, but a task writes no tracked output")
     if not declaration.is_task and not outputs and are_paths_valid:
@@ -487,7 +511,8 @@ def _build_definition(
         fn=declaration.fn,
         args=args,
         kwargs=kwargs,
-        inputs=tuple(inputs),
+        inputs=tuple(paths_by_kind[Kind.INPUT]),
+        order_only=tuple(paths_by_kind[Kind.ORDER_ONLY]),
         outputs=tuple(outputs),
         values=values,
         text_values=text_values,
@@ -511,18 +536,14 @@ def _normalize_paths(
     return None
 
 
-def _calc_key(path: str) -> str:
-    return path.casefold()
-
-
 def _validate_outputs(
     context: Context, definitions: tuple[Definition, ...], errors: list[Diagnostic]
 ) -> None:
     claims: dict[str, list[tuple[Definition, str]]] = {}
-    state_key = _calc_key(context.state_dir)
+    state_key = calc_path_key(context.state_dir)
     for definition in definitions:
         for output in definition.outputs:
-            key = _calc_key(output)
+            key = calc_path_key(output)
             claims.setdefault(key, []).append((definition, output))
             if is_within(key, state_key) or is_within(state_key, key):
                 message = f"{definition.label} outputs {output}, which holds Facere's state"
@@ -568,7 +589,7 @@ def _hash_values(
     producers: dict[str, Definition],
     errors: list[Diagnostic],
 ) -> dict[Definition, bytes]:
-    output_keys = {_calc_key(output) for output in producers}
+    output_keys = {calc_path_key(output) for output in producers}
     trees: dict[str, ast.Module] = {}
     function_digests: dict[Callable[..., object], hashlib._Hash | None] = {}
     digests: dict[Definition, bytes] = {}
@@ -759,7 +780,7 @@ def _feed_values(
 def _is_path(context: Context, text: str, output_keys: set[str]) -> bool:
     if not text or "\0" in text:
         return False
-    if _calc_key(posixpath.normpath(text)) in output_keys:
+    if calc_path_key(posixpath.normpath(text)) in output_keys:
         return True
     path = os.path.abspath(os.path.join(context.root, text))
     if not is_under_root(path, context.root) or not os.path.isfile(path):
@@ -770,12 +791,12 @@ def _is_path(context: Context, text: str, output_keys: set[str]) -> bool:
 def _validate_inputs(
     definitions: tuple[Definition, ...], producers: dict[str, Definition], errors: list[Diagnostic]
 ) -> None:
-    output_by_key = {_calc_key(output): output for output in producers}
+    output_by_key = {calc_path_key(output): output for output in producers}
     for definition in definitions:
-        for path in definition.inputs:
+        for path in definition.prerequisites:
             if path in producers:
                 continue
-            output = output_by_key.get(_calc_key(path))
+            output = output_by_key.get(calc_path_key(path))
             if output is not None:
                 rule = producers[output]
                 message = (
@@ -802,7 +823,7 @@ def _validate_acyclic(
     for start in definitions:
         if start in done:
             continue
-        stack = [(start, iter(start.inputs))]
+        stack = [(start, iter(start.prerequisites))]
         path_inputs: list[str] = []
         on_path = {start}
         while stack:
@@ -826,7 +847,7 @@ def _validate_acyclic(
                 return
             path_inputs.append(path)
             on_path.add(rule)
-            stack.append((rule, iter(rule.inputs)))
+            stack.append((rule, iter(rule.prerequisites)))
 
 
 def _build_cycle_error(loop: list[Definition], inputs: list[str]) -> Diagnostic:

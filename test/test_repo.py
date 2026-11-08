@@ -8,6 +8,8 @@ from typing import Any
 
 import pytest
 
+import facere
+
 from .helpers import REPO, load_module
 
 pytestmark = pytest.mark.skipif(
@@ -87,6 +89,16 @@ def test_ruff_and_ty_skip_exactly_the_planned_examples() -> None:
 
     assert ruff_skips == ty_skips
     assert {skip.split("/")[2] for skip in ruff_skips} == set(planned)
+
+
+def test_every_public_name_but_main_appears_in_a_running_example() -> None:
+    planned = re.findall(r"\[`([\w-]+)/`\]\(.*\) \*\(planned\)\*", _read("doc/examples/README.md"))
+    used: set[str] = set()
+    for path in sorted((REPO / "doc" / "examples").glob("*/fac.py")):
+        if path.parent.name not in planned:
+            used.update(re.findall(r"\bfac\.(\w+)", path.read_text(encoding="utf-8")))
+
+    assert set(facere.__all__) - used == {"main"}
 
 
 def test_hatch_reads_the_version_from_the_file_a_release_rewrites() -> None:

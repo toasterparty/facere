@@ -3,7 +3,7 @@
 import shutil
 from pathlib import Path
 
-from ..helpers import closing_line, copy_example, edit
+from ..helpers import closing_line, copy_example, edit, run_fac
 
 
 def test_a_site_rebuilds_only_the_pages_a_change_reaches(tmp_path: Path) -> None:
@@ -31,3 +31,14 @@ def test_a_site_rebuilds_only_the_pages_a_change_reaches(tmp_path: Path) -> None
 
     shutil.rmtree(root / "build" / "site")
     assert closing_line(root) == "Finished in <elapsed>. Executed 1 rule. 4 outputs up to date."
+
+
+def test_a_project_needing_a_newer_facere_fails_before_any_recipe(tmp_path: Path) -> None:
+    root = copy_example("static-site", tmp_path)
+    edit(root / "fac.py", 'fac.minimum_version("0.2")', 'fac.minimum_version("99.0")')
+
+    result = run_fac(root)
+
+    assert result.status == 2
+    assert "uv tool upgrade facere" in result.err
+    assert not (root / "build" / "site").exists()

@@ -1,31 +1,47 @@
 """Building targets: deciding which rules are stale, and executing recipes one at a time in dependency order."""
 
+import contextlib
 import hashlib
 import os
 import posixpath
 import shlex
 import subprocess
 import sys
+import threading
 import traceback
 from collections.abc import Callable
 
 from facere import _state
 from facere._collect import Definition, Project
 from facere._command import write_output
-from facere._context import Context, Running, normalize
+from facere._context import (
+    Context,
+    Recipe,
+    calc_path_key,
+    is_within,
+    iter_self_and_parents,
+    normalize,
+)
 from facere._diagnostics import Diagnostic, FacereError, Note, print_error
-from facere._hash import feed, hash_path
+from facere._hash import feed, hash_path, iter_strings
 from facere._summary import Summary
+from facere._undeclared import ensure_audit_hook
 
 
 class RecipeFailure(Exception):
     def __init__(
-        self, definition: Definition, *, error: BaseException | None = None, reason: str = ""
+        self,
+        definition: Definition,
+        *,
+        error: BaseException | None = None,
+        reason: str = "",
+        notes: tuple[Note, ...] = (),
     ) -> None:
         super().__init__(definition.label)
         self.definition = definition
         self.error = error
         self.reason = reason
+        self.notes = notes
 
 
 def resolve_targets(project: Project, root: str, targets: list[str]) -> list[Definition]:
@@ -98,12 +114,17 @@ def build(
     }
     try:
         _state.remove(state_path, [key for key in records if key not in declared])
+        records = _remove_shadowed(context, state_path, records)
     except OSError as error:
         raise FacereError(Diagnostic(None, f"{error}")) from error
+    ensure_audit_hook()
     total = _calc_total(project.producers, targets)
     builder = _Builder(context, project, records, state_path, summary, progress_cb, total)
-    for target in targets:
-        builder.build(target, task_args)
+    try:
+        for target in targets:
+            builder.build(target, task_args)
+    finally:
+        builder.save_listing()
 
 
 def report_failure(failure: RecipeFailure, start_dir: str) -> None:
@@ -128,7 +149,43 @@ def report_failure(failure: RecipeFailure, start_dir: str) -> None:
     message = f"{failure.definition.label} failed" + (
         f": {failure.reason}" if failure.reason else ""
     )
-    print_error(FacereError(Diagnostic(failure.definition.location, message)), start_dir)
+    print_error(
+        FacereError(Diagnostic(failure.definition.location, message, failure.notes)), start_dir
+    )
+
+
+def _list_files(out_dir: str) -> frozenset[str]:
+    """Return every file under the working directory, as normalize returns them, outside `out_dir` and any hidden directory."""
+    files = set()
+    for directory, subdirectories, names in os.walk("."):
+        relative = posixpath.normpath(directory.replace(os.sep, "/"))
+        subdirectories[:] = [
+            name
+            for name in subdirectories
+            if not name.startswith(".")
+            and not is_within(posixpath.normpath(posixpath.join(relative, name)), out_dir)
+        ]
+        files.update(posixpath.normpath(posixpath.join(relative, name)) for name in names)
+    return frozenset(files)
+
+
+def _remove_shadowed(
+    context: Context, state_path: str, records: dict[tuple[str, ...], _state.Record]
+) -> dict[tuple[str, ...], _state.Record]:
+    """Forget each record that names a file name a file new since the last invocation has, whether or not this invocation's targets reach its rule, and return the records left."""
+    if not any(record.added_names for record in records.values()):
+        return records
+    listing = _list_files(context.out_dir)
+    saved = _state.load_listing(state_path)
+    if listing == saved:
+        return records
+    new_names = {calc_path_key(posixpath.basename(path)) for path in listing - saved}
+    shadowed = {
+        key for key, record in records.items() if not new_names.isdisjoint(record.added_names)
+    }
+    _state.remove(state_path, list(shadowed))
+    _state.save_listing(state_path, listing)
+    return {key: record for key, record in records.items() if key not in shadowed}
 
 
 def _to_bytes(data: bytes | str | None) -> bytes:
@@ -167,7 +224,7 @@ def _order(
         return []
     order = []
     seen = {*checked, target}
-    stack = [(target, iter(target.inputs))]
+    stack = [(target, iter(target.prerequisites))]
     while stack:
         definition, inputs = stack[-1]
         path = next(inputs, None)
@@ -179,7 +236,7 @@ def _order(
         rule = producers.get(path)
         if rule is not None and rule not in seen:
             seen.add(rule)
-            stack.append((rule, iter(rule.inputs)))
+            stack.append((rule, iter(rule.prerequisites)))
     return order
 
 
@@ -203,6 +260,15 @@ class _Builder:
         self.progress_cb = progress_cb
         self.total = total
         self.position = 0
+        self.has_executed = False
+
+    def save_listing(self) -> None:
+        """Save the tree as this invocation leaves it, so a file its recipes wrote never counts as new, even when one failed. Losing the listing costs only rebuilds."""
+        if not self.has_executed:
+            return
+        if any(record.added_names for record in self.records.values()):
+            with contextlib.suppress(OSError):
+                _state.save_listing(self.state_path, _list_files(self.context.out_dir))
 
     def build(self, target: Definition, task_args: tuple[str, ...] | None) -> None:
         for rule in _order(self.project.producers, target, self.checked):
@@ -223,15 +289,22 @@ class _Builder:
         fingerprint = self._calc_fingerprint(rule)
         key = _state.calc_key(rule.outputs)
         record = self.records.get(key)
+        hashes_before: dict[str, str | None] = {}
         if record is not None:
-            if record == (fingerprint, tuple(hash_path(output) for output in key)):
+            hashes_before = {path: hash_path(path) for path, _ in record.added_inputs}
+            if (
+                record.fingerprint == fingerprint
+                and record.output_hashes == tuple(hash_path(output) for output in key)
+                and all(hashes_before[path] == content for path, content in record.added_inputs)
+            ):
                 self.summary.outputs_current += len(key)
                 return
             _state.remove(self.state_path, [key])
         for output in rule.outputs:
             os.makedirs(os.path.dirname(output) or ".", exist_ok=True)
         self._announce(rule)
-        self._execute(rule, None)
+        recipe = self._execute(rule, None)
+        added_inputs = self._hash_added_inputs(rule, recipe, hashes_before)
         output_hashes = {output: hash_path(output) for output in key}
         missing = [output for output, content in output_hashes.items() if content is None]
         if missing:
@@ -240,10 +313,47 @@ class _Builder:
                 reason=f"its recipe succeeded without writing {', '.join(missing)}",
             )
         record = self.records[key] = _state.Record(
-            fingerprint, tuple(content for content in output_hashes.values() if content is not None)
+            fingerprint,
+            tuple(content for content in output_hashes.values() if content is not None),
+            added_inputs,
+            tuple(sorted(recipe.reported_names)),
         )
         _state.save(self.state_path, key, record)
         self.summary.rules_run += 1
+
+    def _hash_added_inputs(
+        self, rule: Definition, recipe: Recipe, hashes_before: dict[str, str | None]
+    ) -> tuple[tuple[str, str], ...]:
+        """Return what `rule`'s recipe reported, each path with its hash from before the recipe where one exists, so a change during the recipe makes the rule stale."""
+        added = []
+        for path in sorted(recipe.reported.values()):
+            self._validate_ordered(rule, path)
+            content = hashes_before.get(path) or hash_path(path)
+            if content is None:
+                reason = f"its recipe reported reading {path}, which it then removed"
+                raise RecipeFailure(rule, reason=reason)
+            added.append((path, content))
+        return tuple(added)
+
+    def _validate_ordered(self, rule: Definition, path: str) -> None:
+        producer = self._find_producer(path)
+        if producer is None or producer is rule:
+            return
+        if any(output in rule.prerequisites for output in producer.outputs):
+            return
+        raise RecipeFailure(
+            rule,
+            reason=f"its recipe reported reading {path}, though no fac.Input or fac.OrderOnly parameter orders it after the rule that outputs it",
+            notes=(Note(producer.location, f"{producer.label} outputs {path}"),),
+        )
+
+    def _find_producer(self, path: str) -> Definition | None:
+        """Return the rule that outputs `path`, or a directory holding it."""
+        for ancestor in iter_self_and_parents(calc_path_key(path)):
+            producer = self.project.producers_by_key.get(ancestor)
+            if producer is not None:
+                return producer
+        return None
 
     def _calc_fingerprint(self, rule: Definition) -> str:
         digest = hashlib.sha256(self.project.code_digests[rule])
@@ -261,15 +371,44 @@ class _Builder:
     def _announce(self, definition: Definition) -> None:
         self.progress_cb(f"[{self.position}/{self.total}] {definition.label}")
 
-    def _execute(self, definition: Definition, task_args: tuple[str, ...] | None) -> None:
+    def _build_recipe(self, definition: Definition) -> Recipe:
+        root = self.context.root
+        data_paths = {
+            calc_path_key(normalize(text, root))
+            for value in definition.text_values.values()
+            for text in iter_strings(value)
+            if text
+        }
+        return Recipe(
+            is_task=definition.is_task,
+            thread_id=threading.get_ident(),
+            tracked=frozenset(map(calc_path_key, (*definition.inputs, *definition.outputs))),
+            order_only=frozenset(map(calc_path_key, definition.order_only)),
+            exempt=frozenset(data_paths),
+            shared_modules=self.project.shared_modules,
+            output_keys=self.project.producers_by_key.keys(),
+        )
+
+    def _execute(self, definition: Definition, task_args: tuple[str, ...] | None) -> Recipe:
         args, kwargs = definition.calc_call(task_args)
-        self.context.running = Running.TASK if definition.is_task else Running.RULE
+        recipe = self._build_recipe(definition)
+        self.context.running = recipe
+        self.has_executed = True
         try:
             definition.fn(*args, **kwargs)
         except KeyboardInterrupt:
             self.summary.stopped = definition.label
             raise
         except BaseException as error:
-            raise RecipeFailure(definition, error=error) from error
+            if recipe.undeclared is None:
+                raise RecipeFailure(definition, error=error) from error
         finally:
             self.context.running = None
+        if recipe.undeclared is not None:
+            path, reason = recipe.undeclared
+            producer = self._find_producer(path)
+            notes = (
+                (Note(producer.location, f"{producer.label} outputs {path}"),) if producer else ()
+            )
+            raise RecipeFailure(definition, reason=reason, notes=notes)
+        return recipe

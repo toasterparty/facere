@@ -9,15 +9,15 @@ CC = ["uvx", "--from", f"ziglang=={ZIG_VERSION}", "python-zig", "cc"]
 GREETING = os.environ.get("GREETING", "hello, world")
 CFLAGS = ["-O2", "-s", "-Wall", f'-DGREETING="{GREETING}"']
 SOURCES = fac.sources("src/*.c")
-HEADERS = fac.sources("src/*.h")
 PROGRAM = fac.out("app.exe" if sys.platform == "win32" else "app")
 OBJECT_FILE_RULES = [{"source": source, "obj": fac.out(source, ".o")} for source in SOURCES]
 OBJECTS = [rule["obj"] for rule in OBJECT_FILE_RULES]
 
 
 @fac.rule(each=OBJECT_FILE_RULES)
-def object_file(source: fac.Input, obj: fac.Output, headers: list[fac.Input] = HEADERS):
-    fac.run(CC, CFLAGS, "-c", source, "-o", obj)
+def object_file(source: fac.Input, obj: fac.Output):
+    fac.run(CC, CFLAGS, "-MD", "-MF", f"{obj}.d", "-c", source, "-o", obj)
+    fac.add_inputs(fac.c.makefile_deps(f"{obj}.d"))
 
 
 @fac.rule(default=True)

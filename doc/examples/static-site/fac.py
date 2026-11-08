@@ -8,6 +8,8 @@ from tools.render import fill_template, find_title, render_body
 
 import facere as fac
 
+fac.minimum_version("0.2")
+
 SITE_NAME = "Facere example"
 TEMPLATE = "template.html"
 SOURCES = fac.sources("pages/*.md")

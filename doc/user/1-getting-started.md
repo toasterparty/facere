@@ -102,15 +102,15 @@ ZIG_VERSION = "0.16.0"
 CC = ["uvx", "--from", f"ziglang=={ZIG_VERSION}", "python-zig", "cc"]
 CFLAGS = ["-O2", "-s", "-Wall"]
 SOURCES = fac.sources("src/*.c")
-HEADERS = fac.sources("src/*.h")
 PROGRAM = fac.out("app")
 OBJECT_FILE_RULES = [{"source": source, "obj": fac.out(source, ".o")} for source in SOURCES]
 OBJECTS = [rule["obj"] for rule in OBJECT_FILE_RULES]
 
 
 @fac.rule(each=OBJECT_FILE_RULES)
-def object_file(source: fac.Input, obj: fac.Output, headers: list[fac.Input] = HEADERS):
-    fac.run(CC, CFLAGS, "-c", source, "-o", obj)
+def object_file(source: fac.Input, obj: fac.Output):
+    fac.run(CC, CFLAGS, "-MD", "-MF", f"{obj}.d", "-c", source, "-o", obj)
+    fac.add_inputs(fac.c.makefile_deps(f"{obj}.d"))
 
 
 @fac.rule(default=True)
@@ -120,7 +120,7 @@ def app(objects: list[fac.Input] = OBJECTS, program: fac.Output = PROGRAM):
 
 *(0.2)* `fac.sources` lists the files a glob matches, so a new `.c` file joins the build by existing. `each=` *(0.2)* takes a list of dicts and defines one rule for each, every key filling the parameter it names, so `OBJECT_FILE_RULES` gives one compile per source. `fac.out("src/main.c", ".o")` swaps the suffix, giving `build/src/main.o`. The rows are ordinary data, so `OBJECTS` reads the object paths back out of them for the link. `list[fac.Input]` marks a list of files read.
 
-Each compile inputs every header, though its recipe never names `headers`: an input is what Facere watches, and Facere watches nothing undeclared. Editing a header therefore executes every compile, until *(planned)* a recipe can report just the headers its compiler read. Editing one source executes one compile, then the link if its object changed:
+Only the compiler knows which headers a source includes, so each compile passes `-MD -MF` to have it write a depfile, a Makefile fragment listing the files it read. *(0.4)* `fac.c.makefile_deps` reads that list and `fac.add_inputs` reports it, so editing a header executes just the compiles that read it. Editing one source executes one compile, then the link if its object changed:
 
 ```
 $ echo '// comment' >> src/greeting.c
@@ -216,15 +216,15 @@ CC = ["uvx", "--from", f"ziglang=={ZIG_VERSION}", "python-zig", "cc"]
 GREETING = os.environ.get("GREETING", "hello, world")
 CFLAGS = ["-O2", "-s", "-Wall", f'-DGREETING="{GREETING}"']
 SOURCES = fac.sources("src/*.c")
-HEADERS = fac.sources("src/*.h")
 PROGRAM = fac.out("app.exe" if sys.platform == "win32" else "app")
 OBJECT_FILE_RULES = [{"source": source, "obj": fac.out(source, ".o")} for source in SOURCES]
 OBJECTS = [rule["obj"] for rule in OBJECT_FILE_RULES]
 
 
 @fac.rule(each=OBJECT_FILE_RULES)
-def object_file(source: fac.Input, obj: fac.Output, headers: list[fac.Input] = HEADERS):
-    fac.run(CC, CFLAGS, "-c", source, "-o", obj)
+def object_file(source: fac.Input, obj: fac.Output):
+    fac.run(CC, CFLAGS, "-MD", "-MF", f"{obj}.d", "-c", source, "-o", obj)
+    fac.add_inputs(fac.c.makefile_deps(f"{obj}.d"))
 
 
 @fac.rule(default=True)

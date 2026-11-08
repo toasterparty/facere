@@ -15,7 +15,10 @@ def test_all_exports_exactly_the_fac_py_interface() -> None:
     assert sorted(facere.__all__) == [
         "Args",
         "Input",
+        "OrderOnly",
         "Output",
+        "add_inputs",
+        "c",
         "env",
         "main",
         "minimum_version",
@@ -177,9 +180,22 @@ def test_shared_module_imports_from_the_root_and_leaves_no_pycache_there(
 
 
 @pytest.mark.project("shared_module")
+def test_shared_module_bytecode_is_validated_by_hash_and_reused(root: Path, fac: Fac) -> None:
+    fac()
+    fac()
+    [path] = (root / "build" / ".fac" / "pycache").rglob(
+        f"words.{sys.implementation.cache_tag}.pyc"
+    )
+    before = path.stat().st_mtime_ns
+
+    assert fac().status == 0
+    assert path.stat().st_mtime_ns == before
+    assert int.from_bytes(path.read_bytes()[4:8], "little") == 0b11
+
+
+@pytest.mark.project("shared_module")
 def test_repeated_calls_import_shared_modules_afresh(root: Path, fac: Fac) -> None:
     fac()
-    # Python trusts a .pyc whose source kept its size and its mtime to the second, so the edit changes the size.
     (root / "tools" / "words.py").write_text("WORD = 'three'\n")
 
     assert fac().out == "three\n"

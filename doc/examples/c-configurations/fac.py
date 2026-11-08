@@ -14,7 +14,6 @@ CONFIGS = {
     "release": ["-O2", "-s", '-DBUILD_NAME="release"'],
 }
 SOURCES = fac.sources("src/*.c")
-HEADERS = fac.sources("src/*.h")
 PROGRAM_NAME = "app.exe" if sys.platform == "win32" else "app"
 
 OBJECT_FILE_RULES = []
@@ -32,8 +31,9 @@ RELEASE_PROGRAM = fac.out(f"release/{PROGRAM_NAME}")
 
 
 @fac.rule(each=OBJECT_FILE_RULES)
-def object_file(source: fac.Input, obj: fac.Output, cflags, headers: list[fac.Input] = HEADERS):
-    fac.run(CC, WARNINGS, cflags, "-c", source, "-o", obj)
+def object_file(source: fac.Input, obj: fac.Output, cflags):
+    fac.run(CC, WARNINGS, cflags, "-MD", "-MF", f"{obj}.d", "-c", source, "-o", obj)
+    fac.add_inputs(fac.c.makefile_deps(f"{obj}.d"))
 
 
 @fac.rule(each=APP_RULES, default=True)

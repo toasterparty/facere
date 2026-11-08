@@ -4,19 +4,16 @@ import contextlib
 import enum
 import os
 import posixpath
-from collections.abc import Callable, Generator
+from collections.abc import Callable, Container, Generator, Iterator
 from dataclasses import dataclass, field
+from typing import NamedTuple
 
 
 class Kind(enum.Enum):
     INPUT = enum.auto()
     OUTPUT = enum.auto()
+    ORDER_ONLY = enum.auto()
     ARGS = enum.auto()
-
-
-class Running(enum.Enum):
-    RULE = enum.auto()
-    TASK = enum.auto()
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,6 +40,31 @@ class Declaration:
     origin: Location
 
 
+class UndeclaredUse(NamedTuple):
+    path: str
+    reason: str
+
+
+@dataclass(slots=True)
+class Recipe:
+    """The recipe executing now, with what the undeclared-path check and fac.add_inputs track of it.
+
+    Every collection of paths is keyed by calc_path_key. `tracked` holds its rule's inputs and outputs, `exempt` the paths its `str` parameters hold, `shared_modules` what a recipe may open but no command may name, since a recipe's reach decides whether a fingerprint holds one, and `output_keys` every output in the project. `reported` maps the key of each path fac.add_inputs kept to that path, `reported_names` holds the file name of every path it was given outside `tracked`, those it dropped included, and `undeclared` the first use the undeclared-path check rejected, which fails the rule however the recipe treats the error.
+    """
+
+    is_task: bool
+    thread_id: int
+    tracked: frozenset[str]
+    order_only: frozenset[str]
+    exempt: frozenset[str]
+    shared_modules: frozenset[str]
+    output_keys: Container[str]
+    reported: dict[str, str] = field(default_factory=dict)
+    reported_names: set[str] = field(default_factory=set)
+    written: set[str] = field(default_factory=set)
+    undeclared: UndeclaredUse | None = None
+
+
 @dataclass(slots=True)
 class Context:
     root: str
@@ -53,7 +75,7 @@ class Context:
     declarations: list[Declaration] = field(default_factory=list)
     env: dict[str, str | None] = field(default_factory=dict)
     env_locations: dict[str, Location] = field(default_factory=dict)
-    running: Running | None = None
+    running: Recipe | None = None
 
     @property
     def state_dir(self) -> str:
@@ -92,6 +114,26 @@ def is_under_root(path: str, root: str) -> bool:
 def is_within(path: str, directory: str) -> bool:
     """Say whether `path` is `directory` or lies inside it, both as normalize returns them."""
     return directory == "." or path == directory or path.startswith(f"{directory}/")
+
+
+def calc_path_key(path: str) -> str:
+    """Return what `path` compares by, without case, so Facere decides alike on every OS."""
+    return path.casefold()
+
+
+def iter_self_and_parents(path: str) -> Iterator[str]:
+    """Yield `path`, as normalize returns it, then each directory holding it."""
+    while path:
+        yield path
+        parent = posixpath.dirname(path)
+        if parent == path:
+            return
+        path = parent
+
+
+def is_within_any(key: str, directories: Container[str]) -> bool:
+    """Say whether the path key `key` is one of `directories`, or lies inside one."""
+    return any(path in directories for path in iter_self_and_parents(key))
 
 
 def normalize(path: str, root: str) -> str:

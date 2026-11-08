@@ -21,15 +21,15 @@ Each term is defined using only the terms above it, so reading top to bottom nev
 | Output | A file, directory, or virtual output a rule writes and Facere tracks, declared in its signature. |
 | Fingerprint | A hash of a rule's recipe code and what the rule declares, which decides whether the rule must execute again. |
 | Input | A file, directory, or virtual output a rule reads and Facere tracks, declared in its signature or reported by its recipe. |
-| Added input *(planned)* | An input a recipe reports after its tool has run, such as a header a depfile lists. |
-| Order-only input *(planned)* | A declared input built before its reader's recipe executes, which joins the reader's fingerprint only once that recipe reports reading it. |
+| Added input *(0.4)* | An input a recipe reports after its tool has run, such as a header a depfile lists. |
+| Order-only input *(0.4)* | A declared input built before its reader's recipe executes, a change to which makes the reader stale only once that recipe reports reading it. |
 | Source | An input no rule outputs, which must therefore exist. |
 | Output directory | The directory holding every output, unless a rule names another path, and Facere's state. |
 | State | Facere's record of past builds, kept in the output directory. |
 | Scratch file | A file a recipe writes in the output directory without declaring it as an output, such as a depfile. |
 | Value | Data a recipe reads through a parameter or a module constant, which joins its rule's fingerprint as data, never as a file's content. |
-| Stale | Said of a rule that must execute, since the state holds no record of it, its fingerprint differs from the record, or one of its outputs is missing or differs from the record. |
-| Up to date | Said of a rule whose fingerprint and output contents match the state's record. |
+| Stale | Said of a rule that must execute, since the state holds no record of it, its fingerprint differs from the record, an added input differs from the record, or one of its outputs is missing or differs from the record. |
+| Up to date | Said of a rule whose fingerprint, added inputs, and output contents match the state's record. |
 | Shared module | An ordinary Python module under the root that `fac.py` files import for the code and facts they share, and whose code joins the fingerprint of every rule that reaches it. |
 | Target | A name or output path given on the command line, which `fac` builds. |
 | Build | To execute the recipe of each stale rule that targets need, and of each task they reach. |

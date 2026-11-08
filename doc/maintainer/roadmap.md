@@ -8,24 +8,20 @@
 
 ## Next
 
-Implement these before any new interface, in this order:
-
-1. **Undeclared inputs.** The undeclared-path check and `fac.add_inputs`, from [fingerprints](./design/fingerprints.md). Until they land, an undeclared input, such as a header no rule lists, gives a successful build with a stale output, which [the principles](./principles.md) forbid.
-2. **A terminal for rules' commands.** A rule's command gets a pipe on stderr, so a compiler drops its colour under Facere, against the principle that a tool behaves as it does from the shell. [Execution](./design/execution.md) designs the pseudo-terminal.
+Implement a terminal for rules' commands before any new interface. A rule's command gets a pipe on stderr, so a compiler drops its colour under Facere, against the principle that a tool behaves as it does from the shell. [Execution](./design/execution.md) designs the pseudo-terminal.
 
 ## Phase 1 milestones
 
 A proposal, ordered to rough in the whole path first. Each ends with its tests passing on Linux and Windows.
 
-1. **Walking skeleton.** Collection of `fac.py` files, `@fac.rule` and `@fac.task`, `fac.run`, fingerprints of values and input content, the SQLite state, sequential execution, and `fac NAME`.
-2. **Correctness.** Code fingerprints from syntax trees, output verification, the hash cache, added and order-only inputs, the undeclared-path check through the audit hook, and the damage checks.
-3. **Scheduling.** Parallel jobs, `max_jobs`, command-line order, failure and `-k`, interrupt and graceful stop, the lock and `--lock-timeout`, `fac.give_lock()`, and the terminal for tasks.
-4. **Stores.** `fac.Virtual`, `fac.VirtualInput`, `fac.VirtualOutput`, `fac.read` and `fac.write`, `fac.FileStore`, virtual output records and stamps in the state, the flush and its round-trip check, and file outputs moved onto the same code path as the built-in store.
-5. **Names.** Scopes, groups, patterns, defaults, `::`, `--list`, `--check`, `--paths`, `--json`, `-v` reasons, exit statuses, and GNU-format errors.
-6. **Budget.** `--timings`, the CI benchmarks, the C project's and the single-file store's, and the Windows benchmark.
-7. **Distribution.** Shipped docs and their CI checks, `--docs`, and `--python`.
+1. **Correctness.** The hash cache and the damage checks.
+2. **Scheduling.** Parallel jobs, `max_jobs`, failure and `-k`, interrupt and graceful stop, the lock and `--lock-timeout`, `fac.give_lock()`, and the terminal for tasks.
+3. **Stores.** `fac.Virtual`, `fac.VirtualInput`, `fac.VirtualOutput`, `fac.read` and `fac.write`, `fac.FileStore`, virtual output records and stamps in the state, the flush and its round-trip check, and file outputs moved onto the same code path as the built-in store.
+4. **Names.** Scopes, groups, patterns, `::`, `--list`, `--check`, `--paths`, `--json`, and `-v` reasons.
+5. **Budget.** `--timings`, the CI benchmarks, the C project's and the single-file store's, and the Windows benchmark.
+6. **Distribution.** Shipped docs and their CI checks, `--docs`, and `--python`.
 
-Phase 2 then adds the four extensions with the CI check that they import only `facere.__all__`, and the example projects, each with a table of edits and the rules each one executes, which become its tests. The [use cases](./use-cases.md)' tooling tasks, such as clang-format, clang-check, valgrind, `size`, a version bump, and disassembly, get an example of their own, apart from the C configurations example.
+Phase 2 then adds the four extensions and the example projects, each project with a table of edits and the rules each one executes, which become its tests. Each extension gets the check that it imports only `facere.__all__`. `facere.c` has that check already, and so far holds only `makefile_deps`.
 
 ## Open decisions
 
