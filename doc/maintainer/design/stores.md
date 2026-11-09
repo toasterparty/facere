@@ -67,7 +67,6 @@ A virtual output counts as an output in the closing line, so a no-op over 1500 r
 
 - **A stamp that misses a change**, such as a Last-Modified header with one-second granularity, keeps stale digests. A store whose server offers no reliable token returns `None` and pays a `read` per invocation.
 - **What `read` leaves out** stays untracked, so a format whose `read` skips comment lines misses an edit to them.
-- **A remote store's no-op cost**, one `stamp` request, or a full `read` without a token, counts against the project's budget, as module-level code does.
 - **The lock covers one output directory**, so two machines writing one remote store can collide. The round-trip check reports the collision afterwards, and only the store's own `update`, through `If-Match` or whatever the API offers, can prevent one.
 - **Orphaned virtual outputs**, whose rules were removed, stay in the store, since Facere deletes nothing it no longer tracks, so the store protocol has no way to delete. Deleting the output directory removes every orphan of a `FileStore` inside it, as it does every orphaned file, while a remote store's orphans are the project's own to remove, such as through a task.
 - **Memory.** `FileStore` holds every virtual output's value while it writes, so a store of millions of rows suits a format that changes rows in place, such as a SQLite table, written as a plain store.

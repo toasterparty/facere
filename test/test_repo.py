@@ -91,12 +91,25 @@ def test_ruff_and_ty_skip_exactly_the_planned_examples() -> None:
     assert {skip.split("/")[2] for skip in ruff_skips} == set(planned)
 
 
+def test_only_planned_examples_keep_a_readme() -> None:
+    planned = re.findall(r"\[`([\w-]+)/`\]\(.*\) \*\(planned\)\*", _read("doc/examples/README.md"))
+    readmes = {path.parent.name for path in (REPO / "doc" / "examples").glob("*/README.md")}
+
+    assert readmes == set(planned)
+
+
 def test_every_public_name_but_main_appears_in_a_running_example() -> None:
     planned = re.findall(r"\[`([\w-]+)/`\]\(.*\) \*\(planned\)\*", _read("doc/examples/README.md"))
     used: set[str] = set()
     for path in sorted((REPO / "doc" / "examples").glob("*/fac.py")):
         if path.parent.name not in planned:
-            used.update(re.findall(r"\bfac\.(\w+)", path.read_text(encoding="utf-8")))
+            used.update(
+                node.attr
+                for node in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
+                if isinstance(node, ast.Attribute)
+                and isinstance(node.value, ast.Name)
+                and node.value.id == "fac"
+            )
 
     assert set(facere.__all__) - used == {"main"}
 

@@ -4,10 +4,10 @@
 
 ## Sharing code
 
-Put flags and helper functions a `fac.py` shares with other modules in an ordinary Python module under its root, and import it. Each project's imports reach only modules under its own root, until *(planned)* one graph spans them:
+Put settings and helper functions a `fac.py` shares with other modules in an ordinary Python module under its root, and import it. Each project's imports reach only modules under its own root, until *(planned)* one graph spans them:
 
 ```python
-from tools.flags import CFLAGS
+from tools.settings import BASE_URL
 ```
 
 *(0.2)* Facere fingerprints a shared module's code like the `fac.py`'s own, so a change to a function or constant executes just the rules that reach it. A rule or task defined by importing another `fac.py` fails, since each one defines its own project.

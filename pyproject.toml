@@ -47,7 +47,7 @@ only-include = ["src", "test", "doc", "release.py", "README.md", "LICENSE", "COP
 [tool.ruff]
 line-length = 100
 cache-dir = "build/.ruff_cache"
-# Planned examples use features no release supports yet. Remove each once its README drops the planned status.
+# Planned examples use features no release supports yet. Remove each once `doc/examples/README.md` drops its planned status.
 extend-exclude = [
     "doc/examples/c-server-client",
     "doc/examples/http-api/fac.py",
@@ -116,6 +116,13 @@ include = ["test/*/test_*/**"]
 
 [tool.ty.overrides.rules]
 dynamic-function-decorator-return = "ignore"
+
+# Examples keep to beginner Python, and `typing.override` needs 3.12.
+[[tool.ty.overrides]]
+include = ["doc/examples/**"]
+
+[tool.ty.overrides.rules]
+missing-override-decorator = "ignore"
 
 [tool.pytest.ini_options]
 testpaths = ["test"]

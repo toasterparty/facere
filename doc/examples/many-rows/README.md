@@ -2,7 +2,7 @@
 
 > **Status:** planned. This example uses `fac.FileStore`, `fac.Virtual`, and `fac.write`, which no release supports yet, so it does not run on the current release.
 
-The rules of [many files](../many-files/README.md), each writing one line of `build/rows.txt` instead of a file of its own. `Rows`, a [store](../../user/5-virtual-outputs.md) kept in one file, gives the file's format as a `read` and a `write`, and each rule's virtual output is its row. A recipe only hands Facere its row, so a build writes the file once rather than 1500 times, and a build with nothing stale costs one stat. The example needs nothing but Python.
+The rules of [many files](../many-files/fac.py), each writing one line of `build/rows.txt` instead of a file of its own. `Rows`, a [store](../../user/5-virtual-outputs.md) kept in one file, gives the file's format as a `read` and a `write`, and each rule's virtual output is its row. A recipe only hands Facere its row, so a build writes the file once rather than 1500 times, and a build with nothing stale costs one stat. The example needs nothing but Python.
 
 | Action | Executes | Why |
 |---|---|---|

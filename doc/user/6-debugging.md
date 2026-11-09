@@ -6,9 +6,8 @@
 
 ```
 $ fac -v
-cc -O2 -Wall -c src/main.c -o build/src/main.o
-cc build/src/main.o -o build/app
-Finished in 59ms. Executed 2 rules.
+/usr/bin/python3 tools/sitemap.py https://example.com/ index.html about.html
+Finished in 59ms. Executed 1 rule.
 ```
 
 `-v` leaves out `cwd=`, `env=`, and redirections, so print those from the recipe where they matter.
@@ -18,11 +17,9 @@ Finished in 59ms. Executed 2 rules.
 A failed command prints first, followed by its unaltered output, then the rule, at its line in `fac.py`:
 
 ```
-fac: command exited with status 1: cc -O2 -c src/main.c -o build/src/main.o
-src/main.c:1:1: error: expected '=', ',', ';', 'asm' or '__attribute__' at end of input
-    1 | oops
-      | ^~~~
-fac.py:8:2: error: rule 'object_file' (build/src/main.o) failed
+fac: command exited with status 1: /usr/bin/python3 tools/sitemap.py https://example.com/ index.html about.html
+sitemap.py: no base URL given
+fac.py:60:2: error: rule 'sitemap' (build/pages/sitemap.txt) failed
 ```
 
 A Python exception in a recipe prints its traceback in place of the command. A mistake in the `fac.py` itself, such as two rules outputting one path, a dependency cycle, or an unannotated path, fails before any recipe executes, naming the lines involved.

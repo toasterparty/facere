@@ -1,4 +1,4 @@
-"""Fifteen hundred rules that go stale independently, though one table file is the only thing maintained."""
+"""Fifteen hundred rules that go stale independently, though one table file is the only thing maintained. It needs nothing but Python, and shows how Facere reports a build with many rules."""
 
 import argparse
 import os
@@ -7,6 +7,8 @@ import shutil
 import facere as fac
 
 ROW_COUNT = 1500
+# Read while fac.py loads, and not an input. Each rule receives only its own revision as a value,
+# so editing a row makes that row's rule stale and no other.
 TABLE = "table.txt"
 
 
@@ -22,6 +24,7 @@ ROW_RULES = [
 ]
 
 
+# `fac row` builds all of them, since a name covers every rule its function defines.
 @fac.rule(each=ROW_RULES, default=True)
 def row(path: fac.Output, revision: int):
     fac.write_text(path, f"revision {revision}\n")

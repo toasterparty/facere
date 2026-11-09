@@ -43,4 +43,4 @@ Each term is defined using only the terms above it, so reading top to bottom nev
 | Override *(planned)* | A function in a `fac.py` that adjusts rules defined elsewhere which read files under that `fac.py`'s directory. |
 | Extension *(planned)* | A Python module that packages rules many projects need, using only Facere's public interface. |
 
-[<- Best practices](./7-best-practices.md)
+[<- Best practices](./7-best-practices.md) | [Building a C program ->](./9-building-c.md)

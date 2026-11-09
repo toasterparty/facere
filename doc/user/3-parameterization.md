@@ -11,8 +11,8 @@ VERSION = "1.4.0"
 
 
 @fac.rule
-def version_header(path: fac.Output = fac.out("version.h")):
-    fac.write_text(path, f'#define VERSION "{VERSION}"\n')
+def version_file(path: fac.Output = fac.out("version.txt")):
+    fac.write_text(path, f"{VERSION}\n")
 ```
 
 A keyword argument to the decorator fills the parameter it names, and the decorators return the function unchanged, so one function can define rules one after another:
@@ -43,36 +43,25 @@ def page(source: fac.Input, html: fac.Output):
 
 ## Configurations
 
-A configuration compiles the same sources with other flags, into a directory of its own. Plain `for` loops build the rows:
+A configuration builds the same sources with other values, into a directory of its own. A plain `for` loop builds the list of dicts:
 
 ```python
-ZIG_VERSION = "0.16.0"
-CC = ["uvx", "--from", f"ziglang=={ZIG_VERSION}", "python-zig", "cc"]
-CONFIGS = {"debug": ["-O0", "-g"], "release": ["-O2", "-s"]}
-SOURCES = fac.sources("src/*.c")
+CONFIGS = {"staging": "https://staging.example.com/", "production": "https://example.com/"}
+SOURCES = fac.sources("pages/*.txt")
 
-OBJECT_FILE_RULES = []
-APP_RULES = []
+PAGE_RULES = []
 for config in CONFIGS:
-    objects = []
     for source in SOURCES:
-        obj = fac.out(f"{config}/{source}", ".o")
-        OBJECT_FILE_RULES.append({"source": source, "obj": obj, "cflags": CONFIGS[config]})
-        objects.append(obj)
-    APP_RULES.append({"objects": objects, "program": fac.out(f"{config}/app")})
+        html = fac.out(f"{config}/{source}", ".html")
+        PAGE_RULES.append({"source": source, "html": html, "base_url": CONFIGS[config]})
 
 
-@fac.rule(each=OBJECT_FILE_RULES)
-def object_file(source: fac.Input, obj: fac.Output, cflags):
-    fac.run(CC, cflags, "-c", source, "-o", obj)
-
-
-@fac.rule(each=APP_RULES)
-def app(objects: list[fac.Input], program: fac.Output):
-    fac.run(CC, objects, "-o", program)
+@fac.rule(each=PAGE_RULES)
+def page(source: fac.Input, html: fac.Output, base_url):
+    fac.write_text(html, fac.read_text(source).replace("{url}", base_url))
 ```
 
-`fac build/release/app` builds one configuration, and `fac app` builds both. Changing `-O2` executes only the release compiles. The [`c-configurations`](https://github.com/toasterparty/facere/tree/main/doc/examples/c-configurations) example runs this.
+`fac build/production/pages/about.html` builds one page of one configuration, and `fac page` builds every page of both. Changing the production URL executes only the production pages. [Building a C program](./9-building-c.md#debug-and-release) applies this to debug and release.
 
 *(planned)* `with fac.scope("release"):` gives a configuration a name of its own, as in `fac server.release` or `fac '*.release'`.
 
@@ -88,11 +77,11 @@ Module-level code runs on every invocation, so a value it computes joins the fin
 
 ```python
 @fac.task
-def run(args: fac.Args, program: fac.Input = PROGRAM):
-    fac.run(program, args)
+def serve(args: fac.Args, files: list[fac.Input] = SITE):
+    fac.run(sys.executable, "-m", "http.server", args, "--directory", fac.out("pages"))
 ```
 
-`fac flash monitor -- /dev/ttyUSB0` passes the argument to both tasks.
+Each task in one invocation gets the same arguments.
 
 Rules take no command-line arguments, since the record of a rule's last execution could not tell which ones it used.
 

@@ -2,7 +2,7 @@
 
 | Usage | Effect |
 |---|---|
-| `fac [TARGET...] [-- ARG...]` | Build the targets, in the order given, passing every `ARG` to each task they reach that takes `fac.Args`. With no targets, the root's defaults. With no defaults, every rule and no task, which for a project with no rules succeeds, doing nothing |
+| `fac [TARGET...] [-- ARG...]` | Build the targets, in the order given, passing every `ARG` to each task they reach that takes `fac.Args`, which at least one must when an `ARG` is given. With no targets, the root's defaults, and `--` is an error. With no defaults, every rule and no task, which for a project with no rules succeeds, doing nothing |
 | `-C DIR` | Run as if started in `DIR`, which becomes the root |
 | `-j N`, `--jobs N` | Parallel jobs, or `auto`, the default, for all usable CPUs |
 | `-k`, `--keep-going` | Continue past failures |
@@ -21,6 +21,6 @@
 
 `fac --help` is the only user documentation of the flags a release supports, so this table may run ahead of it. `fac.main(args)` takes the same arguments and returns the exit status, so the Python API has nothing of its own to document. `--list`, `--check`, and `--paths` contradict one another, so any two together fail. With every configuration in one graph, `fac '*.debug' '*.release'` builds two in one parallel batch, and `fac build/` builds every one. `--out` moves the whole output directory, for a CI job that wants its own.
 
-The exit status is `0` on success, `1` when a recipe fails, and `2` when Facere could not start the build: bad arguments, an error in a `fac.py`, a target that resolves to nothing, or a lock timeout. A caller therefore knows whether its own code or the build definition is wrong.
+The exit status is `0` on success, `1` when a recipe fails, and `2` when Facere could not start the build: bad arguments, an error in a `fac.py`, a target that resolves to nothing, or a lock timeout. A caller therefore knows whether its own code or the build definition is wrong. An interrupt exits with `130`, as a shell reports a process that `SIGINT` killed.
 
 On a POSIX terminal, Facere sets the scroll region to every row but the last and draws `[position/total] label` there with save-cursor and restore-cursor, so commands keep writing straight to the terminal and see it unwrapped. The position counts every rule and task reached, executed or not, against the number reachable from the targets. SIGWINCH redraws the row, and SIGTERM and SIGHUP erase it before the signal takes its default action. A command that takes over the whole screen, or a multiplexer that drops lines scrolled out of a partial region from its scrollback, can spoil the row. Windows has no row until its console is switched to VT processing.

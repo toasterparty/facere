@@ -30,19 +30,19 @@ An output changes only by its own rule replacing it whole. Facere leaves the pre
 - Delete your own previous output before a tool that updates it in place: `ar r`, `zip`, `tar -r`, `uv build --out-dir`, `pip install --target`, and `shutil.copytree(dirs_exist_ok=True)` all keep what the last execution left, so a deleted source's object still links and an old wheel still gets published. Clear a directory output with `shutil.rmtree`, or *(planned)* mark the rule `clear=True` so Facere deletes its outputs before the recipe executes.
 
 ```python
-# Bad: an object removed from OBJECTS stays in the library
+# Bad: a page removed from PAGES stays in the archive
 @fac.rule
-def library(objects: list[fac.Input] = OBJECTS, lib: fac.Output = LIBRARY):
-    fac.run("ar", "rcsD", lib, objects)
+def archive(pages: list[fac.Input] = PAGES, path: fac.Output = ARCHIVE):
+    fac.run("zip", path, pages)
 ```
 
 ```python
 # Good
 @fac.rule
-def library(objects: list[fac.Input] = OBJECTS, lib: fac.Output = LIBRARY):
-    if os.path.exists(lib):
-        os.remove(lib)
-    fac.run("ar", "rcsD", lib, objects)
+def archive(pages: list[fac.Input] = PAGES, path: fac.Output = ARCHIVE):
+    if os.path.exists(path):
+        os.remove(path)
+    fac.run("zip", path, pages)
 ```
 
 ```python
@@ -93,17 +93,17 @@ A rule that inputs a file a task writes treats it as a source, so the rule fails
 Pass each argument separately, and do file work in Python. Facere runs commands without a shell, so `fac.run("mkdir -p build")` looks for a program named `mkdir -p build`. Reaching for a shell instead, through `os.system` or `shell=True`, ties the build to one platform's shell, and hides the paths from the undeclared-path check.
 
 ```python
-# Bad: needs a POSIX shell, and Facere sees neither gcc nor the paths
-subprocess.run(f"mkdir -p {obj_dir} && gcc -c {src} -o {obj}", shell=True, check=True)
+# Bad: needs a POSIX shell, and Facere sees neither pandoc nor the paths
+subprocess.run(f"mkdir -p {folder} && pandoc {source} -o {html}", shell=True, check=True)
 ```
 
 ```python
 # Good
-os.makedirs(obj_dir, exist_ok=True)
-fac.run(CC, "-c", src, "-o", obj)
+os.makedirs(folder, exist_ok=True)
+fac.run("pandoc", source, "-o", html)
 ```
 
-Give each path its own argument, or put it after `=`. `fac.run` *(0.4)* checks each argument and the parts of a flag split at `=` and `,`, so a path glued to its flag, as in `-Tsrc/link.ld`, escapes the check, and editing an undeclared linker script never relinks the program.
+Give each path its own argument, or put it after `=`. `fac.run` *(0.4)* checks each argument and the parts of a flag split at `=` and `,`, so a path glued to its flag, as in `-Tsrc/link.ld`, escapes the check, and editing that undeclared file never executes the rule.
 
 ## Identical outputs
 
@@ -119,7 +119,7 @@ Write one rule per independent output and one per tool invocation. Facere re-exe
 
 ## Names for many rules
 
-A name on the command line selects every rule its function defines, so `fac object_file` builds each object. Name the function for what one rule makes, in the singular, since a failure names one rule: `rule 'object_file' (build/main.o)`. `name=` replaces the name where the function's own would read badly on the command line, at the cost of the code and the command line calling the rules by different names.
+A name on the command line selects every rule its function defines, so `fac page` builds each page. Name the function for what one rule makes, in the singular, since a failure names one rule: `rule 'page' (build/pages/about.html)`. `name=` replaces the name where the function's own would read badly on the command line, at the cost of the code and the command line calling the rules by different names.
 
 ## Orphaned outputs
 
@@ -163,18 +163,7 @@ def gcc_version(path: fac.Output = GCC_VERSION):
 
 Name every scratch file after one of the rule's own outputs, since output paths are unique. Facere cannot see writes: two rules writing one undeclared path, such as a shared depfile name, race under `-j` *(planned)* and the invocation still passes. Never read another rule's scratch file, since that orders nothing.
 
-Once a tool succeeds, report what it read through `fac.add_inputs` *(0.4)*, or editing a header it read re-executes nothing. For C, `fac.c.makefile_deps` *(0.4)* reads that list from the compiler's depfile. Never report a file the recipe deletes, since a file gone when reported, or removed afterward, fails the rule.
-
-```python
-# Bad: every compile writes the same depfile
-fac.run(CC, CFLAGS, "-MD", "-MF", fac.out("deps.d"), "-c", src, "-o", obj)
-```
-
-```python
-# Good
-fac.run(CC, CFLAGS, "-MD", "-MF", f"{obj}.d", "-c", src, "-o", obj)
-fac.add_inputs(fac.c.makefile_deps(f"{obj}.d"))
-```
+Once a tool succeeds, report what it read through `fac.add_inputs` *(0.4)*, or editing a file it read executes nothing. [Building a C program](./9-building-c.md) shows this for a compiler's depfile. Never report a file the recipe deletes, since a file gone when reported, or removed afterward, fails the rule.
 
 Keep a tool's deliberate incremental state, such as MSVC's `/INCREMENTAL` or `tsc`'s `.tsbuildinfo`, in a scratch file named after the rule's output, and turn it off for release outputs.
 

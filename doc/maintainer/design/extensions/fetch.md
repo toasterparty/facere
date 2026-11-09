@@ -6,7 +6,7 @@ A fetch given a hash is pinned, and pins are immutable, since resolving a moving
 
 ## `file`
 
-`file` behaves like wget. A file already matching a given hash is never fetched again. Without a hash, `When.NEWER`, the default, sends the ETag and Last-Modified the server gave at the last success, kept through `fac.save()`, and keeps the file when the server answers that it has not changed, as `wget -N` does. A server sending neither is fetched in full every time. `When.MISSING` skips the request when the file exists and came from the same URL, as `wget -nc` does. Downloads honour the standard proxy and certificate variables of Facere's environment, unfingerprinted, as every command does.
+`file` behaves like wget. A file already matching a given hash is never fetched again. Without a hash, `When.NEWER`, the default, sends the ETag and Last-Modified the server gave at the last success, kept through `fac.save()`, and keeps the file when the server answers that it has not changed, as `wget -N` does. A server sending neither is fetched in full every time. `When.MISSING` skips the request when the file exists and came from the same URL, as `wget -nc` does. Downloads honor the standard proxy and certificate variables of Facere's environment, unfingerprinted, as every command does.
 
 ## `archive`
 

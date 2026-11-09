@@ -6,9 +6,12 @@ import sys
 
 import facere as fac
 
+# Sets each variable for every command, and joins every rule's fingerprint.
 fac.env(LC_ALL="C", PYTHONUTF8="1")
 
+# A new value executes `total` and what follows from it, since its summary changes.
 CURRENCY = "USD"
+# A new value executes `report` and what follows from it, leaving the totals up to date.
 TITLE = "Sales by item"
 CLEAN_TOOL = "tools/clean.py"
 TOTAL_TOOL = "tools/total.py"
@@ -29,8 +32,12 @@ SUMMARY = fac.out("summary.txt")
 TOTAL_OUTPUTS = [TOTALS, SUMMARY]
 REPORT = fac.out("report.txt")
 CHECKSUMS = fac.out("checksums.txt")
+BUNDLE = fac.out("bundle")
 
 
+# Each rule inputs the tool it runs, so editing a tool executes the rules that use it.
+# Add a row with a bad amount and only the rejects change. The cleaned table comes out the same, so
+# nothing downstream executes.
 @fac.rule(each=CLEAN_RULES)
 def clean_data(
     source: fac.Input, cleaned: fac.Output, rejects: fac.Output, tool: fac.Input = CLEAN_TOOL
@@ -48,6 +55,7 @@ def total(
     fac.run(sys.executable, tool, outputs, tables, env=env, timeout=60)
 
 
+# `quiet=True` hides the output the recipe reads back. `title: str` marks a value, never read as a file.
 @fac.rule
 def report(
     totals: fac.Input = TOTALS,
@@ -60,7 +68,7 @@ def report(
     fac.write_text(output, f"{title}\n\n{table}\nTotal: {fac.read_text(summary)}")
 
 
-@fac.rule(default=True)
+@fac.rule
 def checksums(
     report_file: fac.Input = REPORT,
     totals: fac.Input = TOTALS,
@@ -75,6 +83,22 @@ def checksums(
         cwd=fac.out(),
         stdout=output,
     )
+
+
+# A directory output is tracked whole, so deleting build/bundle executes this rule alone. It starts
+# by clearing the directory, since whatever an earlier execution left would otherwise stay.
+@fac.rule(default=True)
+def bundle(
+    report_file: fac.Input = REPORT,
+    totals: fac.Input = TOTALS,
+    checksum_file: fac.Input = CHECKSUMS,
+    folder: fac.Output = BUNDLE,
+):
+    if os.path.exists(folder):
+        shutil.rmtree(folder)
+    os.makedirs(folder)
+    for path in [report_file, totals, checksum_file]:
+        shutil.copy2(path, folder)
 
 
 @fac.task

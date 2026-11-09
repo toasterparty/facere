@@ -1,4 +1,4 @@
-"""Looking for an example Facere project? See `doc/examples/hello-world/`.
+"""Looking for an example Facere project? See `doc/examples/my-site/`.
 
 This file develops Facere itself: run `fac <task>` with a released Facere of at least `MINIMUM_FACERE`.
 """
@@ -130,7 +130,7 @@ PACKAGE_FILES = _find_package_files()
 
 
 @fac.task(default=True)
-def example(project: fac.Input = "doc/examples/hello-world") -> None:
+def example(project: fac.Input = "doc/examples/my-site") -> None:
     _uv_run("fac", "-C", project)
 
 

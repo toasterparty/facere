@@ -1,6 +1,6 @@
 # Development
 
-Install [git](https://git-scm.com/downloads) and [uv](https://docs.astral.sh/uv/getting-started/installation/), which also installs the Python Facere needs and, for the example, a C compiler. Then install Facere the way its users do, clone the repo, and build the example:
+Install [git](https://git-scm.com/downloads) and [uv](https://docs.astral.sh/uv/getting-started/installation/), which also installs the Python Facere needs. Then install Facere the way its users do, clone the repo, and build the example:
 
 ```sh
 uv tool install facere
@@ -13,7 +13,7 @@ The first `fac` creates the project's environment in `.venv` and downloads depen
 
 | Task | Description |
 | ---- | ----------- |
-| `example` | Build `doc/examples/hello-world` with Facere from source. The default |
+| `example` | Build `doc/examples/my-site` with Facere from source. The default |
 | `test` | Lint, then run the tests (`test/`) |
 | `ci` | `test`, then check the built wheel: what a pull request must pass |
 | `test_sdist` | Run the tests from the unpacked sdist |
@@ -35,7 +35,7 @@ Two Facere versions run in a checkout, and the command decides which:
 
 The split lets a broken tree still test itself. The root `fac.py` therefore refuses the tree's own Facere, which is what a bare `fac` resolves to wherever `.venv` is activated, as in a VS Code terminal once the editor's interpreter is set. Deactivate it there. VS Code's terminals leave it inactive, as below.
 
-An example may use a feature no release has yet, so the installed `fac` fails on it with an `AttributeError` on `facere`. Run it with `uv run fac -C <project>` instead, as the `example` task does for `doc/examples/hello-world`.
+An example may use a feature no release has yet, so the installed `fac` fails on it with an `AttributeError` on `facere`. Run it with `uv run fac -C <project>` instead, as the `example` task does for `doc/examples/my-site`.
 
 `MINIMUM_FACERE` in the root `fac.py` names the oldest release it runs on, and an older `fac` fails with the command that upgrades it. CI tests on both that release and the latest. Adopt a Facere feature in the root `fac.py` only once a release has it, and raise `MINIMUM_FACERE` to that release.
 

@@ -23,4 +23,10 @@ A `fac.py` needs only `import`, module constants, functions, the two decorators,
 
 `test/doc/test_style.py` enforces the rows a syntax tree can show.
 
+## Comments
+
+A running example has no README. Its `fac.py` explains itself: the module docstring gives its purpose and what it needs, and each comment sits above the line it concerns and states what Facere does with that line or what editing it executes, which the code cannot show. A planned example keeps its README, which also serves as its spec, until it runs and its comments can be checked against a test.
+
+## Gaps
+
 Where an example needs something beyond this list, the gap is a candidate for Facere to fill, as `fac.write_text` was and `fac.write_archive` will be: raise it rather than teach the workaround.

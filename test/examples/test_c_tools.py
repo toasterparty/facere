@@ -88,6 +88,17 @@ def test_out_moves_the_outputs_and_the_state_leaving_build_as_it_was(tmp_path: P
     assert closing_line(root) == EXECUTED_BUILD
 
 
+def test_a_project_needing_a_newer_facere_fails_before_any_recipe(tmp_path: Path) -> None:
+    root = copy_example("c-tools", tmp_path)
+    edit(root / "fac.py", 'fac.minimum_version("0.3")', 'fac.minimum_version("99.0")')
+
+    result = run_fac(root)
+
+    assert result.status == 2
+    assert "uv tool upgrade facere" in result.err
+    assert not (root / "build" / "src").exists()
+
+
 @_needs("clang-format")
 def test_format_rewrites_the_sources_so_the_next_build_compiles_them(tmp_path: Path) -> None:
     root = copy_example("c-tools", tmp_path)

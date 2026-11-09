@@ -2,9 +2,9 @@
 
 | Release | Contents |
 |---|---|
-| 0.x | Phase 1, the core in [`design/`](./design/README.md), then phase 2, the shipped extensions `facere.c`, `facere.fetch`, `facere.git`, and `facere.uv`. Any interface may break |
+| 0.x | Phase 1, the core in [`design/`](./design/README.md) with [watch mode](./design/watch.md), then phase 2, the shipped extensions `facere.c`, `facere.fetch`, `facere.git`, and `facere.uv`. Any interface may break |
 | 1.0 | Both phases, the shipped docs, CI on Linux and Windows, and both no-op benchmarks within their 300 ms budget. The compatibility promise starts here |
-| After 1.0 | [Watch mode](./design/watch.md), the fuller `--check` below, MSVC in `facere.c`, a `dyndep`-like mechanism for dependencies known only after a scan, and a compiled hot path once a profile names one |
+| After 1.0 | The fuller `--check` below, MSVC in `facere.c`, a `dyndep`-like mechanism for dependencies known only after a scan, and a compiled hot path once a profile names one |
 
 ## Next
 
@@ -15,13 +15,14 @@ Implement a terminal for rules' commands before any new interface. A rule's comm
 A proposal, ordered to rough in the whole path first. Each ends with its tests passing on Linux and Windows.
 
 1. **Correctness.** The hash cache and the damage checks.
-2. **Scheduling.** Parallel jobs, `max_jobs`, failure and `-k`, interrupt and graceful stop, the lock and `--lock-timeout`, `fac.give_lock()`, and the terminal for tasks.
-3. **Stores.** `fac.Virtual`, `fac.VirtualInput`, `fac.VirtualOutput`, `fac.read` and `fac.write`, `fac.FileStore`, virtual output records and stamps in the state, the flush and its round-trip check, and file outputs moved onto the same code path as the built-in store.
-4. **Names.** Scopes, groups, patterns, `::`, `--list`, `--check`, `--paths`, `--json`, and `-v` reasons.
-5. **Budget.** `--timings`, the CI benchmarks, the C project's and the single-file store's, and the Windows benchmark.
-6. **Distribution.** Shipped docs and their CI checks, `--docs`, and `--python`.
+2. **Scheduling.** Parallel jobs, `max_jobs`, failure and `-k`, interrupt and graceful stop, the lock and `--lock-timeout`, `fac.give_lock()`, and the terminal for tasks. The `serve` task in the `my-site` example calls `fac.give_lock()` once it exists, so `fac` in a second terminal does not wait on it.
+3. **Watch mode.** The set of paths a cycle observed, then [the supervisor](./design/watch.md).
+4. **Stores.** `fac.Virtual`, `fac.VirtualInput`, `fac.VirtualOutput`, `fac.read` and `fac.write`, `fac.FileStore`, virtual output records and stamps in the state, the flush and its round-trip check, and file outputs moved onto the same code path as the built-in store.
+5. **Names.** Scopes, groups, patterns, `::`, `--list`, `--check`, `--paths`, `--json`, and `-v` reasons.
+6. **Budget.** `--timings`, the CI benchmarks, the C project's and the single-file store's, and the Windows benchmark.
+7. **Distribution.** Shipped docs and their CI checks, `--docs`, and `--python`.
 
-Phase 2 then adds the four extensions and the example projects, each project with a table of edits and the rules each one executes, which become its tests. Each extension gets the check that it imports only `facere.__all__`. `facere.c` has that check already, and so far holds only `makefile_deps`.
+Phase 2 then adds the four extensions and the example projects, each project with comments naming what an edit executes, and tests that check those claims. Each extension gets the check that it imports only `facere.__all__`. `facere.c` has that check already, and so far holds only `makefile_deps`.
 
 ## Open decisions
 
