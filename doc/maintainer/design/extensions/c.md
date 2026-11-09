@@ -1,5 +1,7 @@
 # C support
 
+`facere.c` ships after 1.0, so until then a C project parses its depfiles in its own `fac.py`, as [building C](../../../user/9-building-c.md) shows.
+
 ## Requirements
 
 - Sources to objects to an executable MUST remain the shortest `fac.py` Facere can express.

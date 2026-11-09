@@ -346,6 +346,17 @@ def test_dependency_cycle_reached_from_outside_names_only_its_members(fac: Fac) 
     ]
 
 
+@pytest.mark.project("directory_holding_own_output")
+def test_rule_inputting_a_directory_holding_its_own_output_fails_as_a_cycle(fac: Fac) -> None:
+    result = fac()
+
+    assert result.status == 2
+    assert result.err.splitlines() == [
+        "fac.py:4:2: error: dependency cycle: rule 'generate' (src/gen.c) -> rule 'generate' (src/gen.c)",
+        "fac.py:4:2: note: rule 'generate' (src/gen.c) inputs src, which holds src/gen.c, which rule 'generate' (src/gen.c) outputs",
+    ]
+
+
 @pytest.mark.project("each_not_dict")
 def test_each_item_that_is_not_a_dict_fails(fac: Fac) -> None:
     result = fac("touch")

@@ -28,12 +28,20 @@ OBJECT_FILE_RULES = [{"source": source, "obj": fac.out(source, ".o")} for source
 OBJECTS = [rule["obj"] for rule in OBJECT_FILE_RULES]
 
 
+# A depfile is a Makefile fragment: the object, a colon, then each file the compile read. A space
+# in a path is written `\ `, and a trailing `\` continues a line.
+def parse_depfile(path):
+    text = fac.read_text(path).replace("\\\n", " ").replace("\\ ", "\0")
+    files = text.partition(": ")[2].split()
+    return [file.replace("\0", " ") for file in files]
+
+
 # A keyword argument to @fac.rule fills that parameter in every rule the function defines, so a
 # changed flag in CFLAGS executes every compile.
 @fac.rule(each=OBJECT_FILE_RULES, cflags=CFLAGS)
 def object_file(source: fac.Input, obj: fac.Output, cflags):
     fac.run(CC, cflags, "-MD", "-MF", f"{obj}.d", "-c", source, "-o", obj)
-    fac.add_inputs(fac.c.makefile_deps(f"{obj}.d"))
+    fac.add_inputs(parse_depfile(f"{obj}.d"))
 
 
 @fac.rule(default=True)

@@ -12,7 +12,7 @@ import traceback
 from collections.abc import Callable
 
 from facere import _state
-from facere._collect import Definition, Project
+from facere._collect import Definition, Project, iter_upstream
 from facere._command import write_output
 from facere._context import (
     Context,
@@ -118,7 +118,7 @@ def build(
     except OSError as error:
         raise FacereError(Diagnostic(None, f"{error}")) from error
     ensure_audit_hook()
-    total = _calc_total(project.producers, targets)
+    total = _calc_total(project.upstream, targets)
     builder = _Builder(context, project, records, state_path, summary, progress_cb, total)
     try:
         for target in targets:
@@ -208,12 +208,12 @@ def _format_exception(error: BaseException) -> str:
     return "".join(report.format())
 
 
-def _calc_total(producers: dict[str, Definition], targets: list[Definition]) -> int:
+def _calc_total(upstream: dict[str, tuple[Definition, ...]], targets: list[Definition]) -> int:
     """Return the rules and tasks building `targets` reaches, as _Builder.build counts them."""
     checked: set[Definition] = set()
     total = 0
     for target in targets:
-        order = _order(producers, target, checked)
+        order = _order(upstream, target, checked)
         total += len(order) + target.is_task
         checked.update(order)
         if target.is_task:
@@ -222,26 +222,25 @@ def _calc_total(producers: dict[str, Definition], targets: list[Definition]) -> 
 
 
 def _order(
-    producers: dict[str, Definition], target: Definition, checked: set[Definition]
+    upstream: dict[str, tuple[Definition, ...]], target: Definition, checked: set[Definition]
 ) -> list[Definition]:
-    """Return the rules `target` needs that aren't in `checked`, each after the rules that output its inputs."""
+    """Return the rules `target` needs that aren't in `checked`, each after the rules that output its inputs or paths inside them."""
     if target in checked:
         return []
     order = []
     seen = {*checked, target}
-    stack = [(target, iter(target.prerequisites))]
+    stack = [(target, iter_upstream(target, upstream))]
     while stack:
-        definition, inputs = stack[-1]
-        path = next(inputs, None)
-        if path is None:
+        definition, edges = stack[-1]
+        _, rule = next(edges, (None, None))
+        if rule is None:
             stack.pop()
             if not definition.is_task:
                 order.append(definition)
             continue
-        rule = producers.get(path)
-        if rule is not None and rule not in seen:
+        if rule not in seen:
             seen.add(rule)
-            stack.append((rule, iter(rule.prerequisites)))
+            stack.append((rule, iter_upstream(rule, upstream)))
     return order
 
 
@@ -276,7 +275,7 @@ class _Builder:
                 _state.save_listing(self.state_path, _list_files(self.context.out_dir))
 
     def build(self, target: Definition, task_args: tuple[str, ...] | None) -> None:
-        for rule in _order(self.project.producers, target, self.checked):
+        for rule in _order(self.project.upstream, target, self.checked):
             try:
                 self._ensure_up_to_date(rule)
             except OSError as error:
@@ -344,7 +343,7 @@ class _Builder:
         producer = self._find_producer(path)
         if producer is None or producer is rule:
             return
-        if any(output in rule.prerequisites for output in producer.outputs):
+        if any(producer in self.project.upstream[input_] for input_ in rule.prerequisites):
             return
         raise RecipeFailure(
             rule,

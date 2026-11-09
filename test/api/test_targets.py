@@ -125,6 +125,17 @@ def test_rule_executes_after_the_rule_outputting_its_input_whatever_the_definiti
     assert (root / "build" / "wrap.txt").read_text() == "[a]"
 
 
+@pytest.mark.project("directory_holding_outputs")
+def test_rule_inputting_a_directory_executes_after_the_rules_outputting_inside_it(
+    root: Path, fac: Fac
+) -> None:
+    result = fac()
+
+    assert result.status == 0, result.err
+    assert result.err == "Finished in <elapsed>. Executed 2 rules.\n"
+    assert (root / "build" / "listing.txt").read_text() == "gen.c"
+
+
 @pytest.mark.project("pages")
 def test_path_builds_only_the_rule_outputting_it(root: Path, fac: Fac) -> None:
     result = fac("build/b.html")

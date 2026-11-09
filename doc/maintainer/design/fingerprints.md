@@ -15,6 +15,7 @@ Timestamps cannot decide what is stale. `git checkout` stamps every file it touc
 - for code under the root it reaches other than by name, the syntax tree of the whole module defining that code: the module of each value's class, such as a dataclass whose methods the recipe calls, and of each function or class a value holds, such as a dict of handlers. An edit anywhere in that module re-executes every rule holding such a value, which re-executes more than needed but never leaves one stale
 - its values, the arguments its parameters other than inputs and outputs receive, and the module constants its code reads, a shared module's included, along with those of every function it reaches
 - the variables `fac.env` sets for every command
+- the Python minor version, as in `3.13`: a minor release may change what the same code does and how its syntax trees dump, and a patch release does neither
 - the path and content of each input
 - the store, key, and value digest of each virtual input, and the code of the store of each virtual output
 
@@ -28,7 +29,7 @@ A value hashes by its type: `None`, `bool`, `int`, `float`, `str`, and `bytes` b
 
 Facere also keeps the file name of every added input, those outside the root included, and a new file under the root with one of those names makes the rule stale, since a tool searching a path may find it first, as a new root `stdlib.h` would shadow the header a compile found. New files show up as the difference between the tree's listing and the saved one. An invocation saves the listing when it finds a difference and again as it ends, failed or not, if it executed anything, so a file a recipe wrote under the root never counts as new. An invocation that finds no difference and executes nothing pays one walk of the tree, and a false match costs one re-execute. A match forgets the rule's record at once, so it stays stale though this invocation's targets do not reach it. A project whose recipes report nothing never walks the tree.
 
-When an added input is output by a rule none of whose outputs the reporting rule inputs, the invocation fails naming both: the first may have raced on it, and without the input the next one might too. A file inside a directory output counts as that rule's output.
+When a rule reports an input that another rule outputs, and none of its own inputs is an output of that rule or a directory holding one, the invocation fails naming both: the first may have raced on it, and without the input the next one might too. A file inside a directory output counts as that rule's output.
 
 ## The hash cache
 
@@ -66,7 +67,7 @@ The user docs list these in [hidden inputs](../../user/7-best-practices.md#hidde
 
 - **Values read at run time.** A recipe that reads an environment variable, or anything else besides files, while it executes leaves it out of the fingerprint.
 - **Inherited variables** stay out of the fingerprint, so one that changes an output, such as `CPATH`, `LC_ALL` for `sort`, or `SOURCE_DATE_EPOCH`, goes unnoticed until the project writes it through `env=` or `fac.env`.
-- **The standard library and Facere's own modules**, which recipes call, are hashed by name only, so upgrading Python or Facere re-executes nothing.
+- **The standard library and Facere's own modules**, which recipes call, are hashed by name only, so upgrading Facere or a Python patch release re-executes nothing, unless the Facere release changes what a fingerprint holds.
 - **What a store cannot see.** A store's `read` that skips part of its file, or a `stamp` that misses a change, leaves that part or that change untracked.
 - **Unresolved code.** Code a recipe reaches through a computed name, as with `getattr(module, name)` or `importlib.import_module`, stays out of the fingerprint.
 - **Programs** stay out of the fingerprint unless the project declares them, as an input or as a version in a value. Facere does not hash what a command launches on its own: that would see only the launcher, not `as` and `ld` behind `gcc` or zig behind `uvx`, and would rebuild everything when the launcher alone is upgraded.

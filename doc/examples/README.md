@@ -3,7 +3,7 @@
 Each directory is a project of its own, run with `uv run fac -C doc/examples/<name>` from the repository's root. Read them in this order, simplest first. Each running example explains itself in its `fac.py`'s comments, which say what an edit executes. `c-hello`, `c-configurations`, `codegen`, and `c-tools` use features new in 0.4. A *(planned)* example uses features no version has yet, and its README serves as its spec.
 
 1. [`my-site/`](./my-site/fac.py) - a small website, as [getting started](../user/1-getting-started.md) finishes it: `fac.sources`, `each=`, an output that comes out the same, a program run through `fac.run`, and a live-reloading server task taking `fac.Args`
-2. [`c-hello/`](./c-hello/fac.py) - a C program, as [the C guide](../user/9-building-c.md) finishes it: depfiles through `fac.add_inputs` and `fac.c.makefile_deps`, and a value read from the environment while `fac.py` loads
+2. [`c-hello/`](./c-hello/fac.py) - a C program, as [the C guide](../user/9-building-c.md) finishes it: depfiles parsed in Python and reported through `fac.add_inputs`, and a value read from the environment while `fac.py` loads
 3. [`c-configurations/`](./c-configurations/fac.py) - a C program in debug and release from one table: rules built in loops, and a path as a target
 4. [`data-pipeline/`](./data-pipeline/fac.py) - separate programs chained through files: each `fac.run` option, `fac.env`, several outputs from one rule, a directory output, a `str` value, and an output that comes out the same
 5. [`many-files/`](./many-files/fac.py) - 1500 rules, each writing a file of its own, and a task taking its own options

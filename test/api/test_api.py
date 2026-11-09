@@ -18,7 +18,6 @@ def test_all_exports_exactly_the_fac_py_interface() -> None:
         "OrderOnly",
         "Output",
         "add_inputs",
-        "c",
         "env",
         "main",
         "minimum_version",

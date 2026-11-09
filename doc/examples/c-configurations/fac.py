@@ -31,11 +31,19 @@ DEBUG_PROGRAM = fac.out(f"debug/{PROGRAM_NAME}")
 RELEASE_PROGRAM = fac.out(f"release/{PROGRAM_NAME}")
 
 
+# A depfile is a Makefile fragment: the object, a colon, then each file the compile read. A space
+# in a path is written `\ `, and a trailing `\` continues a line.
+def parse_depfile(path):
+    text = fac.read_text(path).replace("\\\n", " ").replace("\\ ", "\0")
+    files = text.partition(": ")[2].split()
+    return [file.replace("\0", " ") for file in files]
+
+
 # Editing a header executes the compiles whose depfiles list it, in each configuration.
 @fac.rule(each=OBJECT_FILE_RULES)
 def object_file(source: fac.Input, obj: fac.Output, cflags):
     fac.run(CC, WARNINGS, cflags, "-MD", "-MF", f"{obj}.d", "-c", source, "-o", obj)
-    fac.add_inputs(fac.c.makefile_deps(f"{obj}.d"))
+    fac.add_inputs(parse_depfile(f"{obj}.d"))
 
 
 # `fac build/release/app` names one program by its path, and builds only what it needs.

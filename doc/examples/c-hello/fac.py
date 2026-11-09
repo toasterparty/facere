@@ -21,12 +21,20 @@ OBJECT_FILE_RULES = [{"source": source, "obj": fac.out(source, ".o")} for source
 OBJECTS = [rule["obj"] for rule in OBJECT_FILE_RULES]
 
 
+# A depfile is a Makefile fragment: the object, a colon, then each file the compile read. A space
+# in a path is written `\ `, and a trailing `\` continues a line.
+def parse_depfile(path):
+    text = fac.read_text(path).replace("\\\n", " ").replace("\\ ", "\0")
+    files = text.partition(": ")[2].split()
+    return [file.replace("\0", " ") for file in files]
+
+
 # Only the compiler knows which headers a source includes. Its depfile lists them, so editing a
 # header executes just the compiles that read it.
 @fac.rule(each=OBJECT_FILE_RULES)
 def object_file(source: fac.Input, obj: fac.Output):
     fac.run(CC, CFLAGS, "-MD", "-MF", f"{obj}.d", "-c", source, "-o", obj)
-    fac.add_inputs(fac.c.makefile_deps(f"{obj}.d"))
+    fac.add_inputs(parse_depfile(f"{obj}.d"))
 
 
 # An object that comes out the same leaves this up to date.

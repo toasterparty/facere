@@ -54,7 +54,7 @@ MUST, MUST NOT, SHOULD, SHOULD NOT, and MAY are to be interpreted as in BCP 14 (
 - Facere MUST be able to emit its listing of rules and tasks, its staleness report, and its timings as JSON, the listing and the report sharing one record layout, so a script or agent reads structure instead of parsing prose.
 - Facere MUST be able to print each command it runs, as one string, before running it.
 - Facere MUST show what a rule's commands write, unaltered, and MUST let the user hide a successful command's output, for one command or for a whole invocation.
-- When Facere's own output is a terminal, a rule's commands SHOULD see a terminal on their standard error, so a tool colours its diagnostics as it would unwrapped. What a recipe reads from a command's standard output MUST NOT depend on whether Facere had a terminal.
+- When Facere's own output is a terminal, a rule's commands SHOULD see a terminal on their standard error, so a tool colors its diagnostics as it would unwrapped. What a recipe reads from a command's standard output MUST NOT depend on whether Facere had a terminal.
 
 ## Errors
 
@@ -71,7 +71,7 @@ MUST, MUST NOT, SHOULD, SHOULD NOT, and MAY are to be interpreted as in BCP 14 (
 ## Correctness
 
 - Staleness MUST be decided by content. Timestamps MAY key a cache of what files and directories hold, and a store's stamp a cache of what its virtual outputs hold, and both MUST serve no other purpose. A cache entry recorded less than one timestamp granularity after its file last changed MUST be rehashed rather than trusted.
-- A rule's fingerprint, the hash that decides whether the rule is stale, MUST hold its recipe's code, every value it reads through its parameters or as a module constant, and its declared inputs. Facere MUST NOT infer what else can change an output, such as the programs its commands launch: the project declares what should count.
+- A rule's fingerprint, the hash that decides whether the rule is stale, MUST hold its recipe's code, every value it reads through its parameters or as a module constant, its declared inputs, and the Python minor version running it, since a minor release may change what the same code does. Facere's own version MUST stay out of it, since every release builds as earlier ones did. A release that changes what a fingerprint holds re-executes every rule once. Facere MUST NOT infer what else can change an output, such as the programs its commands launch: the project declares what should count.
 - The documentation MUST list every kind of input that stays out of fingerprints, so a user knows which risks they own.
 - A file appearing in, disappearing from, or renamed within a rule's inputs, as when a glob's matches change, MUST make the rule stale, even when no content changed.
 - A recipe MUST fail when Facere observes it using a file under the root that its rule does not declare and it has not reported, naming the declaration to add. A file in the output directory that no rule outputs is exempt, so a recipe can keep scratch files there, as is one in a hidden directory that no rule outputs, where a virtual environment lives.
@@ -111,7 +111,7 @@ MUST, MUST NOT, SHOULD, SHOULD NOT, and MAY are to be interpreted as in BCP 14 (
 
 - Extensions MUST use only Facere's public interface. They exist only to package rules that many users need.
 - Extensions SHOULD follow the [best practices](../user/7-best-practices.md).
-- An environment an extension creates for its own use, such as a virtual environment for an isolated tool or for one Python version, MUST lie in the output directory, so deleting the directory resets it. An extension MUST NOT create, relocate, or replace the environment of the project being built: that environment belongs to the user and their tools, and lies where those tools put it.
+- An environment an extension creates for its own use, such as a virtual environment for an isolated tool or for one Python version, MUST lie in the output directory, so deleting the directory resets it. An extension that manages the project's own environment, as `facere.uv` does, MUST create and sync it through the user's tools, where those tools put it.
 
 ## Distribution
 

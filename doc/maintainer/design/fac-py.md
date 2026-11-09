@@ -10,8 +10,8 @@ The files are named `fac.py` because a `facere.py` would shadow the `facere` pac
 
 | Annotation | Holds | Facere uses it to |
 |---|---|---|
-| `fac.Input`, `list[fac.Input]` | files or directories the recipe reads | execute first the rule that outputs each one, require the rest to exist, and hash their content |
-| `fac.OrderOnly`, `list[fac.OrderOnly]` | files or directories the recipe may read, such as a generated header only some compiles include | execute first the rule that outputs each one, require the rest to exist, and hash their content only once the recipe reports reading them. A task declaring one fails collection, since a task records nothing |
+| `fac.Input`, `list[fac.Input]` | files or directories the recipe reads | execute first the rules that output each one or a path inside it, require the rest to exist, and hash their content |
+| `fac.OrderOnly`, `list[fac.OrderOnly]` | files or directories the recipe may read, such as a generated header only some compiles include | execute first the rules that output each one or a path inside it, require the rest to exist, and hash their content only once the recipe reports reading them. A task declaring one fails collection, since a task records nothing |
 | `fac.Output`, `list[fac.Output]` | files or directories the recipe writes and Facere tracks | rebuild them when changed or deleted by hand, reject two rules outputting one path, and execute this rule before any rule or task that inputs them |
 | `fac.VirtualInput`, `list[fac.VirtualInput]` | virtual outputs of a [store](./stores.md) the recipe reads through `fac.read` | execute first the rule that writes each one, require the rest to exist, and hash their values |
 | `fac.VirtualOutput`, `list[fac.VirtualOutput]` | virtual outputs of a store the recipe sets through `fac.write` | write them to their store once the recipe succeeds, rewrite them when changed or missing, and reject two rules writing one virtual output |

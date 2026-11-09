@@ -1,6 +1,6 @@
 # Distribution
 
-The wheel is `py3-none-any`. The scheduler and state are Facere's own from the first release, so neither ninja nor doit is a dependency, even as a stopgap. The shipped extensions ship in the same wheel, each a single file until it needs a second: `c.py` and `c/__init__.py` both import as `facere.c`, so an extension can become a package later without users noticing.
+The wheel is `py3-none-any`. The scheduler and state are Facere's own from the first release, so neither ninja nor doit is a dependency, even as a stopgap. The shipped extensions ship in the same wheel, each a single file until it needs a second: `git.py` and `git/__init__.py` both import as `facere.git`, so an extension can become a package later without users noticing.
 
 ## Install
 

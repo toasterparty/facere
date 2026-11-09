@@ -48,6 +48,14 @@ def keywords(table: fac.Input = KEYWORD_TABLE, source: fac.Output = KEYWORDS):
     fac.run("gperf", "--language=ANSI-C", f"--output-file={source}", table)
 
 
+# A depfile is a Makefile fragment: the object, a colon, then each file the compile read. A space
+# in a path is written `\ `, and a trailing `\` continues a line.
+def parse_depfile(path):
+    text = fac.read_text(path).replace("\\\n", " ").replace("\\ ", "\0")
+    files = text.partition(": ")[2].split()
+    return [file.replace("\0", " ") for file in files]
+
+
 # Order-only headers are built before any compile, and make it stale only once its depfile lists them.
 # Drop `headers` and the compile fails, naming the rule that outputs the header it read, since nothing
 # orders it after the generator. The price is that the first run waits for every header.
@@ -56,7 +64,7 @@ def keywords(table: fac.Input = KEYWORD_TABLE, source: fac.Output = KEYWORDS):
 @fac.rule(each=OBJECT_FILE_RULES)
 def object_file(source: fac.Input, obj: fac.Output, headers: list[fac.OrderOnly] = HEADERS):
     fac.run(CC, CFLAGS, "-MD", "-MF", f"{obj}.d", "-c", source, "-o", obj)
-    fac.add_inputs(fac.c.makefile_deps(f"{obj}.d"))
+    fac.add_inputs(parse_depfile(f"{obj}.d"))
 
 
 @fac.rule(default=True)

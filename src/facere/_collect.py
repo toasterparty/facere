@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import bisect
 import enum
 import hashlib
 import importlib.util
@@ -13,7 +14,7 @@ import sys
 import traceback
 import types
 import typing
-from collections.abc import Callable, Container, Iterable, Mapping
+from collections.abc import Callable, Container, Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import PurePath
 from typing import NamedTuple
@@ -45,7 +46,7 @@ from facere._version import VERSION
 
 MODULE_NAME = "__fac__"
 _RESERVED_OPTIONS = ("each", "name", "default", "max_jobs", "terminal", "always", "clear")
-_FINGERPRINT_FORMAT = b"facere fingerprint 4"
+_FINGERPRINT_FORMAT = b"facere fingerprint 5"
 _UNREADABLE_SOURCE = (OSError, LookupError, SyntaxError, ValueError)
 _HASHABLE_TYPES = "Facere hashes only None, a bool, int, float, str, bytes, module, function, or class, or a tuple, list, dict, or set of them"
 _PATH_ANNOTATIONS = {
@@ -137,6 +138,7 @@ class Project:
     by_name: dict[str, list[Definition]]
     producers: dict[str, Definition]
     producers_by_key: dict[str, Definition]
+    upstream: dict[str, tuple[Definition, ...]]
     code_digests: dict[Definition, bytes]
     shared_modules: frozenset[str]
 
@@ -154,14 +156,53 @@ def collect(context: Context) -> Project:
         by_name.setdefault(definition.name, []).append(definition)
     _validate_names(by_name, errors)
     producers_by_key = {calc_path_key(output): rule for output, rule in producers.items()}
+    upstream = _map_upstream(definitions, producers, producers_by_key)
     code_digests = _hash_values(context, definitions, producers_by_key.keys(), errors)
-    _validate_inputs(context, definitions, producers, errors)
+    _validate_inputs(context, definitions, producers, upstream, errors)
     if not errors:
-        _validate_acyclic(definitions, producers, errors)
+        _validate_acyclic(definitions, upstream, errors)
     if errors:
         raise FacereError(*errors)
     shared_modules = frozenset(calc_path_key(normalize(path, context.root)) for path in imported)
-    return Project(definitions, by_name, producers, producers_by_key, code_digests, shared_modules)
+    return Project(
+        definitions, by_name, producers, producers_by_key, upstream, code_digests, shared_modules
+    )
+
+
+def iter_upstream(
+    definition: Definition, upstream: dict[str, tuple[Definition, ...]]
+) -> Iterator[tuple[str, Definition]]:
+    """Yield each path `definition` must have built first, with each rule it must execute after for that path."""
+    for path in definition.prerequisites:
+        for rule in upstream[path]:
+            yield path, rule
+
+
+def _map_upstream(
+    definitions: tuple[Definition, ...],
+    producers: dict[str, Definition],
+    producers_by_key: dict[str, Definition],
+) -> dict[str, tuple[Definition, ...]]:
+    """Map each path a definition must have built first to the rules outputting it or a path inside it, as a directory input reads every file it holds."""
+    keys = sorted(producers_by_key)
+    upstream: dict[str, tuple[Definition, ...]] = {}
+    for definition in definitions:
+        for path in definition.prerequisites:
+            if path in upstream:
+                continue
+            exact = [producers[path]] if path in producers else []
+            inside = [producers_by_key[key] for key in _find_keys_inside(calc_path_key(path), keys)]
+            upstream[path] = tuple(dict.fromkeys([*exact, *inside]))
+    return upstream
+
+
+def _find_keys_inside(directory: str, keys: list[str]) -> list[str]:
+    """Return the sorted `keys` that lie inside `directory`, a path key as normalize returns it."""
+    if directory == ".":
+        return [key for key in keys if not key.startswith("../") and not os.path.isabs(key)]
+    # "0" follows "/", so the range holds exactly the keys starting with the directory and a "/".
+    start = bisect.bisect_left(keys, f"{directory}/")
+    return keys[start : bisect.bisect_left(keys, f"{directory}0", start)]
 
 
 def _load(context: Context) -> list[str]:
@@ -624,6 +665,8 @@ def _hash_function(
     fn = definition.fn
     assert isinstance(fn, types.FunctionType)
     digest = hashlib.sha256(_FINGERPRINT_FORMAT)
+    # A Python minor release may change what the same code does, and changes its syntax trees.
+    feed(digest, b"python", f"{sys.version_info.major}.{sys.version_info.minor}".encode())
     problems = []
     if definition.is_task:
         for kind, values in (
@@ -797,6 +840,7 @@ def _validate_inputs(
     context: Context,
     definitions: tuple[Definition, ...],
     producers: dict[str, Definition],
+    upstream: dict[str, tuple[Definition, ...]],
     errors: list[Diagnostic],
 ) -> None:
     output_by_key = {calc_path_key(output): output for output in producers}
@@ -806,7 +850,7 @@ def _validate_inputs(
                 message = f"{definition.label} inputs {path}, which holds the output directory {context.out_dir}, so its content changes on every build"
                 errors.append(_diagnose(definition, message))
                 continue
-            if path in producers:
+            if upstream[path]:
                 continue
             output = output_by_key.get(calc_path_key(path))
             if output is not None:
@@ -829,27 +873,28 @@ def _validate_inputs(
 
 
 def _validate_acyclic(
-    definitions: tuple[Definition, ...], producers: dict[str, Definition], errors: list[Diagnostic]
+    definitions: tuple[Definition, ...],
+    upstream: dict[str, tuple[Definition, ...]],
+    errors: list[Diagnostic],
 ) -> None:
     done: set[Definition] = set()
     for start in definitions:
         if start in done:
             continue
-        stack = [(start, iter(start.prerequisites))]
+        stack = [(start, iter_upstream(start, upstream))]
         path_inputs: list[str] = []
         on_path = {start}
         while stack:
-            definition, inputs = stack[-1]
-            path = next(inputs, None)
-            if path is None:
+            definition, edges = stack[-1]
+            path, rule = next(edges, (None, None))
+            if path is None or rule is None:
                 stack.pop()
                 on_path.discard(definition)
                 done.add(definition)
                 if path_inputs:
                     path_inputs.pop()
                 continue
-            rule = producers.get(path)
-            if rule is None or rule in done:
+            if rule in done:
                 continue
             if rule in on_path:
                 loop = [entry for entry, _ in stack]
@@ -859,16 +904,21 @@ def _validate_acyclic(
                 return
             path_inputs.append(path)
             on_path.add(rule)
-            stack.append((rule, iter(rule.prerequisites)))
+            stack.append((rule, iter_upstream(rule, upstream)))
 
 
 def _build_cycle_error(loop: list[Definition], inputs: list[str]) -> Diagnostic:
     names = " -> ".join(definition.label for definition in [*loop, loop[0]])
     notes = tuple(
-        Note(
-            definition.location,
-            f"{definition.label} inputs {path}, which {loop[(index + 1) % len(loop)].label} outputs",
-        )
+        Note(definition.location, _describe_edge(definition, path, loop[(index + 1) % len(loop)]))
         for index, (definition, path) in enumerate(zip(loop, inputs, strict=True))
     )
     return _diagnose(loop[0], f"dependency cycle: {names}", notes)
+
+
+def _describe_edge(definition: Definition, path: str, rule: Definition) -> str:
+    if path in rule.outputs:
+        return f"{definition.label} inputs {path}, which {rule.label} outputs"
+    key = calc_path_key(path)
+    inside = next(output for output in rule.outputs if is_within(calc_path_key(output), key))
+    return f"{definition.label} inputs {path}, which holds {inside}, which {rule.label} outputs"
