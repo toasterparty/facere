@@ -15,6 +15,7 @@ from facere import _state
 from facere._collect import Definition, Project, iter_upstream
 from facere._command import write_output
 from facere._context import (
+    STATE_FILE_NAME,
     Context,
     Recipe,
     calc_path_key,
@@ -23,7 +24,7 @@ from facere._context import (
     normalize,
 )
 from facere._diagnostics import Diagnostic, FacereError, Note, print_error
-from facere._hash import feed, hash_path, iter_strings
+from facere._hash import Stamp, calc_stamp, feed, hash_path, iter_strings
 from facere._summary import Summary
 from facere._undeclared import ensure_audit_hook
 
@@ -105,26 +106,32 @@ def build(
 
     `summary` counts what ran and what was current, and names the definition an interrupt stopped, so it holds the invocation's progress even when this raises. `progress_cb` gets `[position/total] label` as each rule or task starts to execute, where the position counts every rule and task reached, executed or not.
     """
-    state_path = posixpath.join(context.state_dir, "state.db")
+    state_path = posixpath.join(context.state_dir, STATE_FILE_NAME)
     records = _state.load(state_path)
     declared = {
         _state.calc_key(definition.outputs)
         for definition in project.definitions
         if not definition.is_task
     }
+    output_keys = frozenset(project.producers_by_key)
+    saved_output_keys = _state.load_declared(state_path)
+    new_outputs = output_keys - saved_output_keys if saved_output_keys is not None else frozenset()
     try:
         _state.remove(state_path, [key for key in records if key not in declared])
-        records = _remove_shadowed(context, state_path, records)
+        records = _remove_shadowed(context, state_path, records, new_outputs)
     except OSError as error:
         raise FacereError(Diagnostic(None, f"{error}")) from error
     ensure_audit_hook()
-    total = _calc_total(project.upstream, targets)
-    builder = _Builder(context, project, records, state_path, summary, progress_cb, total)
+    total, planned = _plan(project.upstream, targets)
+    builder = _Builder(context, project, records, state_path, summary, progress_cb, total, planned)
     try:
         for target in targets:
             builder.build(target, task_args)
     finally:
         builder.save_listing()
+        if output_keys != saved_output_keys:
+            with contextlib.suppress(OSError):
+                _state.save_declared(state_path, output_keys)
 
 
 def report_failure(failure: RecipeFailure, start_dir: str) -> None:
@@ -170,21 +177,27 @@ def _list_files(out_dir: str) -> frozenset[str]:
 
 
 def _remove_shadowed(
-    context: Context, state_path: str, records: dict[tuple[str, ...], _state.Record]
+    context: Context,
+    state_path: str,
+    records: dict[tuple[str, ...], _state.Record],
+    new_outputs: frozenset[str],
 ) -> dict[tuple[str, ...], _state.Record]:
-    """Forget each record that names a file name a file new since the last invocation has, whether or not this invocation's targets reach its rule, and return the records left."""
+    """Forget each record that names a file name a file new since the last invocation has, or an output no rule declared then, whether or not this invocation's targets reach its rule, and return the records left."""
     if not _has_added_names(records):
         return records
     listing = _list_files(context.out_dir)
     saved = _state.load_listing(state_path)
-    if listing == saved:
+    if listing == saved and not new_outputs:
         return records
-    new_names = {calc_path_key(posixpath.basename(path)) for path in listing - saved}
+    new_names = {
+        calc_path_key(posixpath.basename(path)) for path in (listing - saved) | new_outputs
+    }
     shadowed = {
         key for key, record in records.items() if not new_names.isdisjoint(record.added_names)
     }
     _state.remove(state_path, list(shadowed))
-    _state.save_listing(state_path, listing)
+    if listing != saved:
+        _state.save_listing(state_path, listing)
     return {key: record for key, record in records.items() if key not in shadowed}
 
 
@@ -208,17 +221,21 @@ def _format_exception(error: BaseException) -> str:
     return "".join(report.format())
 
 
-def _calc_total(upstream: dict[str, tuple[Definition, ...]], targets: list[Definition]) -> int:
-    """Return the rules and tasks building `targets` reaches, as _Builder.build counts them."""
+def _plan(
+    upstream: dict[str, tuple[Definition, ...]], targets: list[Definition]
+) -> tuple[int, set[Definition]]:
+    """Return how many rules and tasks building `targets` reaches, as _Builder.build counts them, and the rules among them."""
     checked: set[Definition] = set()
+    planned: set[Definition] = set()
     total = 0
     for target in targets:
         order = _order(upstream, target, checked)
         total += len(order) + target.is_task
         checked.update(order)
+        planned.update(order)
         if target.is_task:
             checked.clear()
-    return total
+    return total, planned
 
 
 def _order(
@@ -254,6 +271,7 @@ class _Builder:
         summary: Summary,
         progress_cb: Callable[[str], None],
         total: int,
+        planned: set[Definition],
     ) -> None:
         self.context = context
         self.project = project
@@ -263,6 +281,7 @@ class _Builder:
         self.summary = summary
         self.progress_cb = progress_cb
         self.total = total
+        self.planned = planned
         self.position = 0
         self.has_executed = False
 
@@ -290,11 +309,14 @@ class _Builder:
     def _ensure_up_to_date(self, rule: Definition) -> None:
         self.checked.add(rule)
         self.position += 1
+        stamps = {path: calc_stamp(path) for path in rule.inputs}
         fingerprint = self._calc_fingerprint(rule)
         key = _state.calc_key(rule.outputs)
         record = self.records.get(key)
         hashes_before: dict[str, str | None] = {}
         if record is not None:
+            self._ensure_recorded_reports_built(rule, record)
+            stamps.update({path: calc_stamp(path) for path, _ in record.added_inputs})
             hashes_before = {path: hash_path(path) for path, _ in record.added_inputs}
             if (
                 record.fingerprint == fingerprint
@@ -316,6 +338,10 @@ class _Builder:
                 rule,
                 reason=f"its recipe succeeded without writing {', '.join(missing)}",
             )
+        self.summary.rules_run += 1
+        if self._has_input_moved(recipe, stamps, hashes_before):
+            self.records.pop(key, None)
+            return
         record = self.records[key] = _state.Record(
             fingerprint,
             tuple(content for content in output_hashes.values() if content is not None),
@@ -323,14 +349,43 @@ class _Builder:
             tuple(sorted(recipe.reported_names)),
         )
         _state.save(self.state_path, key, record)
-        self.summary.rules_run += 1
+
+    def _has_input_moved(
+        self,
+        recipe: Recipe,
+        stamps: dict[str, Stamp | None],
+        hashes_before: dict[str, str | None],
+    ) -> bool:
+        """Say whether an input changed while the recipe executed, even where its content changed back, so recording the rule would claim it current for files its tool never read.
+
+        `stamps` holds each input's stamp from before its hash, and a file first reported has its stamp from its report, unless the recipe wrote it in Python itself. Both are compared after the hash, so a change in between shows.
+        """
+        if any(calc_stamp(path) != stamp for path, stamp in stamps.items()):
+            return True
+        return any(
+            calc_stamp(path) != stamp
+            for path, stamp in recipe.reported.items()
+            if path not in hashes_before and calc_path_key(path) not in recipe.written
+        )
+
+    def _ensure_recorded_reports_built(self, rule: Definition, record: _state.Record) -> None:
+        """Bring up to date first each rule that now outputs a file `rule` last reported, as when a source became generated, so its record is checked against the file that rule writes."""
+        for path, _ in record.added_inputs:
+            producer = self._find_producer(path)
+            if producer is None or producer is rule:
+                continue
+            for upstream_rule in _order(self.project.upstream, producer, self.checked):
+                if upstream_rule not in self.planned:
+                    self.planned.add(upstream_rule)
+                    self.total += 1
+                self._ensure_up_to_date(upstream_rule)
 
     def _hash_added_inputs(
         self, rule: Definition, recipe: Recipe, hashes_before: dict[str, str | None]
     ) -> tuple[tuple[str, str], ...]:
         """Return what `rule`'s recipe reported, each path with its hash from before the recipe where one exists, so a change during the recipe makes the rule stale."""
         added = []
-        for path in sorted(recipe.reported.values()):
+        for path in sorted(recipe.reported):
             self._validate_ordered(rule, path)
             content = hashes_before.get(path) or hash_path(path)
             if content is None:

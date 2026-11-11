@@ -16,7 +16,8 @@ CC = ["uvx", "--from", f"ziglang=={ZIG_VERSION}", "python-zig", "cc"]
 # A path glued to -I escapes the check that fails a command given an undeclared path. That costs
 # nothing here, since the generated headers are already inputs.
 CFLAGS = ["-O2", "-Wall", "-I.", "-I" + fac.out("gen")]
-# A new spec executes its `message`, one compile, and the link, and no other compile.
+# A new spec executes its `message`, every compile, since a compile's fingerprint holds the list of
+# headers it orders after, and the link.
 SPECS = fac.sources("messages/*.toml")
 KEYWORD_TABLE = "src/keywords.gperf"
 KEYWORDS = fac.out("gen/keywords.c")

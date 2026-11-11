@@ -9,6 +9,8 @@ from pathlib import PurePosixPath
 from typing import Annotated, Any, TypeVar, overload
 
 from facere._context import (
+    STATE_DIR_NAME,
+    STATE_FILE_NAME,
     Context,
     Declaration,
     Kind,
@@ -18,15 +20,17 @@ from facere._context import (
     is_under_root,
     is_within,
     is_within_any,
+    iter_self_and_parents,
     normalize,
 )
 from facere._diagnostics import Diagnostic, FacereError, Note, find_caller_locations
+from facere._hash import calc_stamp
 from facere._version import VERSION
 
 Input = Annotated[str, Kind.INPUT]
 """Annotates a parameter holding a file or directory the rule or task reads, as a path relative to the root. Use `list[fac.Input]` for several."""
 OrderOnly = Annotated[str, Kind.ORDER_ONLY]
-"""Annotates a rule's parameter holding a file or directory its recipe may read, as a path relative to the root. It is built first, but a change to it makes the rule stale only once the recipe reports reading it through `fac.add_inputs`. Use `list[fac.OrderOnly]` for several."""
+"""Annotates a rule's parameter holding a file or directory its recipe may read, as a path relative to the root. It is built first, and its path joins the fingerprint, but a change to its content makes the rule stale only once the recipe reports reading it through `fac.add_inputs`. Use `list[fac.OrderOnly]` for several."""
 Output = Annotated[str, Kind.OUTPUT]
 """Annotates a parameter holding a file or directory the rule writes, as a path relative to the root. Use `list[fac.Output]` for several."""
 Args = Annotated[tuple[str, ...], Kind.ARGS]
@@ -107,7 +111,7 @@ def out(path: str = ".", suffix: str | None = None) -> str:
 def add_inputs(paths: Iterable[str]) -> None:
     """Report files the running rule's recipe read, usually what a tool's depfile lists, so a change to any of them makes the rule stale.
 
-    Call it once its tool has run or before reading a file in Python. Each path is relative to the root, or absolute, and any spelling of one counts, such as `src/a/../b.h`. A new file under the root with the name of a reported file makes the rule stale. A file outside the root and the output directory that no rule outputs is otherwise dropped. Raises FileNotFoundError for a kept path that doesn't exist.
+    Call it once its tool has run or before reading a file in Python. Each path is relative to the root, or absolute, and any spelling of one counts, such as `src/a/../b.h`. A new file under the root with the name of a reported file makes the rule stale. A file inside the output directory that no rule outputs is scratch, so only its name is kept. Raises FileNotFoundError for a kept path that doesn't exist.
     """
     context = get_context("fac.add_inputs")
     recipe = context.running
@@ -123,16 +127,13 @@ def add_inputs(paths: Iterable[str]) -> None:
         if is_within_any(key, recipe.tracked):
             continue
         recipe.reported_names.add(calc_path_key(posixpath.basename(relative)))
-        absolute = os.path.join(context.root, relative)
-        if not (
-            is_under_root(absolute, context.root)
-            or is_within(relative, context.out_dir)
-            or is_within_any(key, recipe.output_keys)
-        ):
+        if is_within(relative, context.out_dir) and not is_within_any(key, recipe.output_keys):
             continue
-        if not os.path.exists(absolute):
+        stamp = calc_stamp(os.path.join(context.root, relative))
+        if stamp is None:
             raise FileNotFoundError(errno.ENOENT, "fac.add_inputs got a missing file", relative)
-        recipe.reported[key] = relative
+        recipe.reported.setdefault(relative, stamp)
+        recipe.reported_keys.add(key)
 
 
 def read_text(path: str) -> str:
@@ -176,7 +177,7 @@ def env(**variables: str | None) -> None:
 def sources(*patterns: str) -> list[str]:
     """Return the files under the root that match any of `patterns`, sorted, as paths relative to the root with `/`.
 
-    Each pattern is a glob relative to the root, in which `**` matches any number of directories, as in `fac.sources("src/**/*.c")`. A file or directory whose name starts with `.` matches only a pattern part that starts with `.`, and nothing in the output directory matches. Call it while fac.py loads.
+    Each pattern is a glob relative to the root, in which `**` matches any number of directories, as in `fac.sources("src/**/*.c")`. A file or directory whose name starts with `.` matches only a pattern part that starts with `.`, and nothing in the output directory, or in another directory holding Facere's state, matches. Call it while fac.py loads.
     """
     context = _get_loading_context("fac.sources")
     return sorted({path for pattern in patterns for path in _glob(context, pattern)})
@@ -216,13 +217,27 @@ def _glob(context: Context, pattern: str) -> list[str]:
     if relative.is_absolute() or os.path.isabs(pattern) or ".." in relative.parts:
         raise ValueError(f"fac.sources takes globs under the root, not {pattern!r}")
     paths = []
+    holds_state: dict[str, bool] = {}
     for match in glob.glob(pattern, root_dir=context.root, recursive=True):
         path = normalize(match, context.root)
         absolute = os.path.join(context.root, path)
         is_listed = is_under_root(absolute, context.root) and not is_within(path, context.out_dir)
-        if is_listed and os.path.isfile(absolute):
+        if not is_listed or not os.path.isfile(absolute):
+            continue
+        if not _is_in_output_directory(context.root, path, holds_state):
             paths.append(path)
     return paths
+
+
+def _is_in_output_directory(root: str, path: str, holds_state: dict[str, bool]) -> bool:
+    """Say whether `path` lies in a directory holding Facere's state, as another `--out` leaves one, caching each directory's answer in `holds_state`."""
+    for directory in iter_self_and_parents(posixpath.dirname(path)):
+        if directory not in holds_state:
+            state = os.path.join(root, directory, STATE_DIR_NAME, STATE_FILE_NAME)
+            holds_state[directory] = os.path.isfile(state)
+        if holds_state[directory]:
+            return True
+    return False
 
 
 def _parse_version(version: str) -> tuple[int, ...]:

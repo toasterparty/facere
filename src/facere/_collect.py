@@ -28,6 +28,7 @@ from facere._context import (
     calc_path_key,
     is_under_root,
     is_within,
+    iter_self_and_parents,
     normalize,
 )
 from facere._diagnostics import Diagnostic, FacereError, Note
@@ -38,6 +39,7 @@ from facere._hash import (
     feed,
     feed_value,
     find_closure_values,
+    find_default_values,
     find_methods,
     find_read_globals,
     iter_strings,
@@ -183,16 +185,22 @@ def _map_upstream(
     producers: dict[str, Definition],
     producers_by_key: dict[str, Definition],
 ) -> dict[str, tuple[Definition, ...]]:
-    """Map each path a definition must have built first to the rules outputting it or a path inside it, as a directory input reads every file it holds."""
+    """Map each path a definition must have built first to the rules outputting it, a directory holding it, or a path inside it, as a directory input reads every file it holds."""
     keys = sorted(producers_by_key)
     upstream: dict[str, tuple[Definition, ...]] = {}
     for definition in definitions:
         for path in definition.prerequisites:
             if path in upstream:
                 continue
+            key = calc_path_key(path)
             exact = [producers[path]] if path in producers else []
-            inside = [producers_by_key[key] for key in _find_keys_inside(calc_path_key(path), keys)]
-            upstream[path] = tuple(dict.fromkeys([*exact, *inside]))
+            holding = [
+                producers_by_key[parent]
+                for parent in iter_self_and_parents(posixpath.dirname(key))
+                if parent in producers_by_key
+            ]
+            inside = [producers_by_key[inner] for inner in _find_keys_inside(key, keys)]
+            upstream[path] = tuple(dict.fromkeys([*exact, *holding, *inside]))
     return upstream
 
 
@@ -505,9 +513,7 @@ def _build_definition(
                 are_paths_valid = False
                 continue
             paths_by_kind[slot.kind].extend(paths)
-            value = paths if slot.is_list else paths[0]
-            if slot.kind is not Kind.ORDER_ONLY:
-                path_values[parameter] = value
+            value = path_values[parameter] = paths if slot.is_list else paths[0]
         elif slot is _Slot.TEXT:
             text_values[parameter] = value
         else:
@@ -708,20 +714,31 @@ def _feed_reached_code(
                 find_read_globals(current, lambda module: _is_project_code(context, module)),
             ),
             ("closure variable", find_closure_values(current)),
+            ("default", {} if current is fn else find_default_values(current)),
         ):
             named = {f"{name}{suffix}": value for name, value in values.items()}
             problems.extend(_feed_values(context, digest, kind, named, output_keys, False))
-            for value in values.values():
-                is_code = isinstance(value, types.FunctionType | type)
-                if not is_code or not _is_project_code(context, value) or value in seen:
+            for code in (code for value in values.values() for code in _find_reached(value)):
+                if not _is_project_code(context, code) or code in seen:
                     continue
-                seen.add(value)
-                problem = _feed_definition(digest, value, trees)
+                seen.add(code)
+                problem = _feed_definition(digest, code, trees)
                 if problem is not None:
                     problems.append(problem)
                     continue
-                pending.extend(_find_callables(value, seen))
+                pending.extend(_find_callables(code, seen))
     return problems
+
+
+def _find_reached(value: object) -> list[types.FunctionType | type]:
+    """Return the code that naming `value` reaches: a function, the one its decorators wrap, or a class and those it inherits from."""
+    if isinstance(value, types.FunctionType):
+        unwrapped = inspect.unwrap(value)
+        reached = [value, unwrapped] if unwrapped is not value else [value]
+        return [code for code in reached if isinstance(code, types.FunctionType)]
+    if isinstance(value, type):
+        return list(value.__mro__)
+    return []
 
 
 def _feed_definition(
@@ -920,5 +937,12 @@ def _describe_edge(definition: Definition, path: str, rule: Definition) -> str:
     if path in rule.outputs:
         return f"{definition.label} inputs {path}, which {rule.label} outputs"
     key = calc_path_key(path)
+    holding = next(
+        (output for output in rule.outputs if is_within(key, calc_path_key(output))), None
+    )
+    if holding is not None:
+        return (
+            f"{definition.label} inputs {path}, which lies in {holding}, which {rule.label} outputs"
+        )
     inside = next(output for output in rule.outputs if is_within(calc_path_key(output), key))
     return f"{definition.label} inputs {path}, which holds {inside}, which {rule.label} outputs"

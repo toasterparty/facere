@@ -19,7 +19,7 @@ A proposal, ordered to rough in the whole path first. Each ends with its tests p
 3. **Watch mode.** The set of paths a cycle observed, then [the supervisor](./design/watch.md).
 4. **Stores.** `fac.Virtual`, `fac.VirtualInput`, `fac.VirtualOutput`, `fac.read` and `fac.write`, `fac.FileStore`, virtual output records and stamps in the state, the flush and its round-trip check, and file outputs moved onto the same code path as the built-in store.
 5. **Names.** Scopes, groups, patterns, `::`, `--list`, `--check`, `--paths`, `--json`, and `-v` reasons.
-6. **Budget.** `--timings`, the CI benchmarks, the C project's and the single-file store's, and the Windows benchmark.
+6. **Budget.** `--timings`, the CI benchmarks, the C project's and the single-file store's, and the Windows benchmark. Measure what hashing the executable bit costs a project that never sets one: past a measurable share of the no-op, drop it or make it opt-in, off by default.
 7. **Distribution.** Shipped docs and their CI checks, `--docs`, and `--python`.
 
 Phase 2 then adds the three extensions and the example projects, each project with comments naming what an edit executes, and tests that check those claims. Each extension gets the check that it imports only `facere.__all__`.
@@ -38,6 +38,7 @@ Phase 2 then adds the three extensions and the example projects, each project wi
     - fail a recipe that spawns a process other than through `fac.run`, from the audit hook's `subprocess.Popen` event, since such a program escapes `-v` and the undeclared-path check
     - audit collection for reads of rule outputs and for network access
     - list orphaned outputs and virtual outputs. Deleting them stays the user's, through deleting the output directory
+    - report a rule stale again right after its own execution, such as one whose tool rewrites its own input, which never settles
     - `-ffile-prefix-map` and `ar D` in `facere.c`
     - narrow the scratch-file exemption
     - an opt-in determinism check

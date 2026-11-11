@@ -38,7 +38,7 @@ Facere calls a rule's or task's function in a worker thread with the root as wor
 
 `fac.write_archive(path, directory, top=None)` writes a `.zip`, `.tar`, or `.tar.gz`, chosen by `path`'s suffix, holding every file under `directory`, inside a directory named `top` or else `directory`'s own name. Members are sorted, times are fixed at the format's earliest, owners are empty, and modes are `0o755` for an executable file and `0o644` otherwise, so the same files give the same bytes on every machine, which `shutil.make_archive` does not.
 
-`fac.load()` returns the value the rule passed to `fac.save(value)` at its last success, or `None`, so a recipe can remember what a server last sent, such as an ETag. The value is kept with the rule's record, which a failure clears, stays out of the fingerprint, and must be one Facere can hash.
+`fac.load()` returns the value the rule passed to `fac.save(value)` at its last success, or `None`, so a recipe can remember what a server last sent, such as an ETag. It returns `None` too where any output no longer hashes as recorded, since a server answering the saved ETag with 304 would otherwise have the recipe keep a file edited by hand. The value is kept with the rule's record, which a failure clears, stays out of the fingerprint, and must be one Facere can hash.
 
 ## Paths
 
@@ -50,7 +50,7 @@ Facere converts every path to root-relative before calling a recipe, which recei
 
 The output directory may lie outside the root, on a tmpfs or beside a read-only checkout. Facere records each path inside it relative to the output directory, so moving either rebuilds nothing, while a recipe receives such a path relative to the root, as `../` paths, or absolute across Windows drives. A value embedding one, such as a flag, changes when the two move apart.
 
-`fac.sources(*patterns)` lists the files the globs match relative to the `fac.py`'s directory, or to the root for a pattern from `fac.from_root`, skipping hidden files unless the pattern names them, as `glob` does, so an editor's `.#main.c` lock never matches `*.c`. It reads no ignore file: what a glob skips is written beside it in Python.
+`fac.sources(*patterns)` lists the files the globs match relative to the `fac.py`'s directory, or to the root for a pattern from `fac.from_root`, skipping hidden files unless the pattern names them, as `glob` does, so an editor's `.#main.c` lock never matches `*.c`. It skips the output directory and any other directory holding Facere's state, so a tree built with `--out build-ci` beside an older `build/` lists neither. It reads no ignore file: what a glob skips is written beside it in Python.
 
 ## Across files
 

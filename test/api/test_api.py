@@ -291,3 +291,12 @@ def test_sources_glob_reaching_outside_the_root_fails_loading(fac: Fac) -> None:
     assert result.status == 2
     assert "ValueError: fac.sources takes globs under the root, not '../*.c'" in result.err
     assert result.err.splitlines()[-1] == "fac.py:3:1: error: loading fac.py raised ValueError"
+
+
+@pytest.mark.project("second_output_directory")
+def test_files_another_output_directory_holds_are_not_sources(root: Path, fac: Fac) -> None:
+    fac()
+
+    fac("--out", "build-ci")
+
+    assert (root / "build-ci" / "program").read_text() == "main parser"

@@ -96,7 +96,7 @@ def _invoke(
     task_args: tuple[str, ...] | None,
 ) -> int:
     start_dir = os.getcwd()
-    root = os.path.abspath(directory) if directory is not None else start_dir
+    root = _resolve_root(directory) if directory is not None else start_dir
     fac_py = os.path.join(root, "fac.py")
     if not os.path.isfile(fac_py):
         print_error(FacereError(_build_missing_root_error(root, start_dir)), start_dir)
@@ -112,6 +112,13 @@ def _invoke(
     pycache_prefix = os.path.abspath(os.path.join(root, context.state_dir, "pycache"))
     with _enter_root(root, pycache_prefix), activate(context):
         return _run(context, targets, task_args, start_dir)
+
+
+def _resolve_root(directory: str) -> str:
+    """Return `directory` as `os.getcwd()` names it once inside, resolved except on Windows, so a path a recipe makes absolute compares with the root lexically."""
+    if sys.platform == "win32":
+        return os.path.abspath(directory)
+    return os.path.realpath(directory)
 
 
 @contextlib.contextmanager

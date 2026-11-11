@@ -1,6 +1,8 @@
 """What a recipe reports through fac.add_inputs joins its rule's record, and fac.OrderOnly orders what it may report."""
 
+import os
 import shutil
+import sys
 from pathlib import Path
 
 import pytest
@@ -9,6 +11,8 @@ from ..helpers import Fac, edit
 
 EXECUTED_ONE = "Finished in <elapsed>. Executed 1 rule.\n"
 UP_TO_DATE_ONE = "Finished in <elapsed>. No work to do. 1 output up to date.\n"
+
+posix_only = pytest.mark.skipif(sys.platform == "win32", reason="needs symlinks and file modes")
 
 
 @pytest.mark.project("report")
@@ -102,7 +106,7 @@ def test_removing_a_file_after_reporting_it_fails_the_rule(fac: Fac) -> None:
     result = fac()
 
     assert result.status == 1
-    assert "build/scratch.h" in result.err
+    assert "scratch.h, which it then removed" in result.err
 
 
 @pytest.mark.project("string_report")
@@ -146,11 +150,13 @@ def test_order_only_input_counts_once_reported(root: Path, fac: Fac) -> None:
 
 
 @pytest.mark.project("order_only")
-def test_new_order_only_path_alone_reruns_nothing(root: Path, fac: Fac) -> None:
+def test_new_order_only_path_reruns_the_rule_though_no_content_changed(
+    root: Path, fac: Fac
+) -> None:
     fac()
     edit(root / "fac.py", "HEADERS = [GENERATED]", 'HEADERS = [GENERATED, "spec.txt"]')
 
-    assert fac().err == "Finished in <elapsed>. No work to do. 2 outputs up to date.\n"
+    assert fac().err == "Finished in <elapsed>. Executed 1 rule. 1 output up to date.\n"
 
 
 @pytest.mark.project("order_only_missing")
@@ -196,43 +202,53 @@ def test_reporting_a_file_inside_a_directory_the_rule_inputs_passes(fac: Fac) ->
 
 
 @pytest.mark.project("outside_root")
-def test_new_file_named_as_a_dropped_report_makes_the_rule_stale_once(root: Path, fac: Fac) -> None:
-    fac("compile")
-    assert fac("compile").err == UP_TO_DATE_ONE
+def test_report_outside_the_root_makes_the_rule_stale_when_it_changes(root: Path, fac: Fac) -> None:
+    fac("-C", "project", "compile")
+    (root / "sdk" / "stdlib.h").write_text("upgraded")
 
-    (root / "stdlib.h").write_text("shadow")
+    assert fac("-C", "project", "compile").err == EXECUTED_ONE
 
-    assert fac("compile").err == EXECUTED_ONE
-    assert fac("compile").err == UP_TO_DATE_ONE
+
+@pytest.mark.project("outside_root")
+def test_new_file_named_as_a_report_outside_the_root_makes_the_rule_stale_once(
+    root: Path, fac: Fac
+) -> None:
+    fac("-C", "project", "compile")
+    assert fac("-C", "project", "compile").err == UP_TO_DATE_ONE
+
+    (root / "project" / "stdlib.h").write_text("shadow")
+
+    assert fac("-C", "project", "compile").err == EXECUTED_ONE
+    assert fac("-C", "project", "compile").err == UP_TO_DATE_ONE
 
 
 @pytest.mark.project("outside_root")
 def test_new_file_named_otherwise_leaves_the_rule_up_to_date(root: Path, fac: Fac) -> None:
-    fac("compile")
+    fac("-C", "project", "compile")
 
-    (root / "unrelated.h").write_text("new")
+    (root / "project" / "unrelated.h").write_text("new")
 
-    assert fac("compile").err == UP_TO_DATE_ONE
+    assert fac("-C", "project", "compile").err == UP_TO_DATE_ONE
 
 
 @pytest.mark.project("outside_root")
 def test_new_file_in_a_hidden_directory_is_never_listed(root: Path, fac: Fac) -> None:
-    fac("compile")
+    fac("-C", "project", "compile")
 
-    (root / ".hidden").mkdir()
-    (root / ".hidden" / "stdlib.h").write_text("shadow")
+    (root / "project" / ".hidden").mkdir()
+    (root / "project" / ".hidden" / "stdlib.h").write_text("shadow")
 
-    assert fac("compile").err == UP_TO_DATE_ONE
+    assert fac("-C", "project", "compile").err == UP_TO_DATE_ONE
 
 
 @pytest.mark.project("outside_root")
 def test_invocation_that_skips_the_shadowed_rule_keeps_it_stale(root: Path, fac: Fac) -> None:
-    fac("compile")
+    fac("-C", "project", "compile")
 
-    (root / "stdlib.h").write_text("shadow")
-    assert fac("other").err == EXECUTED_ONE
+    (root / "project" / "stdlib.h").write_text("shadow")
+    assert fac("-C", "project", "other").err == EXECUTED_ONE
 
-    assert fac("compile").err == EXECUTED_ONE
+    assert fac("-C", "project", "compile").err == EXECUTED_ONE
 
 
 @pytest.mark.project("in_tree_scratch")
@@ -248,3 +264,72 @@ def test_a_failed_invocation_leaves_no_false_shadow_for_the_next(root: Path, fac
     (root / "ok.txt").write_text("ok")
 
     assert fac().err == "Finished in <elapsed>. Executed 1 rule. 1 output up to date.\n"
+
+
+@pytest.mark.project("first_report")
+def test_file_first_reported_and_changed_during_the_recipe_reruns_the_rule(
+    root: Path, fac: Fac
+) -> None:
+    fac()
+    assert (root / "a.h").read_text() == "new"
+
+    assert fac().err == EXECUTED_ONE
+    assert (root / "build" / "bundle.txt").read_text() == "new"
+
+
+@pytest.mark.project("own_scratch")
+def test_reported_scratch_file_the_recipe_rewrites_settles_after_one_execution(
+    root: Path, fac: Fac
+) -> None:
+    fac()
+    (root / "grammar.y").write_text("b")
+
+    assert fac().err == EXECUTED_ONE
+    assert fac().err == UP_TO_DATE_ONE
+
+
+@posix_only
+@pytest.mark.project("linked_root")
+def test_report_resolved_through_a_link_to_the_root_tracks_the_file(root: Path, fac: Fac) -> None:
+    os.symlink(root / "project", root / "link")
+    fac("-C", "link")
+    (root / "project" / "a.h").write_text("edited")
+
+    assert fac("-C", "link").err == EXECUTED_ONE
+    assert (root / "project" / "build" / "bundle.txt").read_text() == "edited"
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="needs a file system that tells case apart")
+@pytest.mark.project("case")
+def test_reported_files_differing_only_in_case_are_both_tracked(root: Path, fac: Fac) -> None:
+    (root / "dscp.h").write_text("lower")
+    (root / "DSCP.h").write_text("upper")
+    fac()
+    (root / "dscp.h").write_text("edited")
+
+    assert fac().err == EXECUTED_ONE
+    assert (root / "build" / "bundle.txt").read_text() == "edited upper"
+
+
+@pytest.mark.project("adopted")
+def test_recorded_report_another_rule_starts_to_output_fails_naming_both(
+    root: Path, fac: Fac
+) -> None:
+    fac()
+    edit(root / "fac.py", "GENERATED = []", 'GENERATED = [{"header": "include/config.h"}]')
+
+    result = fac()
+
+    assert result.status == 1
+    assert "rule 'configure' (include/config.h) outputs include/config.h" in result.err
+
+
+@pytest.mark.project("new_output")
+def test_new_output_named_as_a_reported_file_makes_the_rule_stale(root: Path, fac: Fac) -> None:
+    fac()
+    assert (root / "build" / "main.o").read_text() == "hand"
+    edit(root / "fac.py", 'GENERATED = ["version.h"]', 'GENERATED = ["version.h", "config.h"]')
+
+    fac()
+
+    assert (root / "build" / "main.o").read_text() == "generated"

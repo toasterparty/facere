@@ -15,7 +15,7 @@ These stay out of every fingerprint, so a change to one executes nothing until y
 - **Files a rule writes but does not declare**, which Facere neither tracks nor rebuilds when edited by hand.
 - **What a store cannot see** *(planned)*. Facere sees a store's virtual outputs only through its own `read` and `stamp`, so a `read` that skips part of its file, or a `stamp` that misses a change, leaves that part or that change untracked.
 
-Two features bring narrower gaps of their own. A new file in a hidden directory or the output directory, or one that appears while Facere is executing recipes, can shadow a header that `fac.add_inputs` *(0.4)* recorded without making its rule stale. On Windows, which has no change time, the hash cache *(planned)* will miss a same-size file replaced with its old modification time.
+Two features bring narrower gaps of their own. A new file in a hidden directory, the output directory, or behind a linked directory, or one a command writes while Facere is executing recipes, can shadow a header that `fac.add_inputs` *(0.4)* recorded without making its rule stale, as can a new file a tool looked for and did not find, such as through `__has_include`. The hash cache *(planned)* trusts timestamps from a file's last change, so a file server whose clock runs behind yours can hide an edit made just before an invocation.
 
 Facere works the same whether or not a recipe reads one of these: a header stamped with `datetime.now()` in its recipe holds the time of the rule's last execution. To make a change execute the rule instead, read the value at module level, where it joins the fingerprint: `STAMP = datetime.now().isoformat()` then executes what reads it on every invocation, and `os.environ.get("FLAVOR")` whenever the variable changes. Pass a per-run value to a task after `--` *(0.2)*.
 
@@ -27,7 +27,7 @@ An output changes only by its own rule replacing it whole. Facere leaves the pre
 
 - Never modify, move, or delete another rule's output. Write a new file from it instead, as `strip -o` does, and copy files into a directory you assemble from other rules' outputs. Moving a file out of another rule's output deletes that output, so the invocation fails, or the next one rebuilds it.
 - Appending to your own previous output piles up content once per execution.
-- Delete your own previous output before a tool that updates it in place: `ar r`, `zip`, `tar -r`, `uv build --out-dir`, `pip install --target`, and `shutil.copytree(dirs_exist_ok=True)` all keep what the last execution left, so a deleted source's object still links and an old wheel still gets published. Clear a directory output with `shutil.rmtree`, or *(planned)* mark the rule `clear=True` so Facere deletes its outputs before the recipe executes.
+- Delete your own previous output before a tool that updates it in place: `ar r`, `zip`, `tar -r`, `uv build --out-dir`, `pip install --target`, and `shutil.copytree(dirs_exist_ok=True)` all keep what the last execution left, so a deleted source's object still links and an old wheel still gets published. A tool that may write nothing, such as protoc for a spec that defines no service, leaves the last execution's file, which Facere then records as current. Clear a directory output with `shutil.rmtree`, or *(planned)* mark the rule `clear=True` so Facere deletes its outputs before the recipe executes.
 
 ```python
 # Bad: a page removed from PAGES stays in the archive
@@ -123,7 +123,7 @@ A name on the command line selects every rule its function defines, so `fac page
 
 ## Orphaned outputs
 
-Delete the old file yourself when you rename or remove an output, since Facere leaves it on disk, as it leaves a removed rule's virtual output in its store. An orphan does harm once something lists its directory: a linker search path finds an old `libfoo.a`, or `glob(f"{dist}/*")` uploads an old wheel. Input declared paths rather than listing a directory.
+Delete the old file yourself when you rename or remove an output, since Facere leaves it on disk, as it leaves a removed rule's virtual output in its store. An orphan does harm once something lists its directory: a linker search path finds an old `libfoo.a`, or `glob(f"{dist}/*")` uploads an old wheel. Input declared paths rather than listing a directory. A rule that still inputs the old path builds from the orphan, which Facere takes as a source, as it takes any file no rule outputs, and fails on a fresh clone.
 
 ## Advanced
 

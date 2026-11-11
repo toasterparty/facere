@@ -70,7 +70,7 @@ MUST, MUST NOT, SHOULD, SHOULD NOT, and MAY are to be interpreted as in BCP 14 (
 
 ## Correctness
 
-- Staleness MUST be decided by content. Timestamps MAY key a cache of what files and directories hold, and a store's stamp a cache of what its virtual outputs hold, and both MUST serve no other purpose. A cache entry recorded less than one timestamp granularity after its file last changed MUST be rehashed rather than trusted.
+- Staleness MUST be decided by content. Timestamps MAY key a cache of what files and directories hold, and a store's stamp a cache of what its virtual outputs hold, and both MUST serve no other purpose but one: a timestamp MAY show that a file changed while a recipe executed. A cache entry recorded less than one timestamp granularity after its file last changed MUST be rehashed rather than trusted. A file's content includes its executable bit, where the file system keeps one.
 - A rule's fingerprint, the hash that decides whether the rule is stale, MUST hold its recipe's code, every value it reads through its parameters or as a module constant, its declared inputs, and the Python minor version running it, since a minor release may change what the same code does. Facere's own version MUST stay out of it, since every release builds as earlier ones did. A release that changes what a fingerprint holds re-executes every rule once. Facere MUST NOT infer what else can change an output, such as the programs its commands launch: the project declares what should count.
 - The documentation MUST list every kind of input that stays out of fingerprints, so a user knows which risks they own.
 - A file appearing in, disappearing from, or renamed within a rule's inputs, as when a glob's matches change, MUST make the rule stale, even when no content changed.
@@ -78,8 +78,8 @@ MUST, MUST NOT, SHOULD, SHOULD NOT, and MAY are to be interpreted as in BCP 14 (
 - Facere MUST build the command-line targets in the order given. Consecutive targets that reach no task form a batch, which MUST be built together, in parallel, since the dependency graph alone orders rules. A target that reaches a task MUST start only once the targets before it finish, and finish before the targets after it start, so `fac clean app` deletes and then rebuilds. A rule's staleness MUST NOT be decided before its batch starts.
 - Within a batch, an output changed after its recipe finished MUST fail the batch before any recipe consumes it, naming the output and its rule.
 - A virtual output that a store does not read back as Facere wrote it MUST fail the invocation, naming the virtual output.
-- A rule whose input changed while its recipe executed MUST NOT be recorded as up to date.
-- Facere's decisions MUST NOT depend on what the output directory held before, beyond the outputs its state records. A recipe whose tool reads its own previous output is responsible for its own idempotency.
+- A rule whose input changed while its recipe executed MUST NOT be recorded as up to date, even where the input changed back, so an invocation leaves its targets current with the files as they stood when it started, and an edit made during one is caught by the next.
+- Facere's decisions MUST NOT depend on what the output directory held before, beyond the outputs its state records and the files there that no rule outputs, which are sources as anywhere else. A recipe whose tool reads its own previous output is responsible for its own idempotency, as is one that may leave an output unwritten.
 
 ## Dependability
 

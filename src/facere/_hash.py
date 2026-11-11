@@ -19,6 +19,9 @@ _ATTRIBUTE_LOADS = frozenset({"LOAD_ATTR", "LOAD_METHOD"})
 
 _Node = typing.TypeVar("_Node", bound=ast.AST)
 
+Stamp = tuple[object, ...]
+"""What a stat shows of a file, or of every entry in a directory tree, so a change shows as a different stamp even where the content ends as it was."""
+
 
 class UnhashableValueError(Exception):
     def __init__(self, value: object) -> None:
@@ -143,6 +146,14 @@ def find_closure_values(fn: types.FunctionType) -> dict[str, object]:
     return values
 
 
+def find_default_values(fn: types.FunctionType) -> dict[str, object]:
+    """Return the defaults `fn` bound at definition, by parameter name."""
+    code = fn.__code__
+    defaults = fn.__defaults__ or ()
+    names = code.co_varnames[code.co_argcount - len(defaults) : code.co_argcount]
+    return {**dict(zip(names, defaults, strict=True)), **(fn.__kwdefaults__ or {})}
+
+
 def calc_code_text(
     fn: types.FunctionType, trees: dict[str, ast.Module], keep_decorators: bool = False
 ) -> str:
@@ -230,36 +241,83 @@ def _is_definition_of(node: ast.AST, code: types.CodeType) -> bool:
 
 
 def hash_path(path: str) -> str | None:
-    """Return a digest of the file, or of the directory tree, at `path`, or None when nothing is there."""
+    """Return a digest of the file, or of the directory tree, at `path`, or None when nothing is there.
+
+    A file's digest covers its bytes and, outside Windows, its executable bit. A link inside a tree hashes as its target, or as its text where it dangles or loops back into the tree.
+    """
     try:
         mode = os.stat(path).st_mode
     except FileNotFoundError:
         return None
     if stat.S_ISDIR(mode):
-        return _hash_tree(path)
+        return _hash_tree(path, frozenset({os.path.realpath(path)}))
     if stat.S_ISREG(mode):
-        return _hash_file(path)
+        return _hash_file(path, mode)
     return "O"
 
 
-def _hash_file(path: str) -> str:
+def _hash_file(path: str, mode: int) -> str:
     with open(path, "rb") as file:
-        return "F" + hashlib.file_digest(file, "sha256").hexdigest()
+        content = hashlib.file_digest(file, "sha256").hexdigest()
+    is_executable = sys.platform != "win32" and bool(mode & stat.S_IXUSR)
+    return ("X" if is_executable else "F") + content
 
 
-def _hash_tree(path: str) -> str:
+def _hash_tree(path: str, enclosing: frozenset[str]) -> str:
+    """Return a digest of the tree at `path`, inside the resolved directories `enclosing`, which a link back into them must not enter again."""
     digest = hashlib.sha256()
     with os.scandir(path) as scan:
         entries = sorted(scan, key=lambda entry: entry.name)
     for entry in entries:
-        if entry.is_symlink():
-            content = "L" + os.readlink(entry.path)
-        elif entry.is_dir():
-            content = _hash_tree(entry.path)
-        elif entry.is_file():
-            content = _hash_file(entry.path)
-        else:
-            content = "O"
         feed(digest, b"N", entry.name.encode("utf-8", "surrogateescape"))
-        feed(digest, b"C", content.encode("utf-8", "surrogateescape"))
+        feed(digest, b"C", _hash_entry(entry, enclosing).encode("utf-8", "surrogateescape"))
     return "D" + digest.hexdigest()
+
+
+def _hash_entry(entry: os.DirEntry[str], enclosing: frozenset[str]) -> str:
+    if entry.is_dir():
+        resolved = os.path.realpath(entry.path)
+        if resolved in enclosing:
+            return "L" + os.readlink(entry.path)
+        return _hash_tree(entry.path, enclosing | {resolved})
+    if entry.is_file():
+        return _hash_file(entry.path, entry.stat().st_mode)
+    if entry.is_symlink():
+        return "L" + os.readlink(entry.path)
+    return "O"
+
+
+def calc_stamp(path: str) -> Stamp | None:
+    """Return the stamp of the file, or of the directory tree, at `path`, following links as hash_path does, or None when nothing is there."""
+    try:
+        info = os.stat(path)
+    except FileNotFoundError:
+        return None
+    if stat.S_ISDIR(info.st_mode):
+        return _calc_tree_stamp(path, frozenset({os.path.realpath(path)}))
+    return _to_stamp(info)
+
+
+def _calc_tree_stamp(path: str, enclosing: frozenset[str]) -> Stamp:
+    with os.scandir(path) as scan:
+        entries = sorted(scan, key=lambda entry: entry.name)
+    stamps: list[object] = []
+    for entry in entries:
+        resolved = os.path.realpath(entry.path) if entry.is_dir() else None
+        if resolved is not None and resolved not in enclosing:
+            stamps.append((entry.name, _calc_tree_stamp(entry.path, enclosing | {resolved})))
+        else:
+            stamps.append((entry.name, _find_entry_stamp(entry, resolved is None)))
+    return tuple(stamps)
+
+
+def _find_entry_stamp(entry: os.DirEntry[str], is_followed: bool) -> Stamp | None:
+    """Return the stamp of what `entry` names, or, where it is a link that dangles or that `is_followed` says not to follow, of the link itself, or None where it vanished."""
+    for follow_symlinks in (is_followed, False):
+        with contextlib.suppress(FileNotFoundError):
+            return _to_stamp(entry.stat(follow_symlinks=follow_symlinks))
+    return None
+
+
+def _to_stamp(info: os.stat_result) -> Stamp:
+    return (info.st_size, info.st_mtime_ns, info.st_ctime_ns, info.st_ino, info.st_mode)

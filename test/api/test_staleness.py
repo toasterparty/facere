@@ -3,11 +3,14 @@
 import os
 import shutil
 import stat
+import sys
 from pathlib import Path
 
 import pytest
 
 from ..helpers import Fac, edit, run_fac
+
+posix_only = pytest.mark.skipif(sys.platform == "win32", reason="needs symlinks and file modes")
 
 
 @pytest.mark.project("shout")
@@ -382,6 +385,32 @@ def test_existing_output_stays_in_place_when_its_rule_executes(root: Path, fac: 
     assert (root / "build" / "log.txt").read_text() == "12"
 
 
+@pytest.mark.project("leftover")
+def test_recipe_that_stops_writing_its_output_records_what_an_earlier_execution_left(
+    root: Path, fac: Fac
+) -> None:
+    fac()
+    (root / "spec.txt").write_text("")
+
+    result = fac()
+
+    assert result.err == "Finished in <elapsed>. Executed 1 rule.\n"
+    assert (root / "build" / "services.h").read_text() == "service"
+
+
+@pytest.mark.project("orphan")
+def test_input_no_rule_outputs_anymore_is_a_source_once_an_earlier_build_left_it(
+    root: Path, fac: Fac
+) -> None:
+    fac()
+    edit(root / "fac.py", 'HEADER = fac.out("gen/old.h")', 'HEADER = fac.out("gen/new.h")')
+
+    result = fac()
+
+    assert result.err == "Finished in <elapsed>. Executed 1 rule. 1 output up to date.\n"
+    assert (root / "build" / "main.o").read_text() == "one"
+
+
 @pytest.mark.project("touch")
 def test_record_of_an_output_no_rule_declares_is_dropped(root: Path, fac: Fac) -> None:
     fac()
@@ -429,3 +458,78 @@ def test_task_executes_on_every_build_after_the_rules_it_inputs(fac: Fac) -> Non
     assert first.err == "Finished in <elapsed>. Executed 1 task and 1 rule.\n"
     assert second.out == "HI!\n"
     assert second.err == "Finished in <elapsed>. Executed 1 task. 1 output up to date.\n"
+
+
+@pytest.mark.project("reverted")
+def test_input_changed_during_the_recipe_then_changed_back_reruns_the_rule(
+    root: Path, fac: Fac
+) -> None:
+    fac()
+    assert (root / "build" / "a.txt").read_text() == "two"
+
+    (root / "a.txt").write_text("one")
+
+    assert fac().err == "Finished in <elapsed>. Executed 1 rule.\n"
+    assert (root / "build" / "a.txt").read_text() == "one"
+
+
+@pytest.mark.project("helper_default")
+def test_changed_constant_a_helper_takes_as_a_default_reruns_the_rule(root: Path, fac: Fac) -> None:
+    fac()
+    edit(root / "fac.py", 'MARK = "!"', 'MARK = "?"')
+
+    assert fac().err == "Finished in <elapsed>. Executed 1 rule.\n"
+    assert (root / "build" / "a.txt").read_text() == "hi?"
+
+
+@pytest.mark.project("wrapped_helper")
+def test_changed_helper_behind_a_standard_library_decorator_reruns_the_rule(
+    root: Path, fac: Fac
+) -> None:
+    fac()
+    edit(root / "fac.py", 'file.write("hi")', 'file.write("ho")')
+
+    assert fac().err == "Finished in <elapsed>. Executed 1 rule.\n"
+    assert (root / "build" / "a.txt").read_text() == "ho!"
+
+
+@pytest.mark.project("base_class")
+def test_changed_method_a_class_inherits_reruns_the_rule(root: Path, fac: Fac) -> None:
+    fac()
+    edit(root / "fac.py", "text.upper()", "text.title()")
+
+    assert fac().err == "Finished in <elapsed>. Executed 1 rule.\n"
+    assert (root / "build" / "a.txt").read_text() == "Hi"
+
+
+@posix_only
+@pytest.mark.project("linked_page")
+def test_changed_target_of_a_link_inside_a_directory_input_reruns_the_rule(
+    root: Path, fac: Fac
+) -> None:
+    os.symlink("../shared/logo.md", root / "pages" / "logo.md")
+    fac()
+    (root / "shared" / "logo.md").write_text("edited")
+
+    assert fac().err == "Finished in <elapsed>. Executed 1 rule.\n"
+    assert (root / "build" / "index.txt").read_text() == "a edited"
+
+
+@posix_only
+@pytest.mark.project("executable")
+def test_input_made_executable_reruns_the_rule(root: Path, fac: Fac) -> None:
+    fac()
+    (root / "tool.sh").chmod(0o755)
+
+    assert fac().err == "Finished in <elapsed>. Executed 1 rule.\n"
+    assert os.access(root / "build" / "tool.sh", os.X_OK)
+
+
+@pytest.mark.project("inside_directory")
+def test_input_inside_a_directory_output_builds_the_rule_outputting_the_directory(
+    root: Path, fac: Fac
+) -> None:
+    result = fac()
+
+    assert result.status == 0, result.err
+    assert (root / "build" / "main.o").read_text() == "one"

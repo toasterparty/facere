@@ -86,7 +86,7 @@ def _validate_used(context: Context, recipe: Recipe, path: str, action: str) -> 
         is_within_any(key, recipe.tracked)
         or is_within_any(key, recipe.order_only)
         or key in recipe.exempt
-        or key in recipe.reported
+        or key in recipe.reported_keys
         or key in recipe.written
     )
     if is_exempt:

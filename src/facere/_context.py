@@ -8,6 +8,11 @@ from collections.abc import Callable, Container, Generator, Iterator
 from dataclasses import dataclass, field
 from typing import NamedTuple
 
+from facere._hash import Stamp
+
+STATE_DIR_NAME = ".fac"
+STATE_FILE_NAME = "state.db"
+
 
 class Kind(enum.Enum):
     INPUT = enum.auto()
@@ -49,7 +54,7 @@ class UndeclaredUse(NamedTuple):
 class Recipe:
     """The recipe executing now, with what the undeclared-path check and fac.add_inputs track of it.
 
-    Every path is keyed by calc_path_key. `tracked` holds the rule's inputs and outputs, `exempt` what its `str` parameters hold, and `output_keys` every output in the project. A recipe may open a shared module, but no command may name one, since only the recipe's reach puts one in a fingerprint. `reported_names` holds the file name of every path reported outside `tracked`, dropped ones included. `undeclared`, the first use the check rejected, fails the rule however the recipe treats the error.
+    Every path is keyed by calc_path_key, but `reported`, which keeps each reported path as normalize returns it, so two files differing only in case stay apart where the file system tells them apart, with its stamp from its first report. `tracked` holds the rule's inputs and outputs, `exempt` what its `str` parameters hold, and `output_keys` every output in the project. A recipe may open a shared module, but no command may name one, since only the recipe's reach puts one in a fingerprint. `reported_names` holds the file name of every path reported outside `tracked`, dropped ones included. `undeclared`, the first use the check rejected, fails the rule however the recipe treats the error.
     """
 
     is_task: bool
@@ -59,7 +64,8 @@ class Recipe:
     exempt: frozenset[str]
     shared_modules: frozenset[str]
     output_keys: Container[str]
-    reported: dict[str, str] = field(default_factory=dict)
+    reported: dict[str, Stamp | None] = field(default_factory=dict)
+    reported_keys: set[str] = field(default_factory=set)
     reported_names: set[str] = field(default_factory=set)
     written: set[str] = field(default_factory=set)
     undeclared: UndeclaredUse | None = None
@@ -79,7 +85,7 @@ class Context:
 
     @property
     def state_dir(self) -> str:
-        return posixpath.normpath(posixpath.join(self.out_dir, ".fac"))
+        return posixpath.normpath(posixpath.join(self.out_dir, STATE_DIR_NAME))
 
 
 _current: Context | None = None
