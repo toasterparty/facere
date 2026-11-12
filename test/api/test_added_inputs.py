@@ -159,6 +159,27 @@ def test_new_order_only_path_reruns_the_rule_though_no_content_changed(
     assert fac().err == "Finished in <elapsed>. Executed 1 rule. 1 output up to date.\n"
 
 
+@pytest.mark.project("order_only_unread")
+def test_new_order_only_path_reruns_no_rule_whose_recipe_never_names_the_parameter(
+    root: Path, fac: Fac
+) -> None:
+    fac()
+    edit(root / "fac.py", 'GENERATED = ["a.h"]', 'GENERATED = ["a.h", "b.h"]')
+
+    assert fac().err == "Finished in <elapsed>. Executed 1 rule. 2 outputs up to date.\n"
+    assert (root / "build" / "b.h").read_text() == "generated"
+
+
+@pytest.mark.project("order_only_unread")
+def test_recipe_calling_locals_counts_as_naming_every_parameter(root: Path, fac: Fac) -> None:
+    edit(root / "fac.py", '"compiled"', 'str(len(locals()["headers"]))')
+    fac()
+    edit(root / "fac.py", 'GENERATED = ["a.h"]', 'GENERATED = ["a.h", "b.h"]')
+
+    assert fac().err == "Finished in <elapsed>. Executed 2 rules. 1 output up to date.\n"
+    assert (root / "build" / "main.o").read_text() == "2"
+
+
 @pytest.mark.project("order_only_missing")
 def test_order_only_source_must_exist(fac: Fac) -> None:
     result = fac()
@@ -267,14 +288,37 @@ def test_a_failed_invocation_leaves_no_false_shadow_for_the_next(root: Path, fac
 
 
 @pytest.mark.project("first_report")
-def test_file_first_reported_and_changed_during_the_recipe_reruns_the_rule(
+def test_file_changed_after_the_tool_read_it_and_before_its_first_report_reruns_the_rule(
     root: Path, fac: Fac
 ) -> None:
     fac()
     assert (root / "a.h").read_text() == "new"
+    assert (root / "build" / "bundle.txt").read_text() == "old"
 
     assert fac().err == EXECUTED_ONE
     assert (root / "build" / "bundle.txt").read_text() == "new"
+    assert fac().err == UP_TO_DATE_ONE
+
+
+@pytest.mark.project("output_first_reported")
+def test_output_first_reported_in_the_tick_its_rule_wrote_it_leaves_its_reader_up_to_date(
+    fac: Fac,
+) -> None:
+    fac()
+
+    assert fac().err == "Finished in <elapsed>. No work to do. 2 outputs up to date.\n"
+
+
+@pytest.mark.project("tool_written_report")
+def test_reported_file_a_command_writes_outside_the_output_directory_never_settles(
+    fac: Fac,
+) -> None:
+    assert fac().err == EXECUTED_ONE
+
+    assert fac().err.splitlines() == [
+        "fac.py:9:2: warning: rule 'parser' (build/parser.o) stays stale: parser.h changed while its recipe executed, in this execution and its last",
+        "Finished in <elapsed>. Executed 1 rule.",
+    ]
 
 
 @pytest.mark.project("own_scratch")
@@ -326,6 +370,22 @@ def test_recorded_report_another_rule_starts_to_output_fails_naming_both(
 
 @pytest.mark.project("new_output")
 def test_new_output_named_as_a_reported_file_makes_the_rule_stale(root: Path, fac: Fac) -> None:
+    fac()
+    assert (root / "build" / "main.o").read_text() == "hand"
+    edit(root / "fac.py", 'GENERATED = ["version.h"]', 'GENERATED = ["version.h", "config.h"]')
+
+    fac()
+
+    assert (root / "build" / "main.o").read_text() == "generated"
+
+
+@pytest.mark.xfail(
+    strict=True, reason="planned: the hash cache keeps each directory output's files"
+)
+@pytest.mark.project("new_in_directory_output")
+def test_file_new_in_a_directory_output_named_as_a_reported_file_makes_the_rule_stale(
+    root: Path, fac: Fac
+) -> None:
     fac()
     assert (root / "build" / "main.o").read_text() == "hand"
     edit(root / "fac.py", 'GENERATED = ["version.h"]', 'GENERATED = ["version.h", "config.h"]')

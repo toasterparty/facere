@@ -14,11 +14,11 @@ Correctness, the first milestone below, before any other.
 
 A proposal, ordered to rough in the whole path first. Each ends with its tests passing on Linux and Windows.
 
-1. **Correctness.** The hash cache and the damage checks.
+1. **Correctness.** The hash cache, rehashing every entry on a file system whose timestamps Facere cannot vouch for, the snapshot that first reports compare against in place of `clock`, and the damage checks. The cache's entries then match a file new in a directory output by name and on Windows carry each file's change time, which with the snapshot closes the [open risks](./design/fingerprints.md#open-risks) on first reports under the root. `@fac.rule(always=True)`, so a program's version can be a rule whose output its consumers input. The state read through one connection, and its fsync after each record dropped, since with the damage checks a lost record costs a rebuild and never a stale output.
 2. **Scheduling.** Parallel jobs, `max_jobs`, failure and `-k`, interrupt and graceful stop, the lock and `--lock-timeout`, `fac.give_lock()`, the terminal for tasks, and the pseudo-terminal for rules' commands, so a compiler keeps its color. The `serve` task in the `my-site` example calls `fac.give_lock()` once it exists, so `fac` in a second terminal does not wait on it.
 3. **Watch mode.** The set of paths a cycle observed, then [the supervisor](./design/watch.md).
 4. **Stores.** `fac.Virtual`, `fac.VirtualInput`, `fac.VirtualOutput`, `fac.read` and `fac.write`, `fac.FileStore`, virtual output records and stamps in the state, the flush and its round-trip check, and file outputs moved onto the same code path as the built-in store.
-5. **Names.** Scopes, groups, patterns, `::`, `--list`, `--check`, `--paths`, `--json`, and `-v` reasons.
+5. **Names.** Scopes, groups, patterns, `::`, `--list`, `--check`, `--paths`, `--json`, and `-v` reasons, which name the input that moved for a rule left unrecorded.
 6. **Budget.** `--timings`, the CI benchmarks, the C project's and the single-file store's, and the Windows benchmark. Measure what hashing the executable bit costs a project that never sets one: past a measurable share of the no-op, drop it or make it opt-in, off by default.
 7. **Distribution.** Shipped docs and their CI checks, `--docs`, and `--python`.
 
@@ -30,15 +30,15 @@ Phase 2 then adds the three extensions and the example projects, each project wi
 - **`inherit=` on `fac.run`.** The `python-app` example passes `inherit=True` and `inherit=[names]`, but no design defines it, and [execution](./design/execution.md) has every command inherit the whole environment. Decide whether a command's environment can be narrowed, then give it one parameter that takes one type.
 - **Configurations without nesting.** The `c-server-client` example defines rules inside `for` loops nested in `fac.scope` blocks, the most advanced Python any example needs. A form that loops for the author, such as a configuration table given to one call, would keep configurations within beginner Python.
 - **Unscheduled design.** These are designed but in no milestone:
-    - in [the `fac.py` interface](./design/fac-py.md): `@fac.override`, `fac.rules`, `fac.from_root` and `fac.root`, `@fac.rule(always=True)` and `clear=True`, `fac.load` and `fac.save`, and `fac.write_archive`
+    - in [the `fac.py` interface](./design/fac-py.md): `@fac.override`, `fac.rules`, `fac.from_root` and `fac.root`, `@fac.rule(clear=True)`, `fac.load` and `fac.save`, and `fac.write_archive`
     - in [collection](./design/collection.md): loading the other `fac.py` files under the root, `fac.exclude`, the cached directory listings, failing an output inside another rule's directory output, and the hint to filter a `fac.sources` list that holds a rule's output, which today fails the next invocation as a cycle
+- **Project-supplied tree checks.** A directory input or output is verified in full, one stat per file on every invocation, which for a fetched SDK such as ESP-IDF is tens of thousands. A project that trusts a cheaper check, such as asking git what changed, needs a way to supply it. Open: its shape, such as a stamp function like a store's.
 - **Color on Windows.** A rule's stderr stays a pipe there, so tools that color only on a console print plain diagnostics. A tool flag such as `-fdiagnostics-color=always`, set by the project, is the workaround until a mechanism exists.
 - **A fuller `--check`**, after 1.0, enforcing best practices Facere now only documents. What holds for every project stays an error in every invocation, as cycles and two rules outputting one path are, so this holds only what some project may do on purpose, and what must watch a recipe executes as a flag on a real build:
     - fail a recipe that reads `os.environ`
     - fail a recipe that spawns a process other than through `fac.run`, from the audit hook's `subprocess.Popen` event, since such a program escapes `-v` and the undeclared-path check
     - audit collection for reads of rule outputs and for network access
     - list orphaned outputs and virtual outputs. Deleting them stays the user's, through deleting the output directory
-    - report a rule stale again right after its own execution, such as one whose tool rewrites its own input, which never settles
     - `-ffile-prefix-map` and `ar D` in `facere.c`
     - narrow the scratch-file exemption
     - an opt-in determinism check

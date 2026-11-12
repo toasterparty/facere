@@ -1,6 +1,8 @@
+import threading
+
 import facere as fac
 
-LOCK = object()
+LOCK = threading.Lock()
 
 
 @fac.rule

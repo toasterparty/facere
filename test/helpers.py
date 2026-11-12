@@ -50,6 +50,18 @@ def closing_line(root: Path, *args: str) -> str:
     return result.err.splitlines()[-1]
 
 
+def pass_clock_tick(directory: Path) -> None:
+    """Return once the file system stamps a change in `directory` later than one made before the call.
+
+    A `fac` process takes longer than that to reach its first recipe, so a test running fac in-process calls this first, and a file it just wrote reads as written before the invocation, never during it.
+    """
+    probe = directory / "clock-tick"
+    probe.write_bytes(b"")
+    written_ns = probe.stat().st_mtime_ns
+    while probe.stat().st_mtime_ns == written_ns:
+        probe.write_bytes(b"")
+
+
 def copy_example(name: str, tmp_path: Path) -> Path:
     """Return a copy under `tmp_path` of the example `name`, less anything a run generated."""
     root = tmp_path / name

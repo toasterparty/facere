@@ -16,7 +16,7 @@ The project's [requirements](./requirements.md) are derived from these guiding p
     - Facere owns the rule the `fac.py` broke, so the message names what in Facere's interface satisfies it, such as the parameter to declare
     - a name is a typo, so the message names its nearest valid match
 - Facere is plain Python. Builds are configured by Python code rather than environment variables, settings files, or a data format invented by Facere.
-- Facere is dependable. Its decisions are deterministic, reproducible, and idempotent, and it never reports success while leaving an output stale.
+- Facere is dependable. Its decisions are deterministic, reproducible, and idempotent, and it never reports success while leaving an output stale. Where a cheaper check could miss a change, Facere takes the one that cannot, and a project that trusts the cheaper one opts into it.
 - Facere is efficient, building exactly what is needed and nothing redundantly.
 - Facere is quiet. A successful build shows what the user's own tools report, and Facere's own report fits in a glance.
 - From 1.0, Facere is backwards compatible forever, except for behavior its maintainers judge to be a bug.

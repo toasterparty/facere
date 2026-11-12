@@ -24,9 +24,11 @@ from facere._context import (
     normalize,
 )
 from facere._diagnostics import Diagnostic, FacereError, Note, print_error
-from facere._hash import Stamp, calc_stamp, feed, hash_path, iter_strings
+from facere._hash import Stamp, calc_stamp, feed, find_change_time_ns, hash_path, iter_strings
 from facere._summary import Summary
 from facere._undeclared import ensure_audit_hook
+
+_CLOCK_FILE_NAME = "clock"
 
 
 class RecipeFailure(Exception):
@@ -108,6 +110,7 @@ def build(
     """
     state_path = posixpath.join(context.state_dir, STATE_FILE_NAME)
     records = _state.load(state_path)
+    moved = _state.load_moved(state_path)
     declared = {
         _state.calc_key(definition.outputs)
         for definition in project.definitions
@@ -117,13 +120,15 @@ def build(
     saved_output_keys = _state.load_declared(state_path)
     new_outputs = output_keys - saved_output_keys if saved_output_keys is not None else frozenset()
     try:
-        _state.remove(state_path, [key for key in records if key not in declared])
+        _state.remove(state_path, [key for key in {*records, *moved} if key not in declared])
         records = _remove_shadowed(context, state_path, records, new_outputs)
     except OSError as error:
         raise FacereError(Diagnostic(None, f"{error}")) from error
     ensure_audit_hook()
     total, planned = _plan(project.upstream, targets)
-    builder = _Builder(context, project, records, state_path, summary, progress_cb, total, planned)
+    builder = _Builder(
+        context, project, records, moved, state_path, summary, progress_cb, total, planned
+    )
     try:
         for target in targets:
             builder.build(target, task_args)
@@ -267,6 +272,7 @@ class _Builder:
         context: Context,
         project: Project,
         records: dict[tuple[str, ...], _state.Record],
+        moved: dict[tuple[str, ...], tuple[str, ...]],
         state_path: str,
         summary: Summary,
         progress_cb: Callable[[str], None],
@@ -276,6 +282,7 @@ class _Builder:
         self.context = context
         self.project = project
         self.records = records
+        self.moved = moved
         self.state_path = state_path
         self.checked: set[Definition] = set()
         self.summary = summary
@@ -329,6 +336,7 @@ class _Builder:
         for output in rule.outputs:
             os.makedirs(os.path.dirname(output) or ".", exist_ok=True)
         self._announce(rule)
+        start_ns = self._read_file_system_time_ns()
         recipe = self._execute(rule, None)
         added_inputs = self._hash_added_inputs(rule, recipe, hashes_before)
         output_hashes = {output: hash_path(output) for output in key}
@@ -339,8 +347,9 @@ class _Builder:
                 reason=f"its recipe succeeded without writing {', '.join(missing)}",
             )
         self.summary.rules_run += 1
-        if self._has_input_moved(recipe, stamps, hashes_before):
-            self.records.pop(key, None)
+        moved = self._find_moved_inputs(recipe, stamps, start_ns)
+        if moved:
+            self._leave_unrecorded(rule, key, moved)
             return
         record = self.records[key] = _state.Record(
             fingerprint,
@@ -349,24 +358,43 @@ class _Builder:
             tuple(sorted(recipe.reported_names)),
         )
         _state.save(self.state_path, key, record)
+        self.moved.pop(key, None)
 
-    def _has_input_moved(
-        self,
-        recipe: Recipe,
-        stamps: dict[str, Stamp | None],
-        hashes_before: dict[str, str | None],
-    ) -> bool:
-        """Say whether an input changed while the recipe executed, even where its content changed back, so recording the rule would claim it current for files its tool never read.
+    def _read_file_system_time_ns(self) -> int:
+        """Return the time the output directory's file system stamps a change made now with, by changing a file there, since the clock a program reads may run ahead of the one that stamps files."""
+        os.makedirs(self.context.state_dir, exist_ok=True)
+        path = posixpath.join(self.context.state_dir, _CLOCK_FILE_NAME)
+        with open(path, "wb"):
+            pass
+        return os.stat(path).st_mtime_ns
 
-        `stamps` holds each input's stamp from before its hash, and a file first reported has its stamp from its report, unless the recipe wrote it in Python itself. Both are compared after the hash, so a change in between shows.
+    def _find_moved_inputs(
+        self, recipe: Recipe, stamps: dict[str, Stamp | None], start_ns: int
+    ) -> tuple[str, ...]:
+        """Return the inputs that changed while the recipe executed, even where the content changed back, so recording the rule would claim it current for files its tool never read.
+
+        `stamps` holds, from before its hash, the stamp of each declared input and each added input in the rule's record. A file first reported has none, so it counts where its file system stamped a change at or after `start_ns`, unless a rule outputs it, whose record vouches for its content, or the recipe wrote it in Python itself. Each is read after its hash, so a change in between shows.
         """
-        if any(calc_stamp(path) != stamp for path, stamp in stamps.items()):
-            return True
-        return any(
-            calc_stamp(path) != stamp
-            for path, stamp in recipe.reported.items()
-            if path not in hashes_before and calc_path_key(path) not in recipe.written
-        )
+        moved = {path for path, stamp in stamps.items() if calc_stamp(path) != stamp}
+        for path in recipe.reported - stamps.keys():
+            if calc_path_key(path) in recipe.written or self._find_producer(path) is not None:
+                continue
+            changed_ns = find_change_time_ns(path)
+            if changed_ns is None or changed_ns >= start_ns:
+                moved.add(path)
+        return tuple(sorted(moved))
+
+    def _leave_unrecorded(
+        self, rule: Definition, key: tuple[str, ...], moved: tuple[str, ...]
+    ) -> None:
+        """Leave `rule` stale, keeping the inputs that `moved`, and warn where one of them also changed during the rule's last execution, since a rule whose own tool changes its input never settles."""
+        self.records.pop(key, None)
+        repeated = [path for path in moved if path in self.moved.get(key, ())]
+        if repeated:
+            message = f"{rule.label} stays stale: {repeated[0]} changed while its recipe executed, in this execution and its last"
+            self.summary.unsettled.append(Diagnostic(rule.location, message))
+        self.moved[key] = moved
+        _state.save_moved(self.state_path, key, moved)
 
     def _ensure_recorded_reports_built(self, rule: Definition, record: _state.Record) -> None:
         """Bring up to date first each rule that now outputs a file `rule` last reported, as when a source became generated, so its record is checked against the file that rule writes."""

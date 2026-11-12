@@ -464,13 +464,33 @@ def test_task_executes_on_every_build_after_the_rules_it_inputs(fac: Fac) -> Non
 def test_input_changed_during_the_recipe_then_changed_back_reruns_the_rule(
     root: Path, fac: Fac
 ) -> None:
-    fac()
+    assert fac().err == "Finished in <elapsed>. Executed 1 rule.\n"
     assert (root / "build" / "a.txt").read_text() == "two"
 
     (root / "a.txt").write_text("one")
 
     assert fac().err == "Finished in <elapsed>. Executed 1 rule.\n"
     assert (root / "build" / "a.txt").read_text() == "one"
+
+
+@pytest.mark.project("rewrites_input")
+def test_rule_whose_recipe_rewrites_its_input_warns_from_its_second_execution(fac: Fac) -> None:
+    assert fac("build/a.txt").err == "Finished in <elapsed>. Executed 1 rule.\n"
+
+    assert fac("build/a.txt").err.splitlines() == [
+        "fac.py:7:2: warning: rule 'tidy' (build/a.txt) stays stale: a.txt changed while its recipe executed, in this execution and its last",
+        "Finished in <elapsed>. Executed 1 rule.",
+    ]
+
+
+@pytest.mark.project("rewrites_input")
+def test_rules_that_stay_stale_together_share_one_warning(fac: Fac) -> None:
+    fac()
+
+    assert fac().err.splitlines() == [
+        "fac.py:7:2: warning: rule 'tidy' (build/a.txt) stays stale: a.txt changed while its recipe executed, in this execution and its last, as for 1 more rule",
+        "Finished in <elapsed>. Executed 2 rules.",
+    ]
 
 
 @pytest.mark.project("helper_default")
@@ -500,6 +520,64 @@ def test_changed_method_a_class_inherits_reruns_the_rule(root: Path, fac: Fac) -
 
     assert fac().err == "Finished in <elapsed>. Executed 1 rule.\n"
     assert (root / "build" / "a.txt").read_text() == "Hi"
+
+
+@pytest.mark.project("held_value")
+def test_changed_method_of_a_class_a_value_holds_reruns_the_rule(root: Path, fac: Fac) -> None:
+    fac()
+    edit(root / "fac.py", "text.upper()", "text.title()")
+
+    assert fac().err == "Finished in <elapsed>. Executed 2 rules.\n"
+    assert (root / "build" / "a.txt").read_text() == "Hi!#*+?~"
+
+
+@pytest.mark.project("held_value")
+def test_value_holding_a_set_hashes_alike_under_any_hash_seed(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PYTHONHASHSEED", "1")
+    assert run_fac(root).status == 0
+    monkeypatch.setenv("PYTHONHASHSEED", "2")
+
+    result = run_fac(root)
+
+    assert result.err == "Finished in <elapsed>. No work to do. 2 outputs up to date.\n"
+
+
+@pytest.mark.project("pattern_default")
+def test_sentinel_and_compiled_pattern_defaults_rerun_nothing_unchanged(fac: Fac) -> None:
+    fac()
+
+    assert fac().err == "Finished in <elapsed>. No work to do. 1 output up to date.\n"
+
+
+@pytest.mark.project("pattern_default")
+def test_changed_pattern_a_helper_compiles_as_a_default_reruns_the_rule(
+    root: Path, fac: Fac
+) -> None:
+    fac()
+    edit(root / "fac.py", 'PATTERN = r"\\s+"', 'PATTERN = r"\\s"')
+
+    assert fac().err == "Finished in <elapsed>. Executed 1 rule.\n"
+
+
+@pytest.mark.project("int_enum")
+def test_constant_changed_from_an_int_enum_member_to_its_int_reruns_the_rule(
+    root: Path, fac: Fac
+) -> None:
+    fac()
+    edit(root / "fac.py", "LEVEL = Level.LOW", "LEVEL = 1")
+
+    assert fac().err == "Finished in <elapsed>. Executed 1 rule.\n"
+
+
+@pytest.mark.project("lambda_helper")
+def test_changed_lambda_helper_reruns_the_rule(root: Path, fac: Fac) -> None:
+    fac()
+    edit(root / "fac.py", '+ "!"', '+ "?"')
+
+    assert fac().err == "Finished in <elapsed>. Executed 1 rule.\n"
+    assert (root / "build" / "a.txt").read_text() == "HI?"
 
 
 @posix_only

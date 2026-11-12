@@ -22,6 +22,7 @@ from hypothesis.stateful import (
 
 import facere
 
+from ..helpers import pass_clock_tick
 from .family import (
     ENVS,
     MODULES,
@@ -286,6 +287,7 @@ class _IncrementalBuilds(RuleBasedStateMachine):
     def _run_fac(self, *args: str) -> set[str]:
         """Run fac in the project, which must succeed, and return the ids of the rows that executed."""
         self.capfd.readouterr()
+        pass_clock_tick(self.root.parent)
         status = facere.main(["-C", str(self.root), *args])
         captured = self.capfd.readouterr()
         assert status == 0, self._describe(f"fac {' '.join(args)} failed:\n{captured.err}")

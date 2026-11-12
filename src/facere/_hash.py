@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import contextlib
 import copy
+import copyreg
 import dis
 import hashlib
 import os
@@ -13,9 +14,11 @@ import sys
 import types
 import typing
 from collections.abc import Callable, Iterator
+from pathlib import PurePath
 
 _GLOBAL_LOADS = frozenset({"LOAD_GLOBAL", "LOAD_NAME", "LOAD_FROM_DICT_OR_GLOBALS"})
 _ATTRIBUTE_LOADS = frozenset({"LOAD_ATTR", "LOAD_METHOD"})
+_FRAME_READERS = frozenset({"locals", "vars", "eval", "exec"})
 
 _Node = typing.TypeVar("_Node", bound=ast.AST)
 
@@ -23,8 +26,15 @@ Stamp = tuple[object, ...]
 """What a stat shows of a file, or of every entry in a directory tree, so a change shows as a different stamp even where the content ends as it was."""
 
 
+# Pinned, since a new default protocol could take values apart differently and change every fingerprint.
+_PICKLE_PROTOCOL = 5
+
+Code = types.FunctionType | type
+"""Code a value can hold, whose syntax tree joins a fingerprint when it lies under the root."""
+
+
 class UnhashableValueError(Exception):
-    def __init__(self, value: object) -> None:
+    def __init__(self, value: object, reason: str) -> None:
         cls = type(value)
         self.value = value
         self.type_name = (
@@ -32,7 +42,8 @@ class UnhashableValueError(Exception):
             if cls.__module__ == "builtins"
             else f"{cls.__module__}.{cls.__qualname__}"
         )
-        super().__init__(self.type_name)
+        self.reason = reason
+        super().__init__(f"{self.type_name}: {reason}")
 
 
 def feed(digest: hashlib._Hash, tag: bytes, payload: bytes) -> None:
@@ -41,47 +52,96 @@ def feed(digest: hashlib._Hash, tag: bytes, payload: bytes) -> None:
     digest.update(payload)
 
 
-def feed_value(digest: hashlib._Hash, value: object) -> None:
-    """Feed `value` to `digest` by its type, raising UnhashableValueError for a type Facere doesn't hash."""
-    match value:
-        case None:
-            feed(digest, b"N", b"")
-        case bool():
-            feed(digest, b"B", b"1" if value else b"0")
-        case int():
-            feed(digest, b"I", value.to_bytes((value.bit_length() + 8) // 8, "little", signed=True))
-        case float():
-            feed(digest, b"F", value.hex().encode())
-        case str():
-            feed(digest, b"S", value.encode("utf-8", "surrogatepass"))
-        case bytes():
-            feed(digest, b"Y", value)
-        case tuple() | list():
-            feed(
-                digest, b"T" if isinstance(value, tuple) else b"L", len(value).to_bytes(8, "little")
-            )
-            for item in value:
-                feed_value(digest, item)
-        case dict():
-            feed(digest, b"D", len(value).to_bytes(8, "little"))
-            for key, item in value.items():
-                feed_value(digest, key)
-                feed_value(digest, item)
-        case set() | frozenset():
-            feed(digest, b"E", len(value).to_bytes(8, "little"))
-            for item_digest in sorted(_calc_value_digest(item) for item in value):
-                digest.update(item_digest)
-        case types.ModuleType():
-            feed(digest, b"M", value.__name__.encode())
-        case types.FunctionType() | types.BuiltinFunctionType() | type():
-            feed(digest, b"Q", f"{value.__module__}.{value.__qualname__}".encode())
-        case _:
-            raise UnhashableValueError(value)
+def feed_value(digest: hashlib._Hash, value: object) -> list[Code]:
+    """Feed `value` to `digest` by its content, taking apart what is no plain container as pickle would, and return the functions and classes held inside it, `value` itself excluded.
+
+    Raises UnhashableValueError for a value pickle can't take apart, a path object, or a value that holds itself.
+    """
+    held: list[Code] = []
+    _feed_value(digest, value, held, frozenset())
+    return held
 
 
-def _calc_value_digest(value: object) -> bytes:
+def _feed_value(
+    digest: hashlib._Hash, value: object, held: list[Code], enclosing: frozenset[int]
+) -> None:
+    cls = type(value)
+    if value is None:
+        feed(digest, b"N", b"")
+    elif cls is bool:
+        feed(digest, b"B", b"1" if value else b"0")
+    elif cls is int:
+        assert isinstance(value, int)
+        feed(digest, b"I", value.to_bytes((value.bit_length() + 8) // 8, "little", signed=True))
+    elif cls is float:
+        assert isinstance(value, float)
+        feed(digest, b"F", value.hex().encode())
+    elif cls is str:
+        assert isinstance(value, str)
+        feed(digest, b"S", value.encode("utf-8", "surrogatepass"))
+    elif cls is bytes:
+        assert isinstance(value, bytes)
+        feed(digest, b"Y", value)
+    elif isinstance(value, types.ModuleType):
+        feed(digest, b"M", value.__name__.encode())
+    elif isinstance(value, types.FunctionType | types.BuiltinFunctionType | type):
+        feed(digest, b"Q", f"{value.__module__}.{value.__qualname__}".encode())
+        if enclosing and isinstance(value, types.FunctionType | type):
+            held.append(value)
+    elif isinstance(value, PurePath):
+        raise UnhashableValueError(value, "Facere paths are strings with /")
+    elif id(value) in enclosing:
+        raise UnhashableValueError(value, "it holds itself")
+    else:
+        _feed_composite(digest, value, held, enclosing | {id(value)})
+
+
+def _feed_composite(
+    digest: hashlib._Hash, value: object, held: list[Code], enclosing: frozenset[int]
+) -> None:
+    cls = type(value)
+    if cls is tuple or cls is list:
+        assert isinstance(value, tuple | list)
+        feed(digest, b"T" if cls is tuple else b"L", len(value).to_bytes(8, "little"))
+        for item in value:
+            _feed_value(digest, item, held, enclosing)
+    elif cls is dict:
+        assert isinstance(value, dict)
+        feed(digest, b"D", len(value).to_bytes(8, "little"))
+        for key, item in value.items():
+            _feed_value(digest, key, held, enclosing)
+            _feed_value(digest, item, held, enclosing)
+    elif cls is set or cls is frozenset:
+        assert isinstance(value, set | frozenset)
+        # Sorted, since a set's iteration order varies with PYTHONHASHSEED.
+        feed(digest, b"E", len(value).to_bytes(8, "little"))
+        for item_digest in sorted(_calc_item_digest(item, held, enclosing) for item in value):
+            digest.update(item_digest)
+    else:
+        _feed_reduced(digest, value, held, enclosing)
+
+
+def _feed_reduced(
+    digest: hashlib._Hash, value: object, held: list[Code], enclosing: frozenset[int]
+) -> None:
+    """Feed `value` as pickle takes it apart: the callable that rebuilds it, which names its class, and the arguments and state that callable receives."""
+    # Pickle consults copyreg's table before __reduce_ex__, as for re.Pattern.
+    registered = copyreg.dispatch_table.get(type(value))
+    try:
+        reduced = registered(value) if registered else value.__reduce_ex__(_PICKLE_PROTOCOL)
+    except Exception as error:  # A custom reduction may raise anything, and collection reports it.
+        raise UnhashableValueError(value, f"pickle can't take it apart: {error}") from error
+    if isinstance(reduced, str):
+        feed(digest, b"G", f"{type(value).__module__}.{reduced}".encode())
+        return
+    feed(digest, b"R", len(reduced).to_bytes(8, "little"))
+    for part in reduced:
+        _feed_value(digest, list(part) if isinstance(part, Iterator) else part, held, enclosing)
+
+
+def _calc_item_digest(item: object, held: list[Code], enclosing: frozenset[int]) -> bytes:
     digest = hashlib.sha256()
-    feed_value(digest, value)
+    _feed_value(digest, item, held, enclosing)
     return digest.digest()
 
 
@@ -157,17 +217,39 @@ def find_default_values(fn: types.FunctionType) -> dict[str, object]:
 def calc_code_text(
     fn: types.FunctionType, trees: dict[str, ast.Module], keep_decorators: bool = False
 ) -> str:
-    """Return a dump of the syntax tree of `fn` without positions or docstrings, and without decorators unless `keep_decorators`, parsing its file into `trees` once."""
+    """Return a dump of the syntax tree of `fn` without positions or docstrings, and without decorators unless `keep_decorators`, parsing its file into `trees` once. A lambda, which no name finds, dumps its whole module."""
+    if fn.__code__.co_name == "<lambda>":
+        module = _parse(fn.__code__.co_filename, trees)
+        return ast.dump(_strip_docstrings(module), include_attributes=False)
+    stripped = _strip_docstrings(_find_function_node(fn, trees))
+    if not keep_decorators:
+        stripped.decorator_list = []
+    return ast.dump(stripped, include_attributes=False)
+
+
+def find_named_parameters(fn: types.FunctionType, trees: dict[str, ast.Module]) -> frozenset[str]:
+    """Return the parameters of `fn` that its body names, so may read: all of them where it names a function that reads its caller's variables, such as `locals`."""
+    code = fn.__code__
+    parameters = frozenset(code.co_varnames[: code.co_argcount + code.co_kwonlyargcount])
+    named = {
+        inner.id
+        for statement in _find_function_node(fn, trees).body
+        for inner in ast.walk(statement)
+        if isinstance(inner, ast.Name)
+    }
+    return parameters if named & _FRAME_READERS else parameters & named
+
+
+def _find_function_node(
+    fn: types.FunctionType, trees: dict[str, ast.Module]
+) -> ast.FunctionDef | ast.AsyncFunctionDef:
     code = fn.__code__
     tree = _parse(code.co_filename, trees)
     node = next((node for node in ast.walk(tree) if _is_definition_of(node, code)), None)
     if node is None:
         raise LookupError(f"found no source for {fn.__qualname__} in {code.co_filename}")
     assert isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
-    stripped = _strip_docstrings(node)
-    if not keep_decorators:
-        stripped.decorator_list = []
-    return ast.dump(stripped, include_attributes=False)
+    return node
 
 
 def calc_class_text(cls: type, trees: dict[str, ast.Module]) -> str:
@@ -321,3 +403,34 @@ def _find_entry_stamp(entry: os.DirEntry[str], is_followed: bool) -> Stamp | Non
 
 def _to_stamp(info: os.stat_result) -> Stamp:
     return (info.st_size, info.st_mtime_ns, info.st_ctime_ns, info.st_ino, info.st_mode)
+
+
+def find_change_time_ns(path: str) -> int | None:
+    """Return when the file at `path` last changed, as its file system stamped it, or for a directory the latest such time in its tree, linked directories aside, or None when nothing is there."""
+    info = _find_info(path)
+    if info is None:
+        return None
+    if not stat.S_ISDIR(info.st_mode):
+        return _read_change_time_ns(info)
+    entries = (
+        os.path.join(directory, name)
+        for directory, subdirectories, names in os.walk(path)
+        for name in (*subdirectories, *names)
+    )
+    infos = [info, *(found for found in map(_find_info, entries) if found is not None)]
+    return max(map(_read_change_time_ns, infos))
+
+
+def _find_info(path: str) -> os.stat_result | None:
+    """Return the stat of what `path` names, or of the link itself where it dangles, or None where nothing is there."""
+    for follow_symlinks in (True, False):
+        with contextlib.suppress(FileNotFoundError):
+            return os.stat(path, follow_symlinks=follow_symlinks)
+    return None
+
+
+def _read_change_time_ns(info: os.stat_result) -> int:
+    """Return when the file system last stamped a change to the file `info` describes: its ctime, and on Windows, where that is the creation time, the later of it and the mtime."""
+    if sys.platform == "win32":
+        return max(info.st_mtime_ns, info.st_ctime_ns)
+    return info.st_ctime_ns

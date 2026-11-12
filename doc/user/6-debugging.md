@@ -35,7 +35,8 @@ Recipes are ordinary Python running inside `fac`, so `print` and `breakpoint()` 
 | Symptom | Look at |
 | --- | --- |
 | A rule never executes after a change | Whether the changed thing is declared. [Hidden inputs](./7-best-practices.md#hidden-inputs) lists what stays out of every fingerprint |
-| A rule executes on every invocation | A module-level value that differs per run, such as the time or a `list` built from a `set` |
+| A rule executes on every invocation | A module-level value that differs per run, such as the time or a `list` built from a `set`. *(0.4)* A tool that changes its own input, or writes a file outside the output directory that its recipe reports: from the second such execution `fac` warns that the rule `stays stale`, naming the file |
+| A rule executes once more after a build | *(0.4)* An input saved while its recipe executed, or a tool that installed files it then read, as `uvx` does on its first run |
 | Everything downstream executes | An output whose bytes differ on every execution, as [identical outputs](./7-best-practices.md#identical-outputs) describes |
 | A rule fails on a fresh clone only | An input some other rule's recipe leaves behind undeclared, or a rule output read while `fac.py` loads |
 

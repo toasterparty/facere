@@ -1,6 +1,8 @@
 """The line closing an invocation: how long it took, what ran, and what was already current."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
+from facere._diagnostics import Diagnostic
 
 _MS_PER_SECOND = 1000
 _TENTHS_PER_SECOND = 10
@@ -10,10 +12,13 @@ _MINUTES_PER_HOUR = 60
 
 @dataclass(slots=True)
 class Summary:
+    """What an invocation did. `unsettled` holds one warning per rule that an input changing during its recipe left stale twice in a row."""
+
     tasks_run: int = 0
     rules_run: int = 0
     outputs_current: int = 0
     stopped: str | None = None
+    unsettled: list[Diagnostic] = field(default_factory=list)
 
 
 def format_summary(summary: Summary, elapsed_s: float, *, is_interrupted: bool) -> str:

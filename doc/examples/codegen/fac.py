@@ -16,8 +16,7 @@ CC = ["uvx", "--from", f"ziglang=={ZIG_VERSION}", "python-zig", "cc"]
 # A path glued to -I escapes the check that fails a command given an undeclared path. That costs
 # nothing here, since the generated headers are already inputs.
 CFLAGS = ["-O2", "-Wall", "-I.", "-I" + fac.out("gen")]
-# A new spec executes its `message`, every compile, since a compile's fingerprint holds the list of
-# headers it orders after, and the link.
+# A new spec executes its `message`, the compile of its source, and the link.
 SPECS = fac.sources("messages/*.toml")
 KEYWORD_TABLE = "src/keywords.gperf"
 KEYWORDS = fac.out("gen/keywords.c")
@@ -60,6 +59,8 @@ def parse_depfile(path):
 # Order-only headers are built before any compile, and make it stale only once its depfile lists them.
 # Drop `headers` and the compile fails, naming the rule that outputs the header it read, since nothing
 # orders it after the generator. The price is that the first run waits for every header.
+# The recipe never names `headers`, so the list stays out of each compile's fingerprint, and a new
+# header executes only the compiles that come to include it.
 # A new file named as a header a compile read, such as a login.h at the root, might shadow it.
 # Facere compares names alone, so each such compile executes.
 @fac.rule(each=OBJECT_FILE_RULES)

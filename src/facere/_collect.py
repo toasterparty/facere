@@ -16,7 +16,6 @@ import types
 import typing
 from collections.abc import Callable, Container, Iterable, Iterator, Mapping
 from dataclasses import dataclass
-from pathlib import PurePath
 from typing import NamedTuple
 
 from facere._api import Args
@@ -33,6 +32,7 @@ from facere._context import (
 )
 from facere._diagnostics import Diagnostic, FacereError, Note
 from facere._hash import (
+    Code,
     UnhashableValueError,
     calc_class_text,
     calc_code_text,
@@ -41,6 +41,7 @@ from facere._hash import (
     find_closure_values,
     find_default_values,
     find_methods,
+    find_named_parameters,
     find_read_globals,
     iter_strings,
 )
@@ -48,9 +49,8 @@ from facere._version import VERSION
 
 MODULE_NAME = "__fac__"
 _RESERVED_OPTIONS = ("each", "name", "default", "max_jobs", "terminal", "always", "clear")
-_FINGERPRINT_FORMAT = b"facere fingerprint 5"
+_FINGERPRINT_FORMAT = b"facere fingerprint 6"
 _UNREADABLE_SOURCE = (OSError, LookupError, SyntaxError, ValueError)
-_HASHABLE_TYPES = "Facere hashes only None, a bool, int, float, str, bytes, module, function, or class, or a tuple, list, dict, or set of them"
 _PATH_ANNOTATIONS = {
     Kind.INPUT: "fac.Input",
     Kind.ORDER_ONLY: "fac.OrderOnly",
@@ -93,7 +93,7 @@ def _diagnose(subject: _Declared, message: str, notes: tuple[Note, ...] = ()) ->
 class Definition:
     """A rule, or a task when `is_task`, with every parameter filled.
 
-    `args_slot` places a task's fac.Args parameter: an index into `args`, a key of `kwargs`, or None when it has none.
+    `args_slot` places a task's fac.Args parameter: an index into `args`, a key of `kwargs`, or None when it has none. `path_values` holds the paths of each fac.Input, fac.OrderOnly, and fac.Output parameter, and `order_only_parameters` names the fac.OrderOnly ones among them.
     """
 
     is_task: bool
@@ -110,6 +110,7 @@ class Definition:
     values: dict[str, object]
     text_values: dict[str, object]
     path_values: dict[str, object]
+    order_only_parameters: frozenset[str]
     args_slot: int | str | None
 
     @property
@@ -562,6 +563,11 @@ def _build_definition(
         values=values,
         text_values=text_values,
         path_values=path_values,
+        order_only_parameters=frozenset(
+            parameter
+            for parameter, slot in slots.items()
+            if isinstance(slot, _PathSlot) and slot.kind is Kind.ORDER_ONLY
+        ),
         args_slot=args_slot,
     )
 
@@ -636,6 +642,7 @@ def _hash_values(
 ) -> dict[Definition, bytes]:
     trees: dict[str, ast.Module] = {}
     function_digests: dict[Callable[..., object], hashlib._Hash | None] = {}
+    unread_by_function: dict[Callable[..., object], frozenset[str]] = {}
     digests: dict[Definition, bytes] = {}
     env = repr(sorted(context.env.items())).encode()
     for definition in definitions:
@@ -646,19 +653,39 @@ def _hash_values(
         function_digest = function_digests[definition.fn]
         digest = function_digest.copy() if function_digest else hashlib.sha256()
         feed(digest, b"env", env)
+        if function_digest and definition.fn not in unread_by_function:
+            unread_by_function[definition.fn] = _find_unread_order_only(definition, trees)
+        unread = unread_by_function.get(definition.fn, frozenset())
+        path_values = {
+            parameter: paths
+            for parameter, paths in definition.path_values.items()
+            if parameter not in unread
+        }
         problems = []
+        held: list[Code] = []
         for kind, values, keys in (
             ("parameter", definition.values, output_keys),
             ("text parameter", definition.text_values, None),
-            ("path parameter", definition.path_values, None),
+            ("path parameter", path_values, None),
         ):
-            problems.extend(_feed_values(context, digest, kind, values, keys, definition.is_task))
+            problems.extend(
+                _feed_values(context, digest, kind, values, keys, definition.is_task, held)
+            )
+        problems.extend(_feed_held_code(context, digest, held, output_keys, trees))
         errors.extend(
             _diagnose(definition, f"{definition.label} {problem}") for problem in problems
         )
         if function_digest and not problems and not definition.is_task:
             digests[definition] = digest.digest()
     return digests
+
+
+def _find_unread_order_only(definition: Definition, trees: dict[str, ast.Module]) -> frozenset[str]:
+    """Return the fac.OrderOnly parameters the recipe of `definition`, whose source is readable, never names, whose paths can therefore change nothing it writes."""
+    if not definition.order_only_parameters:
+        return frozenset()
+    assert isinstance(definition.fn, types.FunctionType)
+    return definition.order_only_parameters - find_named_parameters(definition.fn, trees)
 
 
 def _hash_function(
@@ -679,7 +706,7 @@ def _hash_function(
             ("global", find_read_globals(fn)),
             ("closure variable", find_closure_values(fn)),
         ):
-            problems.extend(_feed_values(context, digest, kind, values, output_keys, True))
+            problems.extend(_feed_values(context, digest, kind, values, output_keys, True, []))
     else:
         try:
             feed(digest, b"code", calc_code_text(fn, trees).encode())
@@ -701,32 +728,76 @@ def _feed_reached_code(
     output_keys: Container[str],
     trees: dict[str, ast.Module],
 ) -> list[str]:
-    """Feed `digest` the values that `fn` reads, and the syntax tree and values of every function and class of the project's it reaches by name, returning what's wrong with them."""
+    """Feed `digest` the values that the recipe `fn` reads, and the syntax tree and values of every function and class of the project's it reaches, by name or held in a value, returning what's wrong with them."""
+    return _feed_reach(context, digest, fn, [fn], output_keys, trees, {fn})
+
+
+def _feed_reach(
+    context: Context,
+    digest: hashlib._Hash,
+    recipe: types.FunctionType | None,
+    pending: list[types.FunctionType],
+    output_keys: Container[str],
+    trees: dict[str, ast.Module],
+    seen: set[object],
+) -> list[str]:
+    """Feed `digest` the values that each of `pending` reads, the defaults of all but `recipe` included, and the syntax tree and values of every function and class of the project's they reach that `seen` lacks, returning what's wrong with them."""
     problems = []
-    pending = [fn]
-    seen: set[object] = {fn}
     while pending:
         current = pending.pop(0)
-        suffix = "" if current is fn else f" through {current.__qualname__}"
+        suffix = "" if current is recipe else f" through {current.__qualname__}"
         for kind, values in (
             (
                 "global",
                 find_read_globals(current, lambda module: _is_project_code(context, module)),
             ),
             ("closure variable", find_closure_values(current)),
-            ("default", {} if current is fn else find_default_values(current)),
+            ("default", {} if current is recipe else find_default_values(current)),
         ):
             named = {f"{name}{suffix}": value for name, value in values.items()}
-            problems.extend(_feed_values(context, digest, kind, named, output_keys, False))
-            for code in (code for value in values.values() for code in _find_reached(value)):
-                if not _is_project_code(context, code) or code in seen:
-                    continue
-                seen.add(code)
-                problem = _feed_definition(digest, code, trees)
-                if problem is not None:
-                    problems.append(problem)
-                    continue
-                pending.extend(_find_callables(code, seen))
+            held: list[Code] = []
+            problems.extend(_feed_values(context, digest, kind, named, output_keys, False, held))
+            problems.extend(
+                _feed_newly_reached(
+                    context, digest, [*values.values(), *held], trees, seen, pending
+                )
+            )
+    return problems
+
+
+def _feed_held_code(
+    context: Context,
+    digest: hashlib._Hash,
+    held: list[Code],
+    output_keys: Container[str],
+    trees: dict[str, ast.Module],
+) -> list[str]:
+    """Feed `digest` the syntax tree and values of the functions and classes of the project's in `held`, and of all they reach, returning what's wrong with them."""
+    pending: list[types.FunctionType] = []
+    seen: set[object] = set()
+    problems = _feed_newly_reached(context, digest, list(held), trees, seen, pending)
+    return [*problems, *_feed_reach(context, digest, None, pending, output_keys, trees, seen)]
+
+
+def _feed_newly_reached(
+    context: Context,
+    digest: hashlib._Hash,
+    values: list[object],
+    trees: dict[str, ast.Module],
+    seen: set[object],
+    pending: list[types.FunctionType],
+) -> list[str]:
+    """Feed `digest` the syntax tree of the project's code that `values` reach and `seen` lacks, adding the functions whose reads join the fingerprint to `pending`, and return what's wrong with that code."""
+    problems = []
+    for code in (code for value in values for code in _find_reached(value)):
+        if not _is_project_code(context, code) or code in seen:
+            continue
+        seen.add(code)
+        problem = _feed_definition(digest, code, trees)
+        if problem is not None:
+            problems.append(problem)
+            continue
+        pending.extend(_find_callables(code, seen))
     return problems
 
 
@@ -789,7 +860,8 @@ def _is_project_code(context: Context, value: object) -> bool:
         path = getattr(value, "__file__", None)
     else:
         return False
-    module = value.__name__ if isinstance(value, types.ModuleType) else value.__module__
+    # A function that exec defined in a namespace without __name__ has no module.
+    module = (value.__name__ if isinstance(value, types.ModuleType) else value.__module__) or ""
     if module == "facere" or module.startswith("facere."):
         return False
     return isinstance(path, str) and _is_project_source(context, os.path.abspath(path))
@@ -802,22 +874,18 @@ def _feed_values(
     values: dict[str, object],
     output_keys: Container[str] | None,
     is_task: bool,
+    held: list[Code],
 ) -> list[str]:
-    """Feed `values` to `digest` unless `is_task`, and return what's wrong with them, checking paths unless `output_keys` is None."""
+    """Feed `values` to `digest` unless `is_task`, adding the code they hold to `held`, and return what's wrong with them, checking paths unless `output_keys` is None."""
     problems = []
     for name, value in values.items():
         if not is_task:
             feed(digest, kind.encode(), name.encode())
             try:
-                feed_value(digest, value)
+                held.extend(feed_value(digest, value))
             except UnhashableValueError as error:
-                cause = (
-                    "Facere paths are strings with /"
-                    if isinstance(error.value, PurePath)
-                    else _HASHABLE_TYPES
-                )
                 problems.append(
-                    f"reads {kind} {name}, of type {error.type_name}, which Facere can't hash, since {cause}"
+                    f"reads {kind} {name}, of type {error.type_name}, which Facere can't hash, since {error.reason}"
                 )
                 continue
         if output_keys is None or isinstance(value, types.ModuleType | types.FunctionType | type):

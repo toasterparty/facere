@@ -65,6 +65,11 @@ def print_error(error: FacereError, start_dir: str) -> None:
         print(line, file=sys.stderr)
 
 
+def print_warning(diagnostic: Diagnostic, start_dir: str) -> None:
+    location = _format_location(diagnostic.location, start_dir)
+    print(f"{location}: warning: {diagnostic.message}", file=sys.stderr)
+
+
 def _format_location(location: Location | None, start_dir: str) -> str:
     if location is None:
         return "fac"

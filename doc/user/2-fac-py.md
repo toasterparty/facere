@@ -7,7 +7,7 @@ A rule is a function decorated with `@fac.rule`, and its signature declares what
 | Annotation | Holds |
 | --- | --- |
 | `fac.Input`, `list[fac.Input]` | Inputs, the files or directories the rule reads |
-| `fac.OrderOnly`, `list[fac.OrderOnly]` | *(0.4)* Files or directories a rule's recipe may read, such as a generated header only some compiles include. They are built first, and a change to one's content makes the rule stale only once the recipe reports reading it through `fac.add_inputs`, while a change to which paths the parameter holds always does |
+| `fac.OrderOnly`, `list[fac.OrderOnly]` | *(0.4)* Files or directories a rule's recipe may read, such as a generated header only some compiles include. They are built first, and a change to one's content makes the rule stale only once the recipe reports reading it through `fac.add_inputs`. A change to which paths the parameter holds does so only where the recipe's code names the parameter |
 | `fac.Output`, `list[fac.Output]` | Outputs, the files or directories the rule writes. Every rule has at least one output, a file or a virtual output |
 | `fac.VirtualInput`, `list[fac.VirtualInput]` | *(planned)* Virtual outputs of a [store](./5-virtual-outputs.md) the rule reads |
 | `fac.VirtualOutput`, `list[fac.VirtualOutput]` | *(planned)* Virtual outputs of a store the rule writes |
@@ -80,13 +80,13 @@ Facere compares content, never timestamps. A rule executes when any of these cha
 
 - the content of an input, which *(0.4)* outside Windows includes whether the file is executable, and for a link inside a directory input is its target's content
 - the files in a directory input, when one appears or disappears
-- *(0.4)* the paths a `fac.OrderOnly` parameter holds, though not their content
+- *(0.4)* the paths a `fac.OrderOnly` parameter holds, where the recipe's code names that parameter, though never their content
 - *(0.4)* the content of a file its recipe last reported through `fac.add_inputs`, wherever it lies, or a new file under the root, or a new output, with the name of one it reported, since a tool searching a path may find that first
 - its recipe's code, or that of a function or class in your project the recipe reaches by name, such as a helper in `fac.py` or a shared module *(0.2)*, along with *(0.4)* the function a decorator wraps and the classes a class inherits from
-- a value or module constant the recipe reads, directly or through such a function, *(0.4)* including the defaults such a function's parameters take
+- a value or module constant the recipe reads, directly or through such a function, *(0.4)* including the defaults such a function's parameters take. *(0.4)* A value counts by its content wherever `pickle` can take it apart, a dataclass, enum member, date, or compiled pattern included, and one it cannot, such as an open file or a lock, fails collection
 - a variable `fac.env` sets *(0.2)*
 - one of its outputs, deleted or edited by hand, and *(planned)* a virtual output changed in or missing from its store
 
-*(0.4)* An input changed while its rule executes makes the rule execute again on the next `fac`, even where the change was undone, since the tool may have read it halfway. Comments, docstrings, and reformatting change nothing. A rule downstream executes only if an output it inputs comes out different. Facere cannot see what a recipe reads behind its back, such as an environment variable inherited from your shell or a file it never declared: [hidden inputs](./7-best-practices.md#hidden-inputs) lists each.
+*(0.4)* An input changed while its rule executes makes the rule execute again on the next `fac`, even where the change was undone, since the tool may have read it halfway. Where the same input changes during two executions in a row, as when a tool rewrites its own input, `fac` prints a warning naming the rule and the input. Comments, docstrings, and reformatting change nothing. A rule downstream executes only if an output it inputs comes out different. Facere cannot see what a recipe reads behind its back, such as an environment variable inherited from your shell or a file it never declared: [hidden inputs](./7-best-practices.md#hidden-inputs) lists each.
 
 [<- Getting started](./1-getting-started.md) | [Parameterization ->](./3-parameterization.md)

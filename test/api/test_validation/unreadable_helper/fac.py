@@ -1,6 +1,11 @@
+import os
+
 import facere as fac
 
-shout = lambda text: text.upper()  # noqa: E731
+namespace = {}
+source = "def shout(text):\n    return text.upper()\n"
+exec(compile(source, os.path.join(os.path.dirname(__file__), "gone.py"), "exec"), namespace)
+shout = namespace["shout"]
 
 
 @fac.rule

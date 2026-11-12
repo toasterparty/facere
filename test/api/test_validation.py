@@ -1,7 +1,7 @@
 """Collection errors: each fails before any recipe executes, in GNU format, naming every definition involved and how to fix it."""
 
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 
@@ -191,8 +191,18 @@ def test_value_facere_cannot_hash_fails_naming_its_type(fac: Fac) -> None:
 
     assert result.status == 2
     assert result.err.splitlines() == [
-        "fac.py:6:2: error: function page reads global LOCK, of type object, which Facere can't hash, since Facere hashes only None, a bool, int, float, str, bytes, module, function, or class, or a tuple, list, dict, or set of them",
-        "fac.py:6:2: error: rule 'page' (build/a) reads parameter lock, of type object, which Facere can't hash, since Facere hashes only None, a bool, int, float, str, bytes, module, function, or class, or a tuple, list, dict, or set of them",
+        "fac.py:8:2: error: function page reads global LOCK, of type _thread.lock, which Facere can't hash, since pickle can't take it apart: cannot pickle '_thread.lock' object",
+        "fac.py:8:2: error: rule 'page' (build/a) reads parameter lock, of type _thread.lock, which Facere can't hash, since pickle can't take it apart: cannot pickle '_thread.lock' object",
+    ]
+
+
+@pytest.mark.project("unhashable_default")
+def test_helper_default_facere_cannot_hash_fails_naming_the_helper(fac: Fac) -> None:
+    result = fac()
+
+    assert result.status == 2
+    assert result.err.splitlines() == [
+        "fac.py:10:2: error: function shout reads default lock through exclaim, of type _thread.lock, which Facere can't hash, since pickle can't take it apart: cannot pickle '_thread.lock' object",
     ]
 
 
@@ -202,7 +212,8 @@ def test_pathlib_path_value_fails_naming_string_paths(fac: Fac) -> None:
 
     assert result.status == 2
     assert result.err.splitlines() == [
-        "fac.py:6:2: error: rule 'page' (build/a) reads parameter directory, of type pathlib.PurePosixPath, which Facere can't hash, since Facere paths are strings with /",
+        # Python 3.13 alone defines the class in pathlib._local.
+        f"fac.py:6:2: error: rule 'page' (build/a) reads parameter directory, of type {PurePosixPath.__module__}.PurePosixPath, which Facere can't hash, since Facere paths are strings with /",
     ]
 
 
@@ -222,7 +233,7 @@ def test_rule_reaching_a_helper_whose_source_facere_cannot_read_fails(root: Path
 
     assert result.status == 2
     assert result.err.splitlines() == [
-        f"fac.py:6:2: error: function page reaches <lambda>, which has no source Facere can read, which a rule's fingerprint needs: found no source for <lambda> in {root / 'fac.py'}",
+        f"fac.py:11:2: error: function page reaches shout, which has no source Facere can read, which a rule's fingerprint needs: [Errno 2] No such file or directory: '{root / 'gone.py'}'",
     ]
 
 

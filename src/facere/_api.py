@@ -24,13 +24,12 @@ from facere._context import (
     normalize,
 )
 from facere._diagnostics import Diagnostic, FacereError, Note, find_caller_locations
-from facere._hash import calc_stamp
 from facere._version import VERSION
 
 Input = Annotated[str, Kind.INPUT]
 """Annotates a parameter holding a file or directory the rule or task reads, as a path relative to the root. Use `list[fac.Input]` for several."""
 OrderOnly = Annotated[str, Kind.ORDER_ONLY]
-"""Annotates a rule's parameter holding a file or directory its recipe may read, as a path relative to the root. It is built first, and its path joins the fingerprint, but a change to its content makes the rule stale only once the recipe reports reading it through `fac.add_inputs`. Use `list[fac.OrderOnly]` for several."""
+"""Annotates a rule's parameter holding a file or directory its recipe may read, as a path relative to the root. It is built first, and its path joins the fingerprint where the recipe's code names the parameter, but a change to its content makes the rule stale only once the recipe reports reading it through `fac.add_inputs`. Use `list[fac.OrderOnly]` for several."""
 Output = Annotated[str, Kind.OUTPUT]
 """Annotates a parameter holding a file or directory the rule writes, as a path relative to the root. Use `list[fac.Output]` for several."""
 Args = Annotated[tuple[str, ...], Kind.ARGS]
@@ -111,7 +110,7 @@ def out(path: str = ".", suffix: str | None = None) -> str:
 def add_inputs(paths: Iterable[str]) -> None:
     """Report files the running rule's recipe read, usually what a tool's depfile lists, so a change to any of them makes the rule stale.
 
-    Call it once its tool has run or before reading a file in Python. Each path is relative to the root, or absolute, and any spelling of one counts, such as `src/a/../b.h`. A new file under the root with the name of a reported file makes the rule stale. A file inside the output directory that no rule outputs is scratch, so only its name is kept. Raises FileNotFoundError for a kept path that doesn't exist.
+    Call it once its tool has run or before reading a file in Python. Each path is relative to the root, or absolute, and any spelling of one counts, such as `src/a/../b.h`. A new file under the root with the name of a reported file makes the rule stale. A file inside the output directory that no rule outputs is scratch, so only its name is kept. A file reported for the first time that changed since the recipe started leaves the rule stale. Raises FileNotFoundError for a kept path that doesn't exist.
     """
     context = get_context("fac.add_inputs")
     recipe = context.running
@@ -129,10 +128,9 @@ def add_inputs(paths: Iterable[str]) -> None:
         recipe.reported_names.add(calc_path_key(posixpath.basename(relative)))
         if is_within(relative, context.out_dir) and not is_within_any(key, recipe.output_keys):
             continue
-        stamp = calc_stamp(os.path.join(context.root, relative))
-        if stamp is None:
+        if not os.path.exists(os.path.join(context.root, relative)):
             raise FileNotFoundError(errno.ENOENT, "fac.add_inputs got a missing file", relative)
-        recipe.reported.setdefault(relative, stamp)
+        recipe.reported.add(relative)
         recipe.reported_keys.add(key)
 
 

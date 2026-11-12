@@ -1,4 +1,4 @@
-"""The state: a record of each rule's last success, kept in a SQLite database in the output directory.
+"""The state: a record of each rule's last success, or of the inputs that changed during its last execution, kept in a SQLite database in the output directory.
 
 The database is open only while it is read or written, so a task may delete the output directory on any OS. A database Facere can't read counts as empty, which costs only rebuilds, while one it can't write raises OSError.
 """
@@ -7,13 +7,14 @@ import contextlib
 import os
 import sqlite3
 from collections.abc import Generator
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
-_SCHEMA_VERSION = 3
+_SCHEMA_VERSION = 4
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS records (outputs TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, output_hashes TEXT NOT NULL, added_inputs TEXT NOT NULL, added_names TEXT NOT NULL) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS listing (id INTEGER PRIMARY KEY CHECK (id = 0), paths TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS declared (id INTEGER PRIMARY KEY CHECK (id = 0), outputs TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS moved (outputs TEXT PRIMARY KEY, paths TEXT NOT NULL) WITHOUT ROWID;
 """
 _SEPARATOR = "\0"
 
@@ -32,17 +33,9 @@ def calc_key(outputs: tuple[str, ...]) -> tuple[str, ...]:
 
 
 def load(path: str) -> dict[tuple[str, ...], Record]:
-    if not os.path.exists(path):
-        return {}
-    try:
-        with contextlib.closing(sqlite3.connect(path)) as connection:
-            if connection.execute("PRAGMA user_version").fetchone()[0] != _SCHEMA_VERSION:
-                return {}
-            rows = connection.execute(
-                "SELECT outputs, fingerprint, output_hashes, added_inputs, added_names FROM records"
-            ).fetchall()
-    except sqlite3.DatabaseError:
-        return {}
+    rows = _fetch(
+        path, "SELECT outputs, fingerprint, output_hashes, added_inputs, added_names FROM records"
+    )
     return {
         _split(outputs): Record(fingerprint, _split(hashes), _pair(_split(added)), _split(names))
         for outputs, fingerprint, hashes, added, names in rows
@@ -50,7 +43,9 @@ def load(path: str) -> dict[tuple[str, ...], Record]:
 
 
 def save(path: str, key: tuple[str, ...], record: Record) -> None:
+    """Record the success of the rule outputting `key`, forgetting what save_moved kept of it."""
     with _open(path) as connection:
+        connection.execute("DELETE FROM moved WHERE outputs = ?", (_SEPARATOR.join(key),))
         connection.execute(
             "INSERT OR REPLACE INTO records VALUES (?, ?, ?, ?, ?)",
             (
@@ -64,11 +59,27 @@ def save(path: str, key: tuple[str, ...], record: Record) -> None:
 
 
 def remove(path: str, keys: list[tuple[str, ...]]) -> None:
+    """Forget everything kept of the rules outputting `keys`."""
     if not keys or not os.path.exists(path):
         return
+    joined = [(_SEPARATOR.join(key),) for key in keys]
     with _open(path) as connection:
-        connection.executemany(
-            "DELETE FROM records WHERE outputs = ?", [(_SEPARATOR.join(key),) for key in keys]
+        connection.executemany("DELETE FROM records WHERE outputs = ?", joined)
+        connection.executemany("DELETE FROM moved WHERE outputs = ?", joined)
+
+
+def load_moved(path: str) -> dict[tuple[str, ...], tuple[str, ...]]:
+    """Return, for each rule left unrecorded by its last execution, the inputs that changed during it."""
+    rows = _fetch(path, "SELECT outputs, paths FROM moved")
+    return {_split(outputs): _split(paths) for outputs, paths in rows}
+
+
+def save_moved(path: str, key: tuple[str, ...], paths: tuple[str, ...]) -> None:
+    """Keep the inputs `paths` that changed while the rule outputting `key` executed, which left it unrecorded."""
+    with _open(path) as connection:
+        connection.execute(
+            "INSERT OR REPLACE INTO moved VALUES (?, ?)",
+            (_SEPARATOR.join(key), _SEPARATOR.join(paths)),
         )
 
 
@@ -93,16 +104,21 @@ def save_declared(path: str, outputs: frozenset[str]) -> None:
 
 
 def _load_paths(path: str, query: str) -> frozenset[str] | None:
+    rows = _fetch(path, query)
+    return frozenset(_split(rows[0][0])) if rows else None
+
+
+def _fetch(path: str, query: str) -> list[Any]:
+    """Return the rows `query` selects, or none where the state is missing, unreadable, or of another schema."""
     if not os.path.exists(path):
-        return None
+        return []
     try:
         with contextlib.closing(sqlite3.connect(path)) as connection:
             if connection.execute("PRAGMA user_version").fetchone()[0] != _SCHEMA_VERSION:
-                return None
-            row = connection.execute(query).fetchone()
+                return []
+            return connection.execute(query).fetchall()
     except sqlite3.DatabaseError:
-        return None
-    return frozenset(_split(row[0])) if row else None
+        return []
 
 
 def _save_paths(path: str, statement: str, paths: frozenset[str]) -> None:
@@ -141,7 +157,7 @@ def _connect(path: str) -> sqlite3.Connection:
     try:
         if connection.execute("PRAGMA user_version").fetchone()[0] != _SCHEMA_VERSION:
             connection.executescript(
-                f"DROP TABLE IF EXISTS records; DROP TABLE IF EXISTS listing; DROP TABLE IF EXISTS declared; {_SCHEMA} PRAGMA user_version = {_SCHEMA_VERSION};"
+                f"DROP TABLE IF EXISTS records; DROP TABLE IF EXISTS listing; DROP TABLE IF EXISTS declared; DROP TABLE IF EXISTS moved; {_SCHEMA} PRAGMA user_version = {_SCHEMA_VERSION};"
             )
         else:
             connection.executescript(_SCHEMA)

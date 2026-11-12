@@ -10,7 +10,14 @@ from collections.abc import Generator
 
 from facere import _build, _bytecode, _collect
 from facere._context import Context, activate, is_under_root, normalize
-from facere._diagnostics import Diagnostic, FacereError, Note, format_path, print_error
+from facere._diagnostics import (
+    Diagnostic,
+    FacereError,
+    Note,
+    format_path,
+    print_error,
+    print_warning,
+)
 from facere._status import pin_status
 from facere._summary import Summary, format_summary
 from facere._version import VERSION
@@ -164,14 +171,23 @@ def _run(
         _build.report_failure(failure, start_dir)
         return 1
     except KeyboardInterrupt:
-        _print_summary(summary, start_s, is_interrupted=True)
+        _print_summary(summary, start_s, start_dir, is_interrupted=True)
         return 130
-    _print_summary(summary, start_s, is_interrupted=False)
+    _print_summary(summary, start_s, start_dir, is_interrupted=False)
     return 0
 
 
-def _print_summary(summary: Summary, start_s: float, *, is_interrupted: bool) -> None:
+def _print_summary(
+    summary: Summary, start_s: float, start_dir: str, *, is_interrupted: bool
+) -> None:
+    """Print the closing line, under one warning for all the rules left unsettled, so an invocation's own output stays within three lines."""
     elapsed_s = time.perf_counter() - start_s
+    if summary.unsettled:
+        first, *others = summary.unsettled
+        more = (
+            f", as for {len(others)} more rule{'' if len(others) == 1 else 's'}" if others else ""
+        )
+        print_warning(Diagnostic(first.location, first.message + more), start_dir)
     print(format_summary(summary, elapsed_s, is_interrupted=is_interrupted), file=sys.stderr)
 
 
