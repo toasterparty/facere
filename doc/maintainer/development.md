@@ -6,31 +6,16 @@ Install [git](https://git-scm.com/downloads) and [uv](https://docs.astral.sh/uv/
 uv tool install facere
 git clone git@github.com:toasterparty/facere.git
 cd facere
-fac
+fac example
 ```
 
-The first `fac` creates the project's environment in `.venv` and downloads dependencies, so it takes a minute.
-
-| Task | Description |
-| ---- | ----------- |
-| `example` | Build `doc/examples/my-site` with Facere from source. The default |
-| `test` | Lint, then run the tests (`test/`). `fac test -- --long` adds those that take minutes, such as the differential test in `test/oracle/` on new seeds |
-| `ci` | `test`, then check the built wheel: what a pull request must pass |
-| `test_sdist` | Run the tests from the unpacked sdist |
-| `lint` | Check formatting, lint, and types |
-| `coverage` | Run the tests serially under coverage, subprocesses included, and print the report |
-| `format` | Auto-format and fix lint |
-| `upgrade` | Upgrade the locked dependencies and the GitHub Actions pinned in `.github/` |
-| `dist` | Build the sdist and wheel into `build/dist/` |
-| `build_release` | Build a release of a [release type](./releasing.md) in a scratch clone: `fac build_release -- Minor` |
-| `push_release` | Push what `build_release` built, atomically |
-| `publish_release` | Upload what `build_release` built to PyPI |
+The first `fac example` creates the project's environment in `.venv` and downloads dependencies, so it takes a minute. A bare `fac` lists the tasks.
 
 Two Facere versions run in a checkout, and the command decides which:
 
 | Command | Facere | Use it for |
 | ------- | ------ | ---------- |
-| `fac <task>` | The latest release, installed with `uv tool install facere` | The root `fac.py`: `fac test`, `fac format`, and the other tasks above |
+| `fac <task>` | The latest release, installed with `uv tool install facere` | The root `fac.py`: `fac test`, `fac format`, and the other tasks `fac` lists |
 | `uv run fac -C <project>` | This tree's `src/`, the code under development | Any project that exercises a change, such as `doc/examples/*` |
 
 The split lets a broken tree still test itself. The root `fac.py` therefore refuses the tree's own Facere, which is what a bare `fac` resolves to wherever `.venv` is activated, as in a VS Code terminal once the editor's interpreter is set. Deactivate it there. VS Code's terminals leave it inactive, as below.

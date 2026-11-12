@@ -75,10 +75,15 @@ def test_vscode_tasks_run_the_targets_they_are_labelled_with() -> None:
     assert {task["label"] for task in tasks} <= _find_root_targets()
 
 
-def test_development_guide_lists_each_target() -> None:
-    listed = re.findall(r"^\| `(\w+)` \|", _read("doc/maintainer/development.md"), re.M)
+def test_fac_help_lists_each_target_by_its_docstring() -> None:
+    public = [
+        node
+        for node in ast.parse(_read("fac.py")).body
+        if isinstance(node, ast.FunctionDef) and not node.name.startswith("_")
+    ]
 
-    assert set(listed) == _find_root_targets()
+    assert {node.name.rstrip("_") for node in public} == _find_root_targets()
+    assert [node.name for node in public if ast.get_docstring(node) is None] == []
 
 
 def test_ruff_and_ty_skip_exactly_the_planned_examples() -> None:

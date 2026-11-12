@@ -4,6 +4,7 @@ This file develops Facere itself: run `fac <task>` with a released Facere of at 
 """
 
 import glob
+import inspect
 import os
 import re
 import shutil
@@ -130,12 +131,36 @@ PACKAGE_FILES = _find_package_files()
 
 
 @fac.task(default=True)
+def help_() -> None:
+    """Print this help."""
+    targets = {
+        name.removesuffix("_"): inspect.getdoc(value) or ""
+        for name, value in globals().items()
+        if inspect.isfunction(value) and value.__module__ == __name__ and not name.startswith("_")
+    }
+    width = max(map(len, targets)) + 2
+    lines = [
+        "Usage: fac [TARGET]... [-- ARG]...",
+        f"Develop Facere with a released Facere of at least {MINIMUM_FACERE}.",
+        "With no TARGET, print this help. 'fac --help' shows Facere's own options.",
+        "",
+        "Targets:",
+    ]
+    for name, doc in targets.items():
+        summary = doc.partition("\n")[0].replace("`", "'").removesuffix(".")
+        lines.append(f"  {name:<{width}}{summary[:1].lower()}{summary[1:]}")
+    print("\n".join(lines))
+
+
+@fac.task
 def example(project: fac.Input = "doc/examples/my-site") -> None:
+    """Build `doc/examples/my-site` with Facere from source."""
     _uv_run("fac", "-C", project)
 
 
 @fac.task
 def lint() -> None:
+    """Check formatting, lint, and types."""
     _uv_run("ruff", "check")
     _uv_run("ruff", "format", "--check")
     _uv_run("ty", "check")
@@ -144,7 +169,7 @@ def lint() -> None:
 
 @fac.task
 def test(args: fac.Args) -> None:
-    """Lint, then run the tests, passing pytest the arguments after --, such as --long."""
+    """Lint, then run the tests, passing pytest the arguments after --, where --long adds those that take minutes."""
     lint()
     _uv_run("pytest", *args)
 
@@ -169,6 +194,7 @@ def test_sdist(directory: fac.Input = DIST) -> None:
 
 @fac.task
 def coverage() -> None:
+    """Run the tests serially under coverage, subprocesses included, and print the report."""
     data_dir = os.path.abspath("build/cov")
     _remove_dir(data_dir)
     # Absolute, since a test's commands run elsewhere. Safe path keeps the root, whose fac.py
@@ -181,12 +207,14 @@ def coverage() -> None:
 
 @fac.task
 def format_() -> None:
+    """Format, and fix what lint can."""
     _uv_run("ruff", "check", "--fix")
     _uv_run("ruff", "format")
 
 
 @fac.task
 def upgrade() -> None:
+    """Upgrade the locked dependencies and the GitHub Actions pinned in `.github/`."""
     _uv("lock", "--upgrade")
     for path in glob.glob(ACTION_FILES, recursive=True):
         with open(path, encoding="utf-8", newline="") as file:
@@ -198,6 +226,7 @@ def upgrade() -> None:
 
 @fac.rule
 def dist(files: list[fac.Input] = PACKAGE_FILES, directory: fac.Output = DIST) -> None:
+    """Build the sdist and wheel into `build/dist/`."""
     _remove_dir(directory)
     _uv("build", "--out-dir", directory)
 
