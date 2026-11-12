@@ -64,6 +64,17 @@ def _remove_dir(path: str) -> None:
         shutil.rmtree(path)
 
 
+def _run_sdist_tests(pytest_args: list[str]) -> None:
+    """Run the tests from a freshly built and unpacked sdist, which holds what a downstream packager gets."""
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as scratch:
+        _uv("build", "--sdist", "--out-dir", scratch)
+        (sdist,) = glob.glob(f"{scratch}/*.tar.gz")
+        with tarfile.open(sdist) as archive:
+            archive.extractall(scratch, filter="data")
+        (unpacked,) = glob.glob(f"{scratch}/*/")
+        _uv("run", "--directory", unpacked, "pytest", *pytest_args)
+
+
 def _uv(*args: str, env: dict[str, str] | None = None) -> str:
     return fac.run("uv", *args, env=env)
 
@@ -159,6 +170,13 @@ def example(project: fac.Input = "doc/examples/my-site") -> None:
 
 
 @fac.task
+def format_() -> None:
+    """Format, and fix what lint can."""
+    _uv_run("ruff", "check", "--fix")
+    _uv_run("ruff", "format")
+
+
+@fac.task
 def lint() -> None:
     """Check formatting, lint, and types."""
     _uv_run("ruff", "check")
@@ -169,27 +187,12 @@ def lint() -> None:
 
 @fac.task
 def test(args: fac.Args) -> None:
-    """Lint, then run the tests, passing pytest the arguments after --, where --long adds those that take minutes."""
+    """Lint, then run the tests, passing pytest the arguments after --: --long adds those that take minutes, and --sdist runs them from an unpacked sdist."""
     lint()
+    if "--sdist" in args:
+        _run_sdist_tests([arg for arg in args if arg != "--sdist"])
+        return
     _uv_run("pytest", *args)
-
-
-@fac.task
-def ci(directory: fac.Input = DIST, version_file: fac.Input = VERSION_FILE) -> None:
-    """Run what a pull request must pass: `test`, then a check of the wheel `dist` builds."""
-    test(())
-    _validate_wheel(directory, release.parse_version(fac.read_text(version_file)))
-
-
-@fac.task
-def test_sdist(directory: fac.Input = DIST) -> None:
-    """Run the tests from the unpacked sdist `dist` builds, which holds what a downstream packager gets."""
-    (sdist,) = glob.glob(f"{directory}/*.tar.gz")
-    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as scratch:
-        with tarfile.open(sdist) as archive:
-            archive.extractall(scratch, filter="data")
-        (unpacked,) = glob.glob(f"{scratch}/*")
-        _uv("run", "--directory", unpacked, "pytest")
 
 
 @fac.task
@@ -206,10 +209,10 @@ def coverage() -> None:
 
 
 @fac.task
-def format_() -> None:
-    """Format, and fix what lint can."""
-    _uv_run("ruff", "check", "--fix")
-    _uv_run("ruff", "format")
+def ci(directory: fac.Input = DIST, version_file: fac.Input = VERSION_FILE) -> None:
+    """Run what a pull request must pass: `test`, then a check of the wheel `dist` builds."""
+    test(())
+    _validate_wheel(directory, release.parse_version(fac.read_text(version_file)))
 
 
 @fac.task

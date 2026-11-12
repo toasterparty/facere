@@ -43,7 +43,7 @@ jobs:
             # build_release refuses other branches. Nothing leaves this runner.
             - run: git switch --force-create main
             - run: fac build_release -- Patch
-            - run: fac test_sdist
+            - run: fac test -- --sdist
 
     # Outside ci-pass and releases, so a broken release can't block the release that fixes it.
     latest:
