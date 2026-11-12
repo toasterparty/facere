@@ -25,6 +25,7 @@ facere = "facere._cli:console_main"
 [dependency-groups]
 dev = [
     "coverage",
+    "hypothesis",
     "pytest",
     "pytest-xdist",
     "ruff",
@@ -129,7 +130,10 @@ testpaths = ["test"]
 cache_dir = "build/test/.pytest_cache"
 # importlib keeps the repo root off sys.path, where its fac.py would shadow a fixture's `import fac`.
 addopts = ["--strict-markers", "--import-mode=importlib", "-n", "auto"]
-markers = ["project(name): copy the project NAME, in the directory named after the test module, into the root"]
+markers = [
+    "project(name): copy the project NAME, in the directory named after the test module, into the root",
+    "long: runs for minutes, so only `--long` selects it",
+]
 
 [tool.coverage.run]
 source = ["facere"]

@@ -12,6 +12,18 @@ def pytest_configure(config: pytest.Config) -> None:
         config.option.basetemp = basetemp
 
 
+def pytest_addoption(parser: pytest.Parser) -> None:
+    parser.addoption("--long", action="store_true", help="also run the tests marked long")
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    if config.getoption("long"):
+        return
+    long = [item for item in items if item.get_closest_marker("long")]
+    config.hook.pytest_deselected(items=long)
+    items[:] = [item for item in items if item not in long]
+
+
 @pytest.fixture
 def root(request: pytest.FixtureRequest, tmp_path: Path) -> Path:
     """Return the test's root: `tmp_path`, holding a copy of the project the test's `project` marker names, if any."""

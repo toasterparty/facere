@@ -143,15 +143,16 @@ def lint() -> None:
 
 
 @fac.task
-def test() -> None:
+def test(args: fac.Args) -> None:
+    """Lint, then run the tests, passing pytest the arguments after --, such as --long."""
     lint()
-    _uv_run("pytest")
+    _uv_run("pytest", *args)
 
 
 @fac.task
 def ci(directory: fac.Input = DIST, version_file: fac.Input = VERSION_FILE) -> None:
     """Run what a pull request must pass: `test`, then a check of the wheel `dist` builds."""
-    test()
+    test(())
     _validate_wheel(directory, release.parse_version(fac.read_text(version_file)))
 
 

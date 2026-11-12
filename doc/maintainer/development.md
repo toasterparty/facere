@@ -14,7 +14,7 @@ The first `fac` creates the project's environment in `.venv` and downloads depen
 | Task | Description |
 | ---- | ----------- |
 | `example` | Build `doc/examples/my-site` with Facere from source. The default |
-| `test` | Lint, then run the tests (`test/`) |
+| `test` | Lint, then run the tests (`test/`). `fac test -- --long` adds those that take minutes, such as the differential test in `test/oracle/` on new seeds |
 | `ci` | `test`, then check the built wheel: what a pull request must pass |
 | `test_sdist` | Run the tests from the unpacked sdist |
 | `lint` | Check formatting, lint, and types |
