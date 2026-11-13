@@ -522,6 +522,51 @@ def test_changed_method_a_class_inherits_reruns_the_rule(root: Path, fac: Fac) -
     assert (root / "build" / "a.txt").read_text() == "Hi"
 
 
+@pytest.mark.project("scalar_values")
+def test_changed_float_constant_reruns_the_rule(root: Path, fac: Fac) -> None:
+    fac()
+    edit(root / "fac.py", "SCALE = 1.5", "SCALE = 2.5")
+
+    assert fac().err == "Finished in <elapsed>. Executed 1 rule.\n"
+    assert (root / "build" / "a.txt").read_text() == "2.5!"
+
+
+@pytest.mark.project("scalar_values")
+def test_changed_bytes_constant_reruns_the_rule(root: Path, fac: Fac) -> None:
+    fac()
+    edit(root / "fac.py", 'MARK = b"!"', 'MARK = b"?"')
+
+    assert fac().err == "Finished in <elapsed>. Executed 1 rule.\n"
+    assert (root / "build" / "a.txt").read_text() == "1.5?"
+
+
+@pytest.mark.project("function_value")
+def test_changed_function_a_parameter_receives_reruns_the_rule(root: Path, fac: Fac) -> None:
+    fac()
+    edit(root / "fac.py", '"!"', '"?"')
+
+    assert fac().err == "Finished in <elapsed>. Executed 1 rule.\n"
+    assert (root / "build" / "a.txt").read_text() == "hi?"
+
+
+@pytest.mark.project("bound_method")
+def test_changed_object_a_builtin_method_is_bound_to_reruns_the_rule(root: Path, fac: Fac) -> None:
+    fac()
+    edit(root / "fac.py", '"Hello, {}!"', '"Bye, {}!"')
+
+    assert fac().err == "Finished in <elapsed>. Executed 1 rule.\n"
+    assert (root / "build" / "a.txt").read_text() == "Bye, you!"
+
+
+@pytest.mark.project("nested_class")
+def test_changed_constant_a_nested_class_reads_reruns_the_rule(root: Path, fac: Fac) -> None:
+    fac()
+    edit(root / "fac.py", 'MARK = "!"', 'MARK = "?"')
+
+    assert fac().err == "Finished in <elapsed>. Executed 1 rule.\n"
+    assert (root / "build" / "a.txt").read_text() == "HI?"
+
+
 @pytest.mark.project("held_value")
 def test_changed_method_of_a_class_a_value_holds_reruns_the_rule(root: Path, fac: Fac) -> None:
     fac()

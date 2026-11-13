@@ -78,16 +78,23 @@ def _feed_value(
         feed(digest, b"Y", value)
     elif isinstance(value, types.ModuleType):
         feed(digest, b"M", value.__name__.encode())
-    elif isinstance(value, types.FunctionType | types.BuiltinFunctionType | type):
+    elif isinstance(value, types.FunctionType | type):
         feed(digest, b"Q", f"{value.__module__}.{value.__qualname__}".encode())
-        if enclosing and isinstance(value, types.FunctionType | type):
+        if enclosing:
             held.append(value)
+    elif isinstance(value, types.BuiltinFunctionType) and _is_unbound(value):
+        feed(digest, b"Q", f"{value.__module__}.{value.__qualname__}".encode())
     elif isinstance(value, PurePath):
         raise UnhashableValueError(value, "Facere paths are strings with /")
     elif id(value) in enclosing:
         raise UnhashableValueError(value, "it holds itself")
     else:
         _feed_composite(digest, value, held, enclosing | {id(value)})
+
+
+def _is_unbound(builtin: types.BuiltinFunctionType) -> bool:
+    """Say whether `builtin` belongs to a module, unlike a method bound to an object, such as `"{}!".format`, which pickle takes apart as `getattr` of that object."""
+    return builtin.__self__ is None or isinstance(builtin.__self__, types.ModuleType)
 
 
 def _feed_composite(

@@ -653,9 +653,9 @@ def _hash_values(
                 context, definition, output_keys, trees, errors
             )
         function_digest = function_digests[definition.fn]
-        digest = function_digest.copy() if function_digest else hashlib.sha256()
+        digest = function_digest.copy() if function_digest is not None else hashlib.sha256()
         feed(digest, b"env", env)
-        if function_digest and definition.fn not in unread_by_function:
+        if function_digest is not None and definition.fn not in unread_by_function:
             unread_by_function[definition.fn] = _find_unread_order_only(definition, trees)
         unread = unread_by_function.get(definition.fn, frozenset())
         path_values = {
@@ -673,11 +673,13 @@ def _hash_values(
             problems.extend(
                 _feed_values(context, digest, kind, values, keys, definition.is_task, held)
             )
-        problems.extend(_feed_held_code(context, digest, held, output_keys, trees))
+        if not definition.is_task:
+            code_values = [*definition.values.values(), *held]
+            problems.extend(_feed_held_code(context, digest, code_values, output_keys, trees))
         errors.extend(
             _diagnose(definition, f"{definition.label} {problem}") for problem in problems
         )
-        if function_digest and not problems and not definition.is_task:
+        if function_digest is not None and not problems and not definition.is_task:
             digests[definition] = digest.digest()
     return digests
 
@@ -716,22 +718,11 @@ def _hash_function(
             problems.append(
                 f"has no source Facere can read, which a rule's fingerprint needs: {error}"
             )
-        problems.extend(_feed_reached_code(context, digest, fn, output_keys, trees))
+        problems.extend(_feed_reach(context, digest, fn, [fn], output_keys, trees, {fn}))
     errors.extend(
         _diagnose(definition, f"function {fn.__name__} {problem}") for problem in problems
     )
     return None if problems else digest
-
-
-def _feed_reached_code(
-    context: Context,
-    digest: hashlib._Hash,
-    fn: types.FunctionType,
-    output_keys: Container[str],
-    trees: dict[str, ast.Module],
-) -> list[str]:
-    """Feed `digest` the values that the recipe `fn` reads, and the syntax tree and values of every function and class of the project's it reaches, by name or held in a value, returning what's wrong with them."""
-    return _feed_reach(context, digest, fn, [fn], output_keys, trees, {fn})
 
 
 def _feed_reach(
@@ -770,14 +761,14 @@ def _feed_reach(
 def _feed_held_code(
     context: Context,
     digest: hashlib._Hash,
-    held: list[Code],
+    values: list[object],
     output_keys: Container[str],
     trees: dict[str, ast.Module],
 ) -> list[str]:
-    """Feed `digest` the syntax tree and values of the functions and classes of the project's in `held`, and of all they reach, returning what's wrong with them."""
+    """Feed `digest` the syntax tree and values of the project's functions and classes among `values`, and of all they reach, returning what's wrong with them."""
     pending: list[types.FunctionType] = []
     seen: set[object] = set()
-    problems = _feed_newly_reached(context, digest, list(held), trees, seen, pending)
+    problems = _feed_newly_reached(context, digest, values, trees, seen, pending)
     return [*problems, *_feed_reach(context, digest, None, pending, output_keys, trees, seen)]
 
 
@@ -803,7 +794,7 @@ def _feed_newly_reached(
     return problems
 
 
-def _find_reached(value: object) -> list[types.FunctionType | type]:
+def _find_reached(value: object) -> list[Code]:
     """Return the code that naming `value` reaches: a function, the one its decorators wrap, or a class and those it inherits from."""
     if isinstance(value, types.FunctionType):
         unwrapped = inspect.unwrap(value)
@@ -814,28 +805,24 @@ def _find_reached(value: object) -> list[types.FunctionType | type]:
     return []
 
 
-def _feed_definition(
-    digest: hashlib._Hash, value: object, trees: dict[str, ast.Module]
-) -> str | None:
-    assert isinstance(value, types.FunctionType | type)
+def _feed_definition(digest: hashlib._Hash, code: Code, trees: dict[str, ast.Module]) -> str | None:
     try:
         text = (
-            calc_code_text(value, trees, keep_decorators=True)
-            if isinstance(value, types.FunctionType)
-            else calc_class_text(value, trees)
+            calc_code_text(code, trees, keep_decorators=True)
+            if isinstance(code, types.FunctionType)
+            else calc_class_text(code, trees)
         )
     except _UNREADABLE_SOURCE as error:
-        return f"reaches {value.__qualname__}, which has no source Facere can read, which a rule's fingerprint needs: {error}"
-    feed(digest, b"reached", f"{value.__module__}.{value.__qualname__}".encode())
+        return f"reaches {code.__qualname__}, which has no source Facere can read, which a rule's fingerprint needs: {error}"
+    feed(digest, b"reached", f"{code.__module__}.{code.__qualname__}".encode())
     feed(digest, b"code", text.encode())
     return None
 
 
-def _find_callables(value: object, seen: set[object]) -> list[types.FunctionType]:
+def _find_callables(value: Code, seen: set[object]) -> list[types.FunctionType]:
     """Return the functions whose reads join a fingerprint once `value` is reached: `value` itself, or a class's methods and those of the classes nested in it."""
     if isinstance(value, types.FunctionType):
         return [value]
-    assert isinstance(value, type)
     callables = []
     for method in find_methods(value):
         if method not in seen:
@@ -852,16 +839,14 @@ def _find_callables(value: object, seen: set[object]) -> list[types.FunctionType
     return callables
 
 
-def _is_project_code(context: Context, value: object) -> bool:
+def _is_project_code(context: Context, value: types.ModuleType | Code) -> bool:
     """Say whether `value` is a module, function, or class the project wrote, rather than Facere, the standard library, or an installed package."""
     if isinstance(value, types.FunctionType):
         path = value.__code__.co_filename
     elif isinstance(value, type):
         path = getattr(sys.modules.get(value.__module__), "__file__", None)
-    elif isinstance(value, types.ModuleType):
-        path = getattr(value, "__file__", None)
     else:
-        return False
+        path = getattr(value, "__file__", None)
     # A function that exec defined in a namespace without __name__ has no module.
     module = (value.__name__ if isinstance(value, types.ModuleType) else value.__module__) or ""
     if module == "facere" or module.startswith("facere."):

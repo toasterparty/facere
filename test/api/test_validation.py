@@ -196,6 +196,16 @@ def test_value_facere_cannot_hash_fails_naming_its_type(fac: Fac) -> None:
     ]
 
 
+@pytest.mark.project("self_holding")
+def test_value_holding_itself_fails_collection(fac: Fac) -> None:
+    result = fac("page")
+
+    assert result.status == 2
+    assert result.err.splitlines() == [
+        "fac.py:7:2: error: function page reads global LOOP, of type list, which Facere can't hash, since it holds itself",
+    ]
+
+
 @pytest.mark.project("unhashable_default")
 def test_helper_default_facere_cannot_hash_fails_naming_the_helper(fac: Fac) -> None:
     result = fac()
