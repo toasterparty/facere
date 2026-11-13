@@ -26,6 +26,8 @@ A rule's name on the command line is its function's name, less one trailing unde
 
 The function's body is the rule's recipe. Facere executes it only when an output is needed and out of date, after creating each output's parent directory. Any exception it raises fails the rule, so an `assert` stops a bad result.
 
+*(0.4)* `@fac.rule(always=True)` executes its rules whenever a target reaches them, for what Facere cannot see change, such as a program's version, as [module-level code](./7-best-practices.md#module-level-code) shows. A rule downstream still executes only when an output it inputs comes out different.
+
 *(planned)* `@fac.rule(clear=True)` deletes every output before the recipe executes, for a tool that keeps what an earlier execution left, such as `ar r`, `zip`, or `uv build --out-dir`.
 
 ## Paths

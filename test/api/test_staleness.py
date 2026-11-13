@@ -611,3 +611,23 @@ def test_input_inside_a_directory_output_builds_the_rule_outputting_the_director
 
     assert result.status == 0, result.err
     assert (root / "build" / "main.o").read_text() == "one"
+
+
+@pytest.mark.project("always")
+def test_rule_marked_always_executes_whenever_reached_and_its_reader_only_on_a_change(
+    fac: Fac,
+) -> None:
+    assert fac().err == "Finished in <elapsed>. Executed 2 rules.\n"
+
+    assert fac().err == "Finished in <elapsed>. Executed 1 rule. 1 output up to date.\n"
+
+
+@pytest.mark.project("always")
+def test_reader_of_a_rule_marked_always_executes_when_its_output_changes(
+    root: Path, fac: Fac
+) -> None:
+    fac()
+    (root / ".tool" / "version").write_text("2.0")
+
+    assert fac().err == "Finished in <elapsed>. Executed 2 rules.\n"
+    assert (root / "build" / "app.txt").read_text() == "built with 2.0"

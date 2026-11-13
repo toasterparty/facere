@@ -1,6 +1,6 @@
 """A family of small generated Facere projects: the files one renders to, and what each of its rules depends on.
 
-Four rule functions chain. `generate` writes one header per row. `compile` expands the headers each source includes, searching directories in order as a compiler does and reporting what it finds. `link` joins the objects with a directory of notes into two outputs, and `stamp` runs a tool over the first. Their recipes reach helper functions spread over fac.py and two shared modules, each function returning its text with a tag that shows everything its fingerprint should hold, so a stale output differs from a fresh one in its bytes.
+Four rule functions chain. `generate` writes one header per row. `compile` expands the headers each source includes, searching directories in order as a compiler does and reporting what it finds. It orders after the generated headers, and in some projects never names that parameter, searching their directory instead, so their paths stay out of its fingerprint. `link` joins the objects with a directory of notes into two outputs, and `stamp` runs a tool over the first. Their recipes reach helper functions spread over fac.py and two shared modules, each function returning its text with a tag that shows everything its fingerprint should hold, so a stale output differs from a fresh one in its bytes.
 """
 
 from __future__ import annotations
@@ -82,10 +82,12 @@ def traced(fn):
 _FAC_HELPERS = f"""
 SEARCH = {list(SEARCH)!r}
 SDK = {SDK!r}
+GENERATED_DIRECTORY = fac.out("gen")
 SOURCES = fac.sources("src/*.txt")
 OBJECTS = [fac.out(source, ".o") for source in SOURCES]
 
 
+# Searches `generated`, the generated headers, or where None, their directory.
 def expand(source, generated):
     lines = []
     for line in fac.read_text(source).splitlines():
@@ -94,7 +96,10 @@ def expand(source, generated):
             lines.append(line)
             continue
         candidates = [f"{{directory}}/{{name}}" for directory in SEARCH]
-        candidates += [path for path in generated if posixpath.basename(path) == name]
+        if generated is None:
+            candidates.append(f"{{GENERATED_DIRECTORY}}/{{name}}")
+        else:
+            candidates += [path for path in generated if posixpath.basename(path) == name]
         candidates.append(f"{{SDK}}/{{name}}")
         found = next(path for path in candidates if os.path.isfile(path))
         fac.add_inputs([found])
@@ -207,7 +212,7 @@ class Code:
 class Project:
     """One member of the family, which the oracle's edits change in place.
 
-    `headers` maps each header a person wrote, as a path relative to the root in one of the HEADER_DIRECTORIES, to its text, and `generated` each header name `generate` writes to its row's value. `executables` holds the rendered paths whose executable bit is set.
+    `headers` maps each header a person wrote, as a path relative to the root in one of the HEADER_DIRECTORIES, to its text, and `generated` each header name `generate` writes to its row's value. `executables` holds the rendered paths whose executable bit is set, and `names_order_only` says whether `compile` names its parameter listing the generated headers.
     """
 
     helpers: dict[str, Code]
@@ -226,6 +231,7 @@ class Project:
     is_swapped: bool = False
     tool_salt: object = 0
     executables: set[str] = field(default_factory=set)
+    names_order_only: bool = True
 
     def render(self) -> dict[str, File]:
         """Return the project's files by path relative to the root, with `/`."""
@@ -272,7 +278,7 @@ class Project:
                     "env": env,
                     "value": repr(source.value),
                     "flag": repr(self.flag),
-                    "order-only": tuple(generated),
+                    "order-only": tuple(generated) if self.names_order_only else None,
                 },
                 built=tuple(path for path in includes if path in generated),
                 include_names=frozenset(source.includes),
@@ -522,7 +528,7 @@ class Project:
             *self._render_function(
                 compile_,
                 f"def {compile_.name}(source: fac.Input, target: fac.Output, value: object, flag: object, headers: list[fac.OrderOnly] = GENERATED) -> None:",
-                "expand(source, headers)",
+                "expand(source, headers)" if self.names_order_only else "expand(source, None)",
                 ("value", "flag"),
             ),
             "    fac.write_text(target, text)",
@@ -576,6 +582,7 @@ def projects(draw: st.DrawFn) -> Project:
     resolvable = project.find_resolvable()
     for name in SOURCE_NAMES[: draw(st.integers(1, 2))]:
         project.sources[name] = Source(INITIAL_TEXT, draw(subsets(resolvable)))
+    project.names_order_only = draw(st.booleans())
     return project
 
 

@@ -1,6 +1,7 @@
 """Building targets: deciding which rules are stale, and executing recipes one at a time in dependency order."""
 
 import contextlib
+import enum
 import hashlib
 import os
 import posixpath
@@ -9,9 +10,10 @@ import subprocess
 import sys
 import threading
 import traceback
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 
 from facere import _state
+from facere._cache import HashCache, Hashed, Snapshot, iter_listed_files
 from facere._collect import Definition, Project, iter_upstream
 from facere._command import write_output
 from facere._context import (
@@ -24,11 +26,16 @@ from facere._context import (
     normalize,
 )
 from facere._diagnostics import Diagnostic, FacereError, Note, print_error
-from facere._hash import Stamp, calc_stamp, feed, find_change_time_ns, hash_path, iter_strings
+from facere._hash import feed, iter_strings
 from facere._summary import Summary
 from facere._undeclared import ensure_audit_hook
 
-_CLOCK_FILE_NAME = "clock"
+
+class _Damage(enum.StrEnum):
+    """How an output this invocation built differs from how its rule left it."""
+
+    CHANGED = enum.auto()
+    VANISHED = enum.auto()
 
 
 class RecipeFailure(Exception):
@@ -109,32 +116,43 @@ def build(
     `summary` counts what ran and what was current, and names the definition an interrupt stopped, so it holds the invocation's progress even when this raises. `progress_cb` gets `[position/total] label` as each rule or task starts to execute, where the position counts every rule and task reached, executed or not.
     """
     state_path = posixpath.join(context.state_dir, STATE_FILE_NAME)
-    records = _state.load(state_path)
-    moved = _state.load_moved(state_path)
+    state = _state.load(state_path)
     declared = {
         _state.calc_key(definition.outputs)
         for definition in project.definitions
         if not definition.is_task
     }
     output_keys = frozenset(project.producers_by_key)
-    saved_output_keys = _state.load_declared(state_path)
-    new_outputs = output_keys - saved_output_keys if saved_output_keys is not None else frozenset()
+    new_outputs = output_keys - state.declared if state.declared is not None else frozenset()
     try:
-        _state.remove(state_path, [key for key in {*records, *moved} if key not in declared])
-        records = _remove_shadowed(context, state_path, records, new_outputs)
+        stale_keys = [key for key in {*state.records, *state.moved} if key not in declared]
+        _state.remove(state_path, stale_keys)
+        records = {key: record for key, record in state.records.items() if key in declared}
+        records = _remove_shadowed(context, state_path, records, state.listing, new_outputs)
     except OSError as error:
         raise FacereError(Diagnostic(None, f"{error}")) from error
     ensure_audit_hook()
     total, planned = _plan(project.upstream, targets)
     builder = _Builder(
-        context, project, records, moved, state_path, summary, progress_cb, total, planned
+        context,
+        project,
+        records,
+        state.moved,
+        HashCache(state.hashes),
+        state_path,
+        summary,
+        progress_cb,
+        total,
+        planned,
     )
     try:
         for target in targets:
             builder.build(target, task_args)
+        builder.validate_built_intact()
     finally:
         builder.save_listing()
-        if output_keys != saved_output_keys:
+        builder.save_hashes()
+        if output_keys != state.declared:
             with contextlib.suppress(OSError):
                 _state.save_declared(state_path, output_keys)
 
@@ -166,49 +184,36 @@ def report_failure(failure: RecipeFailure, start_dir: str) -> None:
     )
 
 
-def _list_files(out_dir: str) -> frozenset[str]:
-    """Return every file under the working directory, as normalize returns them, outside `out_dir` and any hidden directory."""
-    files = set()
-    for directory, subdirectories, names in os.walk("."):
-        relative = posixpath.normpath(directory.replace(os.sep, "/"))
-        subdirectories[:] = [
-            name
-            for name in subdirectories
-            if not name.startswith(".")
-            and not is_within(posixpath.normpath(posixpath.join(relative, name)), out_dir)
-        ]
-        files.update(posixpath.normpath(posixpath.join(relative, name)) for name in names)
-    return frozenset(files)
-
-
 def _remove_shadowed(
     context: Context,
     state_path: str,
     records: dict[tuple[str, ...], _state.Record],
+    saved_listing: frozenset[str],
     new_outputs: frozenset[str],
 ) -> dict[tuple[str, ...], _state.Record]:
     """Forget each record that names a file name a file new since the last invocation has, or an output no rule declared then, whether or not this invocation's targets reach its rule, and return the records left."""
-    if not _has_added_names(records):
+    if not _state.has_added_names(records):
         return records
-    listing = _list_files(context.out_dir)
-    saved = _state.load_listing(state_path)
-    if listing == saved and not new_outputs:
+    listing = frozenset(iter_listed_files(context.out_dir))
+    if listing == saved_listing and not new_outputs:
         return records
-    new_names = {
-        calc_path_key(posixpath.basename(path)) for path in (listing - saved) | new_outputs
-    }
-    shadowed = {
-        key for key, record in records.items() if not new_names.isdisjoint(record.added_names)
-    }
-    _state.remove(state_path, list(shadowed))
-    if listing != saved:
+    new_paths = (listing - saved_listing) | new_outputs
+    records = _forget_shadowed(state_path, records, new_paths)
+    if listing != saved_listing:
         _state.save_listing(state_path, listing)
+    return records
+
+
+def _forget_shadowed(
+    state_path: str, records: dict[tuple[str, ...], _state.Record], new_paths: Iterable[str]
+) -> dict[tuple[str, ...], _state.Record]:
+    """Forget each record naming the file name of one of `new_paths`, and return the records left."""
+    new_names = {calc_path_key(posixpath.basename(path)) for path in new_paths}
+    shadowed = [
+        key for key, record in records.items() if not new_names.isdisjoint(record.added_names)
+    ]
+    _state.remove(state_path, shadowed)
     return {key: record for key, record in records.items() if key not in shadowed}
-
-
-def _has_added_names(records: dict[tuple[str, ...], _state.Record]) -> bool:
-    """Say whether any record holds a file name a new file could shadow, which alone makes the tree's listing worth keeping."""
-    return any(record.added_names for record in records.values())
 
 
 def _to_bytes(data: bytes | str | None) -> bytes:
@@ -273,6 +278,7 @@ class _Builder:
         project: Project,
         records: dict[tuple[str, ...], _state.Record],
         moved: dict[tuple[str, ...], tuple[str, ...]],
+        cache: HashCache,
         state_path: str,
         summary: Summary,
         progress_cb: Callable[[str], None],
@@ -283,6 +289,7 @@ class _Builder:
         self.project = project
         self.records = records
         self.moved = moved
+        self.cache = cache
         self.state_path = state_path
         self.checked: set[Definition] = set()
         self.summary = summary
@@ -291,14 +298,27 @@ class _Builder:
         self.planned = planned
         self.position = 0
         self.has_executed = False
+        self.snapshot: Snapshot | None = None
+        # Each output this invocation built, with its rule and the hash it left.
+        self.built: dict[str, tuple[Definition, str]] = {}
+        # By output, the count of executions when last found intact, so none is rechecked until another recipe runs.
+        self.executions = 0
+        self.intact_at: dict[str, int] = {}
+        self.producers_by_path: dict[str, Definition | None] = {}
 
     def save_listing(self) -> None:
         """Save the tree as this invocation leaves it, so a file its recipes wrote never counts as new, even when one failed. Losing the listing costs only rebuilds."""
         if not self.has_executed:
             return
-        if _has_added_names(self.records):
+        if _state.has_added_names(self.records):
             with contextlib.suppress(OSError):
-                _state.save_listing(self.state_path, _list_files(self.context.out_dir))
+                listing = frozenset(iter_listed_files(self.context.out_dir))
+                _state.save_listing(self.state_path, listing)
+
+    def save_hashes(self) -> None:
+        """Save what the hash cache learned. Losing it costs only reads, and a file new in a directory output read as new."""
+        with contextlib.suppress(OSError):
+            _state.save_hashes(self.state_path, self.cache.take_changes(is_final=True))
 
     def build(self, target: Definition, task_args: tuple[str, ...] | None) -> None:
         for rule in _order(self.project.upstream, target, self.checked):
@@ -313,22 +333,39 @@ class _Builder:
             self.summary.tasks_run += 1
             self.checked.clear()
 
+    def validate_built_intact(self) -> None:
+        """Raise RecipeFailure naming the first output this invocation built whose content changed after its rule finished, which only an undeclared write explains. One that vanished passes, since the next invocation rebuilds it."""
+        damaged = [
+            (output, rule)
+            for output, (rule, _) in self.built.items()
+            if self._find_damage(output) == _Damage.CHANGED
+        ]
+        if not damaged:
+            return
+        (output, rule), *others = damaged
+        notes = tuple(
+            Note(other.location, f"{other_output}, which {other.label} output, changed too")
+            for other_output, other in others
+        )
+        reason = f"its output {output} changed after it finished"
+        raise RecipeFailure(rule, reason=reason, notes=notes)
+
     def _ensure_up_to_date(self, rule: Definition) -> None:
         self.checked.add(rule)
         self.position += 1
-        stamps = {path: calc_stamp(path) for path in rule.inputs}
-        fingerprint = self._calc_fingerprint(rule)
+        self._validate_inputs_intact(rule)
+        fingerprint, before = self._calc_fingerprint(rule)
         key = _state.calc_key(rule.outputs)
         record = self.records.get(key)
-        hashes_before: dict[str, str | None] = {}
         if record is not None:
             self._ensure_recorded_reports_built(rule, record)
-            stamps.update({path: calc_stamp(path) for path, _ in record.added_inputs})
-            hashes_before = {path: hash_path(path) for path, _ in record.added_inputs}
+            added = {path: self.cache.fetch(path) for path, _ in record.added_inputs}
+            before.update(added)
             if (
-                record.fingerprint == fingerprint
-                and record.output_hashes == tuple(hash_path(output) for output in key)
-                and all(hashes_before[path] == content for path, content in record.added_inputs)
+                not rule.is_always
+                and record.fingerprint == fingerprint
+                and record.output_hashes == self._fetch_output_hashes(key)
+                and all(_digest(added[path]) == content for path, content in record.added_inputs)
             ):
                 self.summary.outputs_current += len(key)
                 return
@@ -336,51 +373,92 @@ class _Builder:
         for output in rule.outputs:
             os.makedirs(os.path.dirname(output) or ".", exist_ok=True)
         self._announce(rule)
-        start_ns = self._read_file_system_time_ns()
+        if self.snapshot is None:
+            self.snapshot = Snapshot(self.cache, self.context.out_dir)
         recipe = self._execute(rule, None)
-        added_inputs = self._hash_added_inputs(rule, recipe, hashes_before)
-        output_hashes = {output: hash_path(output) for output in key}
-        missing = [output for output, content in output_hashes.items() if content is None]
+        added_inputs = self._hash_added_inputs(rule, recipe, before)
+        output_hashes = self._fetch_output_hashes(key)
+        missing = [
+            output for output, content in zip(key, output_hashes, strict=True) if not content
+        ]
         if missing:
             raise RecipeFailure(
                 rule,
                 reason=f"its recipe succeeded without writing {', '.join(missing)}",
             )
+        for output, content in zip(key, output_hashes, strict=True):
+            self.built[output] = (rule, content)
         self.summary.rules_run += 1
-        moved = self._find_moved_inputs(recipe, stamps, start_ns)
+        moved = self._find_moved_inputs(recipe, before)
         if moved:
             self._leave_unrecorded(rule, key, moved)
             return
         record = self.records[key] = _state.Record(
-            fingerprint,
-            tuple(content for content in output_hashes.values() if content is not None),
-            added_inputs,
-            tuple(sorted(recipe.reported_names)),
+            fingerprint, output_hashes, added_inputs, tuple(sorted(recipe.reported_names))
         )
-        _state.save(self.state_path, key, record)
+        _state.save(self.state_path, key, record, self.cache.take_changes())
         self.moved.pop(key, None)
 
-    def _read_file_system_time_ns(self) -> int:
-        """Return the time the output directory's file system stamps a change made now with, by changing a file there, since the clock a program reads may run ahead of the one that stamps files."""
-        os.makedirs(self.context.state_dir, exist_ok=True)
-        path = posixpath.join(self.context.state_dir, _CLOCK_FILE_NAME)
-        with open(path, "wb"):
-            pass
-        return os.stat(path).st_mtime_ns
+    def _fetch_output_hashes(self, key: tuple[str, ...]) -> tuple[str, ...]:
+        """Return the hash of each output in `key`, or an empty string for one missing, stat-checked afresh, and forget at once each record a file new in a directory output shadows."""
+        new_files: list[str] = []
+        hashes = tuple(
+            _digest(self.cache.fetch(output, is_fresh=True, new_files=new_files)) for output in key
+        )
+        if new_files:
+            self.records = _forget_shadowed(self.state_path, self.records, new_files)
+        for output in key:
+            self.intact_at[output] = self.executions
+        return hashes
+
+    def _validate_inputs_intact(self, rule: Definition) -> None:
+        """Fail `rule` without executing it where an output this invocation built, which it inputs or orders after, changed or vanished since its rule finished."""
+        for path, producer in iter_upstream(rule, self.project.upstream):
+            for output in producer.outputs:
+                if not _is_related(output, path):
+                    continue
+                damage = self._find_damage(output)
+                if damage is not None:
+                    raise RecipeFailure(
+                        rule,
+                        reason=f"its input {output} {damage} after {producer.label} finished",
+                        notes=(Note(producer.location, f"{producer.label} outputs {output}"),),
+                    )
+
+    def _find_damage(self, output: str) -> _Damage | None:
+        """Return how the output `output` this invocation built differs from how its rule left it, or None where it doesn't, or where no recipe executed since it was last found intact."""
+        built = self.built.get(output)
+        if built is None or self.intact_at.get(output) == self.executions:
+            return None
+        current = self.cache.fetch(output, is_fresh=True)
+        if current is None:
+            return _Damage.VANISHED
+        if current.digest != built[1]:
+            return _Damage.CHANGED
+        self.intact_at[output] = self.executions
+        return None
 
     def _find_moved_inputs(
-        self, recipe: Recipe, stamps: dict[str, Stamp | None], start_ns: int
+        self, recipe: Recipe, before: dict[str, Hashed | None]
     ) -> tuple[str, ...]:
         """Return the inputs that changed while the recipe executed, even where the content changed back, so recording the rule would claim it current for files its tool never read.
 
-        `stamps` holds, from before its hash, the stamp of each declared input and each added input in the rule's record. A file first reported has none, so it counts where its file system stamped a change at or after `start_ns`, unless a rule outputs it, whose record vouches for its content, or the recipe wrote it in Python itself. Each is read after its hash, so a change in between shows.
+        `before` holds what the rule's fingerprint and record checked of each declared input and each added input in the rule's record. A file first reported has none, since its tool read it before the recipe could report it, so it compares with the snapshot, or where a rule outputs it, with how this invocation last found it, unless the recipe wrote it in Python itself.
         """
-        moved = {path for path, stamp in stamps.items() if calc_stamp(path) != stamp}
-        for path in recipe.reported - stamps.keys():
-            if calc_path_key(path) in recipe.written or self._find_producer(path) is not None:
+        moved = {
+            path
+            for path, hashed in before.items()
+            if self.cache.fetch(path, is_fresh=True) != hashed
+        }
+        assert self.snapshot is not None
+        for path in recipe.reported - before.keys():
+            if calc_path_key(path) in recipe.written:
                 continue
-            changed_ns = find_change_time_ns(path)
-            if changed_ns is None or changed_ns >= start_ns:
+            if self._find_producer(path) is not None:
+                has_moved = self.cache.has_moved_since_fetched(path)
+            else:
+                has_moved = self.snapshot.has_moved(path)
+            if has_moved:
                 moved.add(path)
         return tuple(sorted(moved))
 
@@ -394,7 +472,7 @@ class _Builder:
             message = f"{rule.label} stays stale: {repeated[0]} changed while its recipe executed, in this execution and its last"
             self.summary.unsettled.append(Diagnostic(rule.location, message))
         self.moved[key] = moved
-        _state.save_moved(self.state_path, key, moved)
+        _state.save_moved(self.state_path, key, moved, self.cache.take_changes())
 
     def _ensure_recorded_reports_built(self, rule: Definition, record: _state.Record) -> None:
         """Bring up to date first each rule that now outputs a file `rule` last reported, as when a source became generated, so its record is checked against the file that rule writes."""
@@ -409,14 +487,14 @@ class _Builder:
                 self._ensure_up_to_date(upstream_rule)
 
     def _hash_added_inputs(
-        self, rule: Definition, recipe: Recipe, hashes_before: dict[str, str | None]
+        self, rule: Definition, recipe: Recipe, before: dict[str, Hashed | None]
     ) -> tuple[tuple[str, str], ...]:
         """Return what `rule`'s recipe reported, each path with its hash from before the recipe where one exists, so a change during the recipe makes the rule stale."""
         added = []
         for path in sorted(recipe.reported):
             self._validate_ordered(rule, path)
-            content = hashes_before.get(path) or hash_path(path)
-            if content is None:
+            content = _digest(before.get(path) or self.cache.fetch(path))
+            if not content:
                 reason = f"its recipe reported reading {path}, which it then removed"
                 raise RecipeFailure(rule, reason=reason)
             added.append((path, content))
@@ -436,24 +514,31 @@ class _Builder:
 
     def _find_producer(self, path: str) -> Definition | None:
         """Return the rule that outputs `path`, or a directory holding it."""
-        for ancestor in iter_self_and_parents(calc_path_key(path)):
-            producer = self.project.producers_by_key.get(ancestor)
-            if producer is not None:
-                return producer
-        return None
+        if path not in self.producers_by_path:
+            self.producers_by_path[path] = next(
+                (
+                    self.project.producers_by_key[ancestor]
+                    for ancestor in iter_self_and_parents(calc_path_key(path))
+                    if ancestor in self.project.producers_by_key
+                ),
+                None,
+            )
+        return self.producers_by_path[path]
 
-    def _calc_fingerprint(self, rule: Definition) -> str:
+    def _calc_fingerprint(self, rule: Definition) -> tuple[str, dict[str, Hashed | None]]:
+        """Return the fingerprint of `rule`, and what it hashed of each input."""
         digest = hashlib.sha256(self.project.code_digests[rule])
+        hashed_inputs: dict[str, Hashed | None] = {}
         for path in rule.inputs:
-            content = hash_path(path)
-            if content is None:
+            hashed = hashed_inputs[path] = self.cache.fetch(path)
+            if hashed is None:
                 raise RecipeFailure(
                     rule,
                     reason=f"its input {path} is missing",
                 )
             feed(digest, b"path", path.encode("utf-8", "surrogateescape"))
-            feed(digest, b"content", content.encode())
-        return digest.hexdigest()
+            feed(digest, b"content", hashed.digest.encode())
+        return digest.hexdigest(), hashed_inputs
 
     def _announce(self, definition: Definition) -> None:
         self.progress_cb(f"[{self.position}/{self.total}] {definition.label}")
@@ -481,6 +566,7 @@ class _Builder:
         recipe = self._build_recipe(definition)
         self.context.running = recipe
         self.has_executed = True
+        self.executions += 1
         try:
             definition.fn(*args, **kwargs)
         except KeyboardInterrupt:
@@ -499,3 +585,15 @@ class _Builder:
             )
             raise RecipeFailure(definition, reason=reason, notes=notes)
         return recipe
+
+
+def _digest(hashed: Hashed | None) -> str:
+    """Return the hash in `hashed`, or an empty string, which no hash is, where nothing was there."""
+    return "" if hashed is None else hashed.digest
+
+
+def _is_related(output: str, path: str) -> bool:
+    """Say whether reading `path` reads some of `output`: they are one path, or one holds the other."""
+    output_key = calc_path_key(output)
+    path_key = calc_path_key(path)
+    return is_within(path_key, output_key) or is_within(output_key, path_key)

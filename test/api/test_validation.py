@@ -396,3 +396,11 @@ def test_error_in_fac_py_prints_its_traceback_then_its_location(fac: Fac) -> Non
     assert result.status == 2
     assert result.err.splitlines()[-1] == "fac.py:1:19: error: loading fac.py raised NameError"
     assert "NameError: name 'UNDEFINED' is not defined" in result.err
+
+
+@pytest.mark.project("always_task")
+def test_task_marked_always_fails_since_every_task_executes_whenever_asked(fac: Fac) -> None:
+    result = fac("check")
+
+    assert result.status == 2
+    assert result.err.startswith("fac.py:4:2: error: fac.task takes no always= option")

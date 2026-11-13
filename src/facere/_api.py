@@ -48,6 +48,7 @@ def rule(
     each: Iterable[dict[str, Any]] | None = None,
     name: str | None = None,
     default: bool = False,
+    always: bool = False,
     **values: object,
 ) -> Callable[[_F], _F]: ...
 
@@ -59,14 +60,23 @@ def rule(
     each: Iterable[dict[str, Any]] | None = None,
     name: str | None = None,
     default: bool = False,
+    always: bool = False,
     **values: object,
 ) -> _F | Callable[[_F], _F]:
     """Define rules from a function, returned unchanged.
 
-    The function's signature declares what each rule reads and writes: a parameter annotated `fac.Input` or `list[fac.Input]` holds the files or directories it reads, one annotated `fac.OrderOnly` or `list[fac.OrderOnly]` those it may read, one annotated `fac.Output` or `list[fac.Output]` files or directories it writes, and any other parameter a value. `each=` takes an iterable of dicts, read once here, and defines one rule per dict, each key filling the parameter it names. Keyword arguments fill the parameters they name in every rule, and defaults fill the rest. `name=` replaces the function's name, less one trailing underscore, on the command line, and `default=True` builds the rules when `fac` gets no targets, in place of every rule.
+    The function's signature declares what each rule reads and writes: a parameter annotated `fac.Input` or `list[fac.Input]` holds the files or directories it reads, one annotated `fac.OrderOnly` or `list[fac.OrderOnly]` those it may read, one annotated `fac.Output` or `list[fac.Output]` files or directories it writes, and any other parameter a value. `each=` takes an iterable of dicts, read once here, and defines one rule per dict, each key filling the parameter it names. Keyword arguments fill the parameters they name in every rule, and defaults fill the rest. `name=` replaces the function's name, less one trailing underscore, on the command line, and `default=True` builds the rules when `fac` gets no targets, in place of every rule. `always=True` executes the rules whenever a target reaches them, for what Facere can't see change, such as a program's version, while the rules downstream execute only when an output's content changed.
     """
     rows = None if each is None else tuple(each)
-    return _declarator(fn, is_task=False, name=name, is_default=default, rows=rows, values=values)
+    return _declarator(
+        fn,
+        is_task=False,
+        name=name,
+        is_default=default,
+        is_always=always,
+        rows=rows,
+        values=values,
+    )
 
 
 @overload
@@ -86,7 +96,9 @@ def task(
 
     A task takes inputs and values only, and executes whenever a target reaches it, after the rules that output its inputs, with its commands sharing Facere's standard streams. A parameter annotated `fac.Args` holds the arguments after `--` on the command line when the task is among the targets, else its default, else `()`. `name=`, `default=True`, and keyword arguments mean what they mean for `fac.rule`.
     """
-    return _declarator(fn, is_task=True, name=name, is_default=default, rows=None, values=values)
+    return _declarator(
+        fn, is_task=True, name=name, is_default=default, is_always=False, rows=None, values=values
+    )
 
 
 def out(path: str = ".", suffix: str | None = None) -> str:
@@ -110,7 +122,7 @@ def out(path: str = ".", suffix: str | None = None) -> str:
 def add_inputs(paths: Iterable[str]) -> None:
     """Report files the running rule's recipe read, usually what a tool's depfile lists, so a change to any of them makes the rule stale.
 
-    Call it once its tool has run or before reading a file in Python. Each path is relative to the root, or absolute, and any spelling of one counts, such as `src/a/../b.h`. A new file under the root with the name of a reported file makes the rule stale. A file inside the output directory that no rule outputs is scratch, so only its name is kept. A file reported for the first time that changed since the recipe started leaves the rule stale. Raises FileNotFoundError for a kept path that doesn't exist.
+    Call it once its tool has run or before reading a file in Python. Each path is relative to the root, or absolute, and any spelling of one counts, such as `src/a/../b.h`. A new file under the root with the name of a reported file makes the rule stale. A file inside the output directory that no rule outputs is scratch, so only its name is kept. A file reported for the first time that changed since the invocation's first rule started executing, or since the rule outputting it finished, leaves the rule stale. Raises IsADirectoryError for a directory, and FileNotFoundError for a kept path that doesn't exist.
     """
     context = get_context("fac.add_inputs")
     recipe = context.running
@@ -125,6 +137,12 @@ def add_inputs(paths: Iterable[str]) -> None:
         key = calc_path_key(relative)
         if is_within_any(key, recipe.tracked):
             continue
+        if os.path.isdir(os.path.join(context.root, relative)):
+            raise IsADirectoryError(
+                errno.EISDIR,
+                "fac.add_inputs takes files, and a directory a rule reads is a fac.Input",
+                relative,
+            )
         recipe.reported_names.add(calc_path_key(posixpath.basename(relative)))
         if is_within(relative, context.out_dir) and not is_within_any(key, recipe.output_keys):
             continue
@@ -257,6 +275,7 @@ def _declarator(
     is_task: bool,
     name: str | None,
     is_default: bool,
+    is_always: bool,
     rows: tuple[object, ...] | None,
     values: dict[str, object],
 ) -> _F | Callable[[_F], _F]:
@@ -269,6 +288,7 @@ def _declarator(
                 fn=fn,
                 name=name,
                 is_default=is_default,
+                is_always=is_always,
                 rows=rows,
                 values=values,
                 location=location,

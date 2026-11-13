@@ -22,7 +22,6 @@ from hypothesis.stateful import (
 
 import facere
 
-from ..helpers import pass_clock_tick
 from .family import (
     ENVS,
     MODULES,
@@ -125,9 +124,10 @@ class _IncrementalBuilds(RuleBasedStateMachine):
     @precondition(lambda self: self.project.find_removable())
     @rule(data=st.data())
     def remove_file(self, data: st.DataObject) -> None:
-        """Remove a source, a note, or a header no include needs, a generated one included."""
+        """Remove a source, a note, or a header no include needs, a generated one included, deleting the header a build left, as for any output no rule declares anymore."""
         path = data.draw(st.sampled_from(self.project.find_removable()))
         self.project.remove(path)
+        (self.root / _OUT / path).unlink(missing_ok=True)
         self._apply(f"remove {path}")
 
     @rule(data=st.data())
@@ -287,7 +287,6 @@ class _IncrementalBuilds(RuleBasedStateMachine):
     def _run_fac(self, *args: str) -> set[str]:
         """Run fac in the project, which must succeed, and return the ids of the rows that executed."""
         self.capfd.readouterr()
-        pass_clock_tick(self.root.parent)
         status = facere.main(["-C", str(self.root), *args])
         captured = self.capfd.readouterr()
         assert status == 0, self._describe(f"fac {' '.join(args)} failed:\n{captured.err}")

@@ -301,7 +301,7 @@ def test_file_changed_after_the_tool_read_it_and_before_its_first_report_reruns_
 
 
 @pytest.mark.project("output_first_reported")
-def test_output_first_reported_in_the_tick_its_rule_wrote_it_leaves_its_reader_up_to_date(
+def test_output_first_reported_by_the_rule_ordered_after_it_leaves_that_rule_up_to_date(
     fac: Fac,
 ) -> None:
     fac()
@@ -379,9 +379,6 @@ def test_new_output_named_as_a_reported_file_makes_the_rule_stale(root: Path, fa
     assert (root / "build" / "main.o").read_text() == "generated"
 
 
-@pytest.mark.xfail(
-    strict=True, reason="planned: the hash cache keeps each directory output's files"
-)
 @pytest.mark.project("new_in_directory_output")
 def test_file_new_in_a_directory_output_named_as_a_reported_file_makes_the_rule_stale(
     root: Path, fac: Fac
@@ -393,3 +390,44 @@ def test_file_new_in_a_directory_output_named_as_a_reported_file_makes_the_rule_
     fac()
 
     assert (root / "build" / "main.o").read_text() == "generated"
+
+
+@pytest.mark.project("output_rewritten_by_tool")
+def test_rule_output_a_command_rewrites_as_it_was_before_its_first_report_never_settles(
+    fac: Fac,
+) -> None:
+    assert fac().err == "Finished in <elapsed>. Executed 2 rules.\n"
+
+    assert fac().err.splitlines() == [
+        "fac.py:15:2: warning: rule 'compile' (build/main.o) stays stale: build/gen.h changed while its recipe executed, in this execution and its last",
+        "Finished in <elapsed>. Executed 1 rule. 1 output up to date.",
+    ]
+
+
+@pytest.mark.project("hidden_report")
+def test_file_first_reported_from_a_hidden_directory_settles_after_one_execution(
+    fac: Fac,
+) -> None:
+    assert fac().err == EXECUTED_ONE
+
+    assert fac().err == UP_TO_DATE_ONE
+
+
+@posix_only
+@pytest.mark.project("linked_report")
+def test_file_first_reported_behind_a_linked_directory_settles_after_one_execution(
+    root: Path, fac: Fac
+) -> None:
+    os.symlink("real", root / "vendor")
+    assert fac().err == EXECUTED_ONE
+
+    assert fac().err == UP_TO_DATE_ONE
+
+
+@pytest.mark.project("directory_report")
+def test_reporting_a_directory_fails_naming_it(fac: Fac) -> None:
+    result = fac()
+
+    assert result.status == 1
+    assert "IsADirectoryError" in result.err
+    assert "'include'" in result.err

@@ -101,6 +101,7 @@ class Definition:
     location: Location
     origin: Location
     is_default: bool
+    is_always: bool
     fn: Callable[..., object]
     args: tuple[object, ...]
     kwargs: dict[str, object]
@@ -554,6 +555,7 @@ def _build_definition(
         location=declaration.location,
         origin=declaration.origin,
         is_default=declaration.is_default,
+        is_always=declaration.is_always,
         fn=declaration.fn,
         args=args,
         kwargs=kwargs,

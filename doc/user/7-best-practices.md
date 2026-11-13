@@ -1,6 +1,6 @@
 # Best practices
 
-Facere checks what it can see: undeclared paths *(0.4)*, two rules outputting one path, an output changed after its rule finished *(planned)*, an output edited by hand. These practices cover what it cannot see. What your project builds is your decision, so each states what Facere will do, and you choose the rebuilds you want.
+Facere checks what it can see: undeclared paths *(0.4)*, two rules outputting one path, an output changed after its rule finished *(0.4)*, an output edited by hand. These practices cover what it cannot see. What your project builds is your decision, so each states what Facere will do, and you choose the rebuilds you want.
 
 ## Hidden inputs
 
@@ -15,7 +15,7 @@ These stay out of every fingerprint, so a change to one executes nothing until y
 - **Files a rule writes but does not declare**, which Facere neither tracks nor rebuilds when edited by hand.
 - **What a store cannot see** *(planned)*. Facere sees a store's virtual outputs only through its own `read` and `stamp`, so a `read` that skips part of its file, or a `stamp` that misses a change, leaves that part or that change untracked.
 
-Two features bring narrower gaps of their own. A new file in a hidden directory, the output directory, or behind a linked directory, or one a command writes while Facere is executing recipes, can shadow a header that `fac.add_inputs` *(0.4)* recorded without making its rule stale, as can a new file a tool looked for and did not find, such as through `__has_include`, and, until the hash cache *(planned)*, a file new in a directory output. A file a recipe reports for the first time is checked for changes during that recipe *(0.4)*, which misses one made to a file outside your project, and until the hash cache *(planned)*, which compares stats instead of times, one made early in the recipe to a file on a file system whose clock runs behind the output directory's or whose timestamps are coarser, one a file server has not yet shown, one to another rule's output that is undone before the recipe ends, and on Windows a file moved onto the path, which keeps its old times. The hash cache *(planned)* trusts timestamps from a file's last change, so a file server whose clock runs behind yours can hide an edit made just before an invocation.
+Three features bring narrower gaps of their own. A new file in a hidden directory, the output directory, or behind a linked directory, or one a command writes while Facere is executing recipes, can shadow a header that `fac.add_inputs` *(0.4)* recorded without making its rule stale, as can a new file a tool looked for and did not find, such as through `__has_include`. A file a recipe reports for the first time is checked for changes during that recipe *(0.4)*, which misses one made to a file outside your project, in a hidden directory, or behind a linked directory. *(0.4)* Facere skips reading a file whose size, timestamps, and inode match its last read, except a file that changed less than 2 seconds before the invocation that last read it, and a file on a network file system, any FUSE one, FAT, or exFAT, which it reads on every invocation. A network file system Facere takes for a local one, such as an overlay over NFS, can therefore hide an edit.
 
 Facere works the same whether or not a recipe reads one of these: a header stamped with `datetime.now()` in its recipe holds the time of the rule's last execution. To make a change execute the rule instead, read the value at module level, where it joins the fingerprint: `STAMP = datetime.now().isoformat()` then executes what reads it on every invocation, and `os.environ.get("FLAVOR")` whenever the variable changes. Pass a per-run value to a task after `--` *(0.2)*.
 
@@ -149,7 +149,7 @@ def install(lock: fac.Input = "package-lock.json", record: fac.Output = fac.out(
 
 ### Module-level code
 
-Module-level code runs on every invocation, `--list` and `--check` *(planned)* included, so a probe there costs its spawn each time. A rule's output read there holds the previous run's content, so the build lags one run behind, and fails on a fresh clone. To make a program count without a spawn, [declare it as an input](#hidden-inputs). To check its version, probe in a rule marked `always=True` *(planned)* whose output its consumers input, so they execute only when the version changes, and a missing or old gcc fails every invocation that needs it:
+Module-level code runs on every invocation, `--list` and `--check` *(planned)* included, so a probe there costs its spawn each time. A rule's output read there holds the previous run's content, so the build lags one run behind, and fails on a fresh clone. To make a program count without a spawn, [declare it as an input](#hidden-inputs). To check its version, probe in a rule marked `always=True` *(0.4)* whose output its consumers input, so they execute only when the version changes, and a missing or old gcc fails every invocation that needs it:
 
 ```python
 @fac.rule(always=True)
@@ -163,7 +163,7 @@ def gcc_version(path: fac.Output = GCC_VERSION):
 
 Name every scratch file after one of the rule's own outputs, since output paths are unique. Facere cannot see writes: two rules writing one undeclared path, such as a shared depfile name, race under `-j` *(planned)* and the invocation still passes. Never read another rule's scratch file, since that orders nothing.
 
-Once a tool succeeds, report what it read through `fac.add_inputs` *(0.4)*, or editing a file it read executes nothing. [Building a C program](./9-building-c.md) shows this for a compiler's depfile. Never report a file the recipe deletes, since a file gone when reported, or removed afterward, fails the rule. Declare a file a tool writes outside the output directory as an output: when reported instead, it reads as changed during every execution, so its rule executes on every invocation, and `fac` warns from the second.
+Once a tool succeeds, report what it read through `fac.add_inputs` *(0.4)*, or editing a file it read executes nothing. [Building a C program](./9-building-c.md) shows this for a compiler's depfile. Never report a file the recipe deletes, since a file gone when reported, or removed afterward, fails the rule. Report files only: *(0.4)* a directory fails the rule, so declare a directory a recipe reads as a `fac.Input`. Declare a file a tool writes outside the output directory as an output: when reported instead, it reads as changed during every execution, so its rule executes on every invocation, and `fac` warns from the second.
 
 Keep a tool's deliberate incremental state, such as MSVC's `/INCREMENTAL` or `tsc`'s `.tsbuildinfo`, in a scratch file named after the rule's output, and turn it off for release outputs.
 

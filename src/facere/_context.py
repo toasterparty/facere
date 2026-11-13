@@ -37,6 +37,7 @@ class Declaration:
     fn: Callable[..., object]
     name: str | None
     is_default: bool
+    is_always: bool
     rows: tuple[object, ...] | None
     values: dict[str, object]
     location: Location

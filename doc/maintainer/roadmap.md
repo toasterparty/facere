@@ -8,13 +8,12 @@
 
 ## Next
 
-Correctness, the first milestone below, before any other.
+Scheduling, milestone 2 below, before any other.
 
 ## Phase 1 milestones
 
-A proposal, ordered to rough in the whole path first. Each ends with its tests passing on Linux and Windows.
+A proposal, ordered to rough in the whole path first. Each ends with its tests passing on Linux and Windows. Milestone 1, correctness, is done.
 
-1. **Correctness.** The hash cache, rehashing every entry on a file system whose timestamps Facere cannot vouch for, the snapshot that first reports compare against in place of `clock`, and the damage checks. The cache's entries then match a file new in a directory output by name and on Windows carry each file's change time, which with the snapshot closes the [open risks](./design/fingerprints.md#open-risks) on first reports under the root. `@fac.rule(always=True)`, so a program's version can be a rule whose output its consumers input. The state read through one connection, and its fsync after each record dropped, since with the damage checks a lost record costs a rebuild and never a stale output.
 2. **Scheduling.** Parallel jobs, `max_jobs`, failure and `-k`, interrupt and graceful stop, the lock and `--lock-timeout`, `fac.give_lock()`, the terminal for tasks, and the pseudo-terminal for rules' commands, so a compiler keeps its color. The `serve` task in the `my-site` example calls `fac.give_lock()` once it exists, so `fac` in a second terminal does not wait on it.
 3. **Watch mode.** The set of paths a cycle observed, then [the supervisor](./design/watch.md).
 4. **Stores.** `fac.Virtual`, `fac.VirtualInput`, `fac.VirtualOutput`, `fac.read` and `fac.write`, `fac.FileStore`, virtual output records and stamps in the state, the flush and its round-trip check, and file outputs moved onto the same code path as the built-in store.
