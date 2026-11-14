@@ -1,6 +1,6 @@
 # Example: a Python app
 
-> **Status:** planned. This example uses `facere.uv`, `fac.give_lock`, `fac.write_archive`, the `clear=` option of `fac.rule`, and the `inherit=` option of `fac.run`, which no release supports yet, so it does not run on the current release.
+> **Status:** planned. This example uses `facere.uv`, `fac.give_lock`, `fac.write_archive`, and the `clear=` option of `fac.rule`, which no release supports yet, so it does not run on the current release.
 
 A Python app with a CLI and an optional tkinter GUI, managed by uv, linted with ruff and ty, tested with pytest, released as Nuitka standalone executables for Windows, macOS, and Linux, and optionally published to PyPI. It is the Facere version of a Makefile project that needed Git bash on Windows, a wrapper script to apply environment settings to uv, and an install stamp. The design is in [Design](../../maintainer/design/README.md).
 

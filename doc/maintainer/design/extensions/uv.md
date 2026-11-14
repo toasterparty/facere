@@ -12,7 +12,7 @@
 
 | Name | Provides |
 |---|---|
-| `Project(path=".", venv=None, editable=True, env=None)` | a uv project whose `pyproject.toml` lies in `path`, relative to the calling `fac.py`. `venv` places a venv only Facere uses, such as a release build's, in the output directory instead of uv's default `.venv`, `editable=False` installs the project as a real package, as Nuitka needs, and `env` adds variables to every command it runs |
+| `Project(path=".", venv=None, editable=True, env=None)` | a uv project whose `pyproject.toml` lies in `path`, relative to the root. `venv` places a venv only Facere uses, such as a release build's, in the output directory instead of uv's default `.venv`, `editable=False` installs the project as a real package, as Nuitka needs, and `env` adds variables to every command it runs |
 | `.inputs` | the project's `pyproject.toml` and `uv.lock`, for a rule whose tools come from the project |
 | `.run(*args, **kwargs)` | in a recipe, the command run through `uv run --locked`, which syncs the environment to the lockfile first, taking `fac.run`'s keyword arguments |
 
@@ -24,17 +24,9 @@ class Project:
     editable: bool = True
     env: dict[str, str] | None = None
 
-    def __post_init__(self):
-        self.path = fac.root(self.path)
-        if self.venv:
-            self.venv = fac.root(self.venv)
-
     @property
     def inputs(self):
-        return [
-            fac.from_root(posixpath.normpath(f"{self.path}/{name}"))
-            for name in ("pyproject.toml", "uv.lock")
-        ]
+        return [posixpath.normpath(f"{self.path}/{name}") for name in ("pyproject.toml", "uv.lock")]
 
     def run(self, *args, env=None, **kwargs):
         variables = {**(self.env or {}), **(env or {})}

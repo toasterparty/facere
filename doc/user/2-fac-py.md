@@ -7,17 +7,18 @@ A rule is a function decorated with `@fac.rule`, and its signature declares what
 | Annotation | Holds |
 | --- | --- |
 | `fac.Input`, `list[fac.Input]` | Inputs, the files or directories the rule reads |
-| `fac.OrderOnly`, `list[fac.OrderOnly]` | *(0.4)* Files or directories a rule's recipe may read, such as a generated header only some compiles include. They are built first, and a change to one's content makes the rule stale only once the recipe reports reading it through `fac.add_inputs`. A change to which paths the parameter holds does so only where the recipe's code names the parameter |
+| `fac.OrderOnly`, `list[fac.OrderOnly]` | *(0.4)* Files or directories a rule's recipe may read, such as a generated header only some compiles include. They are built first, and a change to one's content makes the rule stale only once the recipe reports reading it through `fac.add_inputs`. A change to which paths the parameter holds always does |
 | `fac.Output`, `list[fac.Output]` | Outputs, the files or directories the rule writes. Every rule has at least one output, a file or a virtual output |
 | `fac.VirtualInput`, `list[fac.VirtualInput]` | *(planned)* Virtual outputs of a [store](./5-virtual-outputs.md) the rule reads |
 | `fac.VirtualOutput`, `list[fac.VirtualOutput]` | *(planned)* Virtual outputs of a store the rule writes |
-| `str`, `list[str]` | A value that may look like a path, such as an entry a manifest lists, which the rule never reads as a file |
+| `str`, `list[str]` | A value that may look like a path, such as an entry a manifest lists, which the rule never reads as a file. *(planned)* `fac.Text` and `list[fac.Text]` take this role, and a plain `str` becomes a value like any other, so annotating for a type checker never switches off the check below |
+| `fac.Scope` | *(planned)* The [scope](./3-parameterization.md#configurations) a rule or task is defined in |
 | Anything else, or none | A value: data the rule uses that is not a file, such as a flag or a version string |
 
 Each parameter is filled from one of:
 
 - its default
-- a keyword argument to `@fac.rule`, which fills the parameter it names
+- a keyword argument to `@fac.rule`, which fills the parameter it names. *(planned)* `values={"name": value}` replaces this, so keyword arguments are only Facere's own options and a new option can never take over a parameter of the same name
 - *(0.2)* `each=`, a list of dicts, which defines one rule per dict, each key filling the parameter it names. Every rule it defines shares the function's name. [Parameterization](./3-parameterization.md) shows each of these at work.
 
 A default is read once, when `fac.py` loads, so a list default such as `titles: list[fac.Input] = TITLES` is safe here, though Python linters warn against one, as ruff's `B006` does.
@@ -32,15 +33,15 @@ The function's body is the rule's recipe. Facere executes it only when an output
 
 ## Paths
 
-Write paths as strings relative to the directory holding `fac.py`, with `/` separators on every OS. An unannotated value that names a file under the root is an error, since Facere cannot tell whether the rule reads it: annotate the parameter `fac.Input`, or `str` if the string only happens to look like a path.
+Write paths as strings relative to the root, the directory holding the root `fac.py`, with `/` separators on every OS. An unannotated value that names a file under the root is an error, since Facere cannot tell whether the rule reads it: annotate the parameter `fac.Input`, or `str` if the string only happens to look like a path.
 
 Rules connect through paths and virtual outputs alone. A rule that inputs the paths or virtual outputs another writes executes after it, whatever order the rules are defined in. An input that no rule outputs is a source, and must exist.
 
 Before executing any recipe, Facere loads `fac.py` and checks every rule, so a mistake such as two rules outputting one path, a missing source, or a dependency cycle fails at once, naming the `fac.py` lines involved.
 
-`fac.out` places an output in the output directory, `build/` by default, at the same relative path as the file it comes from, with its suffix swapped when you pass one: `fac.out("pages/about.txt", ".html")` is `build/pages/about.html`, and `fac.out("sitemap.txt")` is `build/sitemap.txt`. *(0.2)* `fac.out()` is the output directory itself in the root `fac.py`, and its mirror of the `fac.py`'s own directory elsewhere. A rule may still output any path. Facere keeps its state, its record of past builds, in the output directory too, so deleting the directory forgets everything and the next build executes every rule.
+`fac.out` places an output in the output directory, `build/` by default, at the same relative path as the file it comes from, with its suffix swapped when you pass one: `fac.out("pages/about.txt", ".html")` is `build/pages/about.html`, and `fac.out("sitemap.txt")` is `build/sitemap.txt`. *(0.2)* `fac.out()` is the output directory itself. A rule may still output any path. Facere keeps its state, its record of past builds, in the output directory too, so deleting the directory forgets everything and the next build executes every rule.
 
-*(0.2)* `fac.sources("pages/**/*.txt")` lists the files a glob matches, sorted, where `**` matches any number of directories. It skips the output directory, *(0.4)* any other directory a `--out` left, and hidden files, whose names start with `.`, unless the glob's own part starts with `.`, as in `fac.sources(".github/*.yml")`. Call it while `fac.py` loads, as for a parameter's default. *(0.4)* A rule can't input a directory holding the output directory, such as `.`, since its content changes on every build, so `fac.sources("**")` is how a rule reads every file in the project.
+*(0.2)* `fac.sources("pages/**/*.txt")` lists the files a glob matches, sorted, where `**` matches any number of directories. It skips the output directory, *(0.4)* any other directory a `--out` left, and hidden files, whose names start with `.`, unless the glob's own part starts with `.`, as in `fac.sources(".github/*.yml")`. Call it while `fac.py` loads, as for a parameter's default. *(planned)* A glob will match alike on every OS: case-sensitive everywhere, `**` only as a whole part of a path, never entering a linked directory, and failing on `?`, `[`, and `]`. *(0.4)* A rule can't input a directory holding the output directory, such as `.`, since its content changes on every build, so `fac.sources("**")` is how a rule reads every file in the project.
 
 *(0.2)* `fac.read_text(path)` returns a text file's content, and `fac.write_text(path, text)` replaces a file with `text`. Both use UTF-8 and `\n` line endings on every OS, so an output's bytes are the same on every machine, which Python's `open` gives only when told its encoding and newline.
 
@@ -48,7 +49,7 @@ Before executing any recipe, Facere loads `fac.py` and checks every rule, so a m
 
 ## Commands
 
-`fac.run` runs one command. In a rule it returns the command's standard output as text, and in a task, whose commands print live, it returns an empty string unless `quiet=True` *(0.3)*. It runs without a shell, so pass the program and each argument separately: `fac.run("pandoc", source)`, never `fac.run("pandoc about.txt")`. A list or tuple of strings passes each of its elements as one argument. A command that exits non-zero fails the recipe.
+`fac.run` runs one command. In a rule it returns the command's standard output as text, and in a task, whose commands print live, it returns an empty string unless `quiet=True` *(0.3)*. *(planned)* `fac.run` will return nothing, and `fac.capture`, taking the same arguments, will return the standard output in a rule and a task alike, so `quiet=True` only hides output. It runs without a shell, so pass the program and each argument separately: `fac.run("pandoc", source)`, never `fac.run("pandoc about.txt")`. A list or tuple of strings passes each of its elements as one argument. A command that exits non-zero fails the recipe.
 
 In a rule, a command reads an empty standard input and its output is printed once it finishes. Keyword arguments adjust that:
 
@@ -64,7 +65,7 @@ In a rule, a command reads an empty standard input and its output is printed onc
 
 ## Tasks
 
-A task is a function decorated with `@fac.task`, for work that must happen whenever you ask, such as running tests, a server, or a deploy. It takes inputs and values but no outputs, and executes every time `fac` is asked for it, after the rules that output its inputs. Its commands print live and read from the terminal.
+A task is a function decorated with `@fac.task`, for work that must happen whenever you ask, such as running tests, a server, or a deploy. It takes inputs and values but no outputs, and executes every time `fac` is asked for it, after the rules that output its inputs. *(planned)* The targets after a task build from a fresh load of `fac.py`, so a file the task wrote, such as a bumped version, counts. Its commands print live and read from the terminal.
 
 *(0.2)* A task receives the arguments after `--` on the command line through a parameter annotated `fac.Args`, a tuple of strings. Without `--`, the parameter holds its default, or `()` when it has none.
 
@@ -82,7 +83,7 @@ Facere compares content, never timestamps. A rule executes when any of these cha
 
 - the content of an input, which *(0.4)* outside Windows includes whether the file is executable, and for a link inside a directory input is its target's content
 - the files in a directory input, when one appears or disappears
-- *(0.4)* the paths a `fac.OrderOnly` parameter holds, where the recipe's code names that parameter, though never their content
+- *(0.4)* the paths a `fac.OrderOnly` parameter holds, though never their content
 - *(0.4)* the content of a file its recipe last reported through `fac.add_inputs`, wherever it lies, or a new file under the root, or a new output, with the name of one it reported, since a tool searching a path may find that first
 - its recipe's code, or that of a function or class in your project the recipe reaches by name, such as a helper in `fac.py` or a shared module *(0.2)*, along with *(0.4)* the function a decorator wraps and the classes a class inherits from
 - a value or module constant the recipe reads, directly or through such a function, *(0.4)* including the defaults such a function's parameters take. *(0.4)* A value counts by its content wherever `pickle` can take it apart, a dataclass, enum member, date, or compiled pattern included, and one it cannot, such as an open file or a lock, fails collection

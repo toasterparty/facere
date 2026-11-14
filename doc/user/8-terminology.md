@@ -35,7 +35,7 @@ Each term is defined using only the terms above it, so reading top to bottom nev
 | Build | To execute the recipe of each stale rule that targets need, and of each task they reach. |
 | Batch *(planned)* | A maximal run of consecutive targets that reach no task, which `fac` builds together, in parallel. |
 | Group *(planned)* | A named set of targets, such as `all`, built together. |
-| Scope *(planned)* | A namespace whose name prefixes every name defined inside it: the directory of each `fac.py`, and each block a `fac.py` opens with `fac.scope`. |
+| Scope *(planned)* | A namespace whose name prefixes every name defined inside it: the directory of each `fac.py`, and each value `fac.scope` returns, which a rule or task joins through a parameter annotated `fac.Scope`. |
 | Name | The dotted string you type to reach a rule, task, group, or scope, such as `server.release`. |
 | Pattern *(planned)* | A name in which `*` stands for any one dotted part, such as `*.release`. |
 | Default | A rule, task, group, or scope that `fac` builds when given no targets, or that its scope's bare name builds. |

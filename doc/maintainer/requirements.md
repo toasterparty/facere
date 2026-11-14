@@ -20,7 +20,8 @@ MUST, MUST NOT, SHOULD, SHOULD NOT, and MAY are to be interpreted as in BCP 14 (
 - Rules MUST depend on one another only through their inputs and outputs, never by name.
 - A rule MUST be able to write and read virtual outputs, keyed values held in a store, a value the project defines, such as the rows of one file or the resources of an HTTP REST API, so how finely Facere tracks outputs is independent of how they are stored. A project with one file per output MUST need no store.
 - Facere MUST accept a source, so a project can add the rule that outputs it later without editing the rules that read it.
-- Paths in a `fac.py` MUST be strings relative to its own directory, as a user standing there types them, with `/` separators on every OS.
+- Paths in a `fac.py` and in the modules it imports MUST be strings relative to the root, with `/` separators on every OS, so a path means one file wherever it is written, computed, or passed. A `fac.py` below the root MUST be able to convert a path relative to its own directory explicitly.
+- Every `fac.py` under the root, outside directories the project excludes, MUST join the root's graph, so a nested `fac.py` never means a separate project in one release and part of the graph in the next.
 - A `fac.py` MUST be able to change how the rules that read files under its own directory are built, with no edit outside that directory.
 - Each `fac.py` MUST be loaded exactly once per invocation, so its rules and tasks are defined once. Code shared between `fac.py` files lives in ordinary Python modules.
 - An import in the project's own code MUST NOT resolve outside the root while the root holds a module of that name, so another module never silently stands in for a shared module.
@@ -40,15 +41,20 @@ MUST, MUST NOT, SHOULD, SHOULD NOT, and MAY are to be interpreted as in BCP 14 (
 - Every rule and task MUST be addressable individually. A rule that outputs a virtual output MUST be addressable through that virtual output, in the form Facere's messages show it, so one page is published alone though its rule outputs no path.
 - The user MUST be able to name a group of targets explicitly, such as `all` or `test`. Building a group builds every target in it, and a group MAY be one of the defaults. A group, and a scope given by its name, MUST build their targets as the same targets given in order on the command line would: a group's in the order it lists them, and a scope's defaults in the order they were defined.
 - A pattern MUST be able to name several targets at once, such as every configuration of one program.
-- Facere's own actions MUST be flags, so every name belongs to the user.
+- Facere's own actions MUST be flags, so every name belongs to the user. A flag that selects a mode MUST take no operand, so its position among the targets never matters.
+- A part of a name MUST hold only letters, digits, `_`, and `-`, and a target holding any other character outside the syntax Facere defines MUST fail, so later syntax has characters left to use.
+- Facere's own options and the values a rule's parameters receive MUST NOT share one namespace, so an option added later never captures a parameter of the same name.
 - Different flags MUST mean the same in any order, so two that contradict MUST be an error. A repeated flag MUST take its last value, so a wrapper's defaults can be overridden.
 - A task MUST be able to receive arguments from the command line, in a form that cannot collide with Facere's own flags.
 
 ## Reporting
 
 - By default, a successful invocation MUST leave no more than 3 lines of Facere's own output in the terminal. Output from the user's commands does not count. Lines that name a changed directory do not count.
-- A successful invocation MUST end with one line giving its duration, the tasks and rules it ran, and the outputs it found up to date, leaving out what is zero. When nothing ran, the line MUST say there was no work to do, so a caller tells a build that was current from one that did nothing.
-- An interrupted invocation MUST end with one line that says so and gives the same counts, under a line naming the rule or task it stopped.
+- Every invocation that parsed its arguments MUST end with one closing line whose first word is `Finished`, `Failed`, `Stopped`, or `Interrupted`, so a caller or an editor's watcher matches the end of every invocation, failed ones included.
+- A successful invocation's closing line MUST give its duration, the tasks and rules it ran, and the outputs it found up to date, leaving out what is zero. When nothing ran, the line MUST say there was no work to do, so a caller tells a build that was current from one that did nothing.
+- An interrupted or stopped invocation's closing line MUST give the same counts, under a line naming the rule or task it stopped.
+- Facere's own output MUST go to stderr, so stdout carries only what commands wrote and what a mode that prints data, such as listing paths, prints.
+- The documentation MUST state which of Facere's output a caller may parse, and everything else MAY change in any release.
 - When Facere's own output is a terminal, it SHOULD show `[position/total] rule` on a status row pinned to the bottom, below the scrolling output of the commands, and erase the row when it ends for any reason, including a terminating signal. The row is transient, so it does not count toward the 3 lines.
 - An invocation MUST name, in one line, a rule that an input changing during its recipe left stale in two executions in a row, together with that input, since such a rule otherwise executes on every invocation unexplained. One such execution MUST print nothing, since a save made while a build runs is everyday.
 - Facere MUST be able to report, without executing any recipe, which rules are stale and why, and which may execute once a stale rule upstream of them does, naming those stale rules. It MUST also be able to name why each rule that executes did.
@@ -59,7 +65,7 @@ MUST, MUST NOT, SHOULD, SHOULD NOT, and MAY are to be interpreted as in BCP 14 (
 
 ## Errors
 
-- Facere's exit status MUST tell a failed recipe from an invocation that could not start the build, so a caller learns whether its own code or the build definition is wrong.
+- Facere's exit status MUST tell a failed recipe from an invocation that could not start the build, so a caller learns whether its own code or the build definition is wrong. It MUST also tell apart a graceful stop, an expired lock wait, and a bug in Facere itself, and every status it does not define MUST be reserved.
 - An error detectable during collection, while Facere loads every `fac.py` and defines their rules, MUST be reported before any recipe executes.
 - An error in a `fac.py` MUST name the `fac.py:line` of each definition involved.
 - A failed recipe MUST lead with the failing command and its unaltered output, then name its rule, so a diagnostic from the user's tool is never buried under a location in the build definition.
@@ -76,7 +82,7 @@ MUST, MUST NOT, SHOULD, SHOULD NOT, and MAY are to be interpreted as in BCP 14 (
 - The documentation MUST list every kind of input that stays out of fingerprints, so a user knows which risks they own.
 - A file appearing in, disappearing from, or renamed within a rule's inputs, as when a glob's matches change, MUST make the rule stale, even when no content changed.
 - A recipe MUST fail when Facere observes it using a file under the root that its rule does not declare and it has not reported, naming the declaration to add. A file in the output directory that no rule outputs is exempt, so a recipe can keep scratch files there, as is one in a hidden directory that no rule outputs, where a virtual environment lives.
-- Facere MUST build the command-line targets in the order given. Consecutive targets that reach no task form a batch, which MUST be built together, in parallel, since the dependency graph alone orders rules. A target that reaches a task MUST start only once the targets before it finish, and finish before the targets after it start, so `fac clean app` deletes and then rebuilds. A rule's staleness MUST NOT be decided before its batch starts.
+- Facere MUST build the command-line targets in the order given. Consecutive targets that reach no task form a batch, which MUST be built together, in parallel, since the dependency graph alone orders rules. A target that reaches a task MUST start only once the targets before it finish, and finish before the targets after it start, so `fac clean app` deletes and then rebuilds. Neither a rule's staleness nor which rules a target reaches MUST be decided before its batch starts, so the targets after a task build as a second invocation would.
 - Within a batch, an output changed after its recipe finished MUST fail the batch before any recipe consumes it, naming the output and its rule.
 - A virtual output that a store does not read back as Facere wrote it MUST fail the invocation, naming the virtual output.
 - A rule whose input changed while its recipe executed MUST NOT be recorded as up to date, even where the input changed back, so an invocation leaves its targets current with the files as they stood when it started, and an edit made during one is caught by the next.

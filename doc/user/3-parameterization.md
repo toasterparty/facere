@@ -24,7 +24,7 @@ def greeting(path: fac.Output, text: str):
     fac.write_text(path, text)
 ```
 
-`fac greeting` builds both. Annotate a value `str` where it may look like a path, since an unannotated value naming a file under the root is an error.
+`fac greeting` builds both. Annotate a value `str` where it may look like a path, since an unannotated value naming a file under the root is an error. *(planned)* Keyword arguments become Facere's own options alone, so these two rules become two rows of `each=`, and a value every rule shares goes in `values={"text": "hello"}`.
 
 ## Rows
 
@@ -63,7 +63,7 @@ def page(source: fac.Input, html: fac.Output, base_url):
 
 `fac build/production/pages/about.html` builds one page of one configuration, and `fac page` builds every page of both. Changing the production URL executes only the production pages. [Building a C program](./9-building-c.md#debug-and-release) applies this to debug and release.
 
-*(planned)* `with fac.scope("release"):` gives a configuration a name of its own, as in `fac server.release` or `fac '*.release'`.
+*(planned)* `fac.scope("release")` gives a configuration a name of its own, as in `fac server.release` or `fac '*.release'`. Each row carries its scope to a parameter annotated `fac.Scope`, and `scope.out(source, ".html")` places the output in the scope's directory, so configurations stay plain rows.
 
 `--out` instead keeps the same rules and values apart in another directory, as for a CI job.
 

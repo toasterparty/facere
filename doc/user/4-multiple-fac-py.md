@@ -14,7 +14,7 @@ from tools.settings import BASE_URL
 
 ## Separate projects
 
-Today a subdirectory holding a `fac.py` is a project of its own, with its own rules and its own `build/`. Run it from anywhere with `-C`:
+Today a subdirectory holding a `fac.py` is a project of its own, until *(planned)* one graph loads every `fac.py` below the root, with its own rules and its own `build/`. Run it from anywhere with `-C`:
 
 ```
 $ fac -C lib
@@ -35,7 +35,7 @@ The two graphs stay apart, so a root rule cannot order itself after a rule in `l
 
 The root's `fac.py` will load first, followed by every other `fac.py` under the root, all joining one graph:
 
-- Paths in a `fac.py` are relative to its own directory.
+- Paths in every `fac.py` stay relative to the root, so a path means the same file in a declaration, a shared module, and a recipe. `fac.here("a.c")` converts a path relative to the `fac.py`'s own directory, so `lib/fac.py` writes it for `lib/a.c`.
 - Names are dotted by directory, so `fac lib.test` reaches `test` in `lib/fac.py`.
 - `fac.exclude` keeps out a directory, such as a vendored dependency shipping a `fac.py` of its own.
 - `@fac.override` lets a `fac.py` adjust how the rules reading files under its own directory are built, such as one component's optimization flags, with no edit outside that directory.

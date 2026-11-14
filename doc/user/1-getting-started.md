@@ -234,7 +234,7 @@ def sitemap(
 
 `fac.run` runs one command, taking the program and each argument separately. A list, such as `page_names`, gives each of its strings as one argument, and `stdout=` names the file that receives the command's output. `sys.executable` is the Python running Facere, so the script runs the same on every OS. Facere runs commands without a shell, so `fac.run("python tools/sitemap.py")` looks for a program of that name, and fails. Separate arguments also need no quoting, so a path holding a space stays one argument on every OS.
 
-Facere can't see inside a program, so declare what it reads. The script is an input, so editing it executes this rule alone. `list[str]` marks values that may look like paths but are never read as files, so editing a page leaves the sitemap up to date, while adding one changes the list and executes it. [Building a C program](./9-building-c.md) applies all this to a compiler.
+Facere can't see inside a program, so declare what it reads. The script is an input, so editing it executes this rule alone. `list[str]` marks values that may look like paths but are never read as files, so editing a page leaves the sitemap up to date, while adding one changes the list and executes it. *(planned)* `list[fac.Text]` takes this role. [Building a C program](./9-building-c.md) applies all this to a compiler.
 
 ## Preview and clean
 

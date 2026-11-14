@@ -45,35 +45,38 @@ def toolchain(configuration):
 
 
 LIBRARIES = {}
-with fac.scope("common"):
-    for name, configuration in CONFIGURATIONS.items():
-        with fac.scope(name):
-            vendor = fac.c.Toolchain(ar="gcc-ar", cflags=configuration["cflags"])
-            common_sources = fac.sources("src/common/**/*.c")
-            LIBRARIES[name] = [
-                toolchain(configuration).static_library("libcommon.a", common_sources, inputs=[CJSON_H]),
-                vendor.static_library("libcjson.a", [CJSON_C]),
-            ]
+COMMON = fac.scope("common")
+for name, configuration in CONFIGURATIONS.items():
+    scope = COMMON.scope(name)
+    vendor = fac.c.Toolchain(ar="gcc-ar", cflags=configuration["cflags"])
+    common_sources = fac.sources("src/common/**/*.c")
+    LIBRARIES[name] = [
+        toolchain(configuration).static_library("libcommon.a", common_sources, inputs=[CJSON_H], scope=scope),
+        vendor.static_library("libcjson.a", [CJSON_C], scope=scope),
+    ]
 
+RUN_TASKS = []
 for program in PROGRAMS:
-    with fac.scope(program, default=True):
-        for name, configuration in CONFIGURATIONS.items():
-            with fac.scope(name, default=(name == "debug")):
-                program_sources = [f"apps/{program}.c"] + fac.sources(f"src/{program}/**/*.c")
-                executable = toolchain(configuration).executable(program, program_sources, libraries=LIBRARIES[name], default=True)
-
-                @fac.task
-                def run(args: fac.Args, path: fac.Input = executable):
-                    fac.run(path, args)
-
-with fac.scope("tests"):
+    program_scope = fac.scope(program, default=True)
     for name, configuration in CONFIGURATIONS.items():
-        with fac.scope(name, default=(name == "debug")):
-            tests = toolchain(configuration).executables(fac.sources("tests/*.c"), libraries=LIBRARIES[name])
+        scope = program_scope.scope(name, default=(name == "debug"))
+        program_sources = [f"apps/{program}.c"] + fac.sources(f"src/{program}/**/*.c")
+        executable = toolchain(configuration).executable(
+            program, program_sources, libraries=LIBRARIES[name], scope=scope, default=True
+        )
+        RUN_TASKS.append({"scope": scope, "programs": [executable]})
 
-            @fac.task
-            def run(programs: list[fac.Input] = tests):
-                for program in programs:
-                    fac.run(program, env={"UBSAN_OPTIONS": "print_stacktrace=1"})
+TESTS = fac.scope("tests")
+for name, configuration in CONFIGURATIONS.items():
+    scope = TESTS.scope(name, default=(name == "debug"))
+    programs = toolchain(configuration).executables(fac.sources("tests/*.c"), libraries=LIBRARIES[name], scope=scope)
+    RUN_TASKS.append({"scope": scope, "programs": programs})
 
-fac.c.compile_commands(scope="*.debug", default=True)
+
+@fac.task(each=RUN_TASKS)
+def run(scope: fac.Scope, args: fac.Args, programs: list[fac.Input]):
+    for program in programs:
+        fac.run(program, args, env={"UBSAN_OPTIONS": "print_stacktrace=1"})
+
+
+fac.c.compile_commands(match="*.debug", default=True)

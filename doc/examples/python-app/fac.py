@@ -70,7 +70,7 @@ def test():
 def run():
     """Run the app from source."""
     fac.give_lock()
-    DEV.run(NAME, inherit=True)
+    DEV.run(NAME)
 
 
 @fac.task
@@ -105,8 +105,7 @@ def pypi(sources: list[fac.Input] = PACKAGE, out: fac.Output = PYPI):
 @fac.task
 def publish(packages: fac.Input = PYPI):
     """Publish the sdist and wheel to PyPI through trusted publishing, from CI."""
-    trusted = ["GITHUB_ACTIONS", "ACTIONS_ID_TOKEN_REQUEST_URL", "ACTIONS_ID_TOKEN_REQUEST_TOKEN"]
-    fac.run("uv", "publish", sorted(glob.glob(f"{packages}/*")), inherit=trusted)
+    fac.run("uv", "publish", sorted(glob.glob(f"{packages}/*")))
 
 
 @fac.task

@@ -23,7 +23,7 @@ Where shared code truly must compile differently per program, such as an `#ifdef
 
 ## API
 
-A `Toolchain` holds a compiler and the flags every call would otherwise repeat. Its methods and `compile_commands` define their rules when called, at collection, place every output with `fac.out()`, so they follow the open `fac.scope`, and take `default=True`, passed on to their rules. They name an executable's rule after its program, a library's after its file's stem, such as `libcommon`, and every compile `object_file`, so an override or `fac.rules` reaches every compile through one function. `inputs` joins every compile a method defines as order-only inputs, for a generated header that must exist before the first compile.
+A `Toolchain` holds a compiler and the flags every call would otherwise repeat. Its methods and `compile_commands` define their rules when called, at collection, take `scope=`, a [scope](../names.md#declaring-names) value placing every output with `scope.out()` and naming the rules in it, else `fac.out()` and the calling `fac.py`'s names, and take `default=True`, passed on to their rules. They name an executable's rule after its program, a library's after its file's stem, such as `libcommon`, and every compile `object_file`, so an override or `fac.rules` reaches every compile through one function. `inputs` joins every compile a method defines as order-only inputs, for a generated header that must exist before the first compile.
 
 | Name | Provides |
 |---|---|
@@ -32,7 +32,7 @@ A `Toolchain` holds a compiler and the flags every call would otherwise repeat. 
 | `.static_library(path, sources, inputs=())` | the sources compiled and archived, deleting the old archive first, since `ar` keeps members whose sources are gone |
 | `.executable(path, sources, libraries=(), inputs=())` | the sources compiled and linked into one program |
 | `.executables(mains, libraries=(), inputs=())` | one program per main, named after it, each linked against the libraries |
-| `compile_commands(scope=None)` | `compile_commands.json` at the top of the current scope's output directory, for every compile `facere.c` defines in that scope, or in the scopes the pattern `scope` matches, so a root call such as `compile_commands(scope="*.debug")` gathers one configuration from every program |
+| `compile_commands(scope=None, match=None)` | `compile_commands.json` at the top of `scope`'s output directory, else the output directory, for every compile `facere.c` defines in that scope, or in the scopes the pattern `match` matches, so a root call such as `compile_commands(match="*.debug")` gathers one configuration from every program |
 | `makefile_deps(path)` | the files a depfile lists, for `fac.add_inputs`, in the Makefile-fragment format that gcc, clang, nvcc, and `rustc --emit=dep-info` share |
 
 The shortest project is one call:
@@ -53,14 +53,13 @@ class Toolchain:
     cflags: list[str] = field(default_factory=list)
     ldflags: list[str] = field(default_factory=list)
 
-    def object_files(self, sources, inputs=(), default=False):
+    def object_files(self, sources, inputs=(), scope=None, default=False):
         """Compile each C source to an object file, tracking the headers it includes."""
-        objects = [fac.out(src, ".o") for src in sources]
+        place = scope.out if scope else fac.out
+        objects = [place(src, ".o") for src in sources]
         fac.rule(
-            each=[{"src": src, "obj": obj} for src, obj in zip(sources, objects)],
-            cc=self.cc,
-            cflags=self.cflags,
-            inputs=inputs,
+            each=[{"src": src, "obj": obj, "scope": scope} for src, obj in zip(sources, objects)],
+            values={"cc": self.cc, "cflags": self.cflags, "inputs": inputs},
             default=default,
         )(object_file)
         return objects
@@ -70,26 +69,32 @@ def compile_args(src, obj, cc, cflags):
     return [cc, *cflags, "-MD", "-MF", f"{obj}.d", "-c", src, "-o", obj]
 
 
-def object_file(src: fac.Input, obj: fac.Output, cc, cflags, inputs: list[fac.OrderOnly]):
+def object_file(
+    src: fac.Input, obj: fac.Output, scope: fac.Scope, cc, cflags, inputs: list[fac.OrderOnly]
+):
     fac.run(*compile_args(src, obj, cc, cflags))
     fac.add_inputs(makefile_deps(f"{obj}.d"))
     os.remove(f"{obj}.d")
 
 
-def compile_commands(scope=None, default=False):
-    """Write compile_commands.json for every compile in the current scope, or in the scopes scope matches."""
-    path = fac.out(fac.from_root("compile_commands.json"))
-    if scope is None:
-        compiles = fac.rules(object_file, under=fac.out(fac.from_root(".")))
+def compile_commands(scope=None, match=None, default=False):
+    """Write compile_commands.json for every compile in scope, or in the scopes match matches."""
+    place = scope.out if scope else fac.out
+    path = place("compile_commands.json")
+    if match is None:
+        compiles = fac.rules(object_file, under=place())
     else:
-        compiles = fac.rules(object_file, scope=scope)
+        compiles = fac.rules(object_file, scope=match)
     fac.rule(
-        path=path, compiles=compiles, root=os.getcwd(), name="compile_commands", default=default
+        each=[{"path": path, "scope": scope}],
+        values={"compiles": compiles, "root": os.getcwd()},
+        name="compile_commands",
+        default=default,
     )(write_compile_commands)
     return path
 
 
-def write_compile_commands(path: fac.Output, compiles, root):
+def write_compile_commands(path: fac.Output, scope: fac.Scope, compiles, root):
     entries = [
         {
             "directory": root,
@@ -137,7 +142,7 @@ gcc honors the last `-O` it sees, and since GCC 5 per-function optimization opti
 
 ## Configurations
 
-A configuration compiles the same source differently, so each needs its own objects and its own output directory: one `fac.scope` per configuration, inside one scope per program, so names read program first, as in `server.release`. Programs built mostly from the same objects share them through a `common` scope archived once per configuration, which each program links by path. A vendored dependency gets a toolchain of its own that takes each configuration's optimization and sanitizer flags, so ASan sees one consistent program, but not the project's warnings or `-Werror`. Release archives LTO objects with `gcc-ar`, which plain `ar` may not understand.
+A configuration compiles the same source differently, so each needs its own objects and its own output directory: one scope per configuration, made inside one scope per program as `fac.scope("server").scope("release")`, so names read program first, as in `server.release`, and each configuration is a row passed to the toolchain's methods as `scope=`. Programs built mostly from the same objects share them through a `common` scope archived once per configuration, which each program links by path. A vendored dependency gets a toolchain of its own that takes each configuration's optimization and sanitizer flags, so ASan sees one consistent program, but not the project's warnings or `-Werror`. Release archives LTO objects with `gcc-ar`, which plain `ar` may not understand.
 
 ## Future work
 
@@ -146,4 +151,4 @@ MSVC. Its flags differ throughout, its header list comes from `cl /showIncludes`
 ## Open risks
 
 - **Relinking.** Any changed object rebuilds its library, and every program relinks against it, though compiles stay precise.
-- **Every compile waits for every generated header** in the first invocation, since `inputs=` orders them all before any compile.
+- **Every compile waits for every generated header** in the first invocation, since `inputs=` orders them all before any compile, and adding a path to `inputs=` re-executes every compile given it, since order-only paths always join the fingerprint.
