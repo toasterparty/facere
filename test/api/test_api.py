@@ -209,6 +209,11 @@ def test_repeated_calls_share_no_definitions(root: Path, fac: Fac) -> None:
     ]
 
 
+@pytest.mark.project("namespace_packages")
+def test_repeated_calls_share_no_package_without_init(root: Path, fac: Fac) -> None:
+    assert [fac(cwd=root / name).out for name in ("one", "two")] == ["one\n", "two\n"]
+
+
 @pytest.mark.project("imports_fac_py")
 def test_importing_fac_py_fails_saying_it_ran_twice(fac: Fac) -> None:
     result = fac()

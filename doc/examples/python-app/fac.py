@@ -24,7 +24,9 @@ DEV = fac.uv.Project(env=CACHE)
 RELEASE = fac.uv.Project(venv=fac.out("release/.venv"), editable=False, env=CACHE)
 PACKAGE = fac.sources(f"{MODULE}/**") + DEV.inputs + ["setup.cfg", "README.md", "LICENSE"]
 PYPI = fac.out("pypi")
-ARCHIVE = fac.out(f"{NAME}-v{VERSION}-{PLATFORM}" + (".zip" if PLATFORM == "windows" else ".tar.gz"))
+ARCHIVE = fac.out(
+    f"{NAME}-v{VERSION}-{PLATFORM}" + (".zip" if PLATFORM == "windows" else ".tar.gz")
+)
 
 NUITKA = [
     "--mode=standalone",

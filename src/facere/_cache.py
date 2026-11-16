@@ -9,7 +9,13 @@ import time
 from collections.abc import Iterator
 from typing import NamedTuple
 
-from facere._context import calc_path_key, is_within, iter_self_and_parents
+from facere._context import (
+    STATE_DIR_NAME,
+    calc_path_key,
+    holds_state,
+    is_within,
+    iter_self_and_parents,
+)
 from facere._filesystem import FileSystems
 from facere._hash import feed
 
@@ -155,7 +161,7 @@ class HashCache:
         if entry.is_dir():
             resolved = os.path.realpath(child)
             if resolved in enclosing:
-                return Hashed(_calc_link_stamp(child), "L" + os.readlink(child))
+                return _hash_link(child)
             return self._fetch_tree(child, enclosing | {resolved}, new_files)
         if entry.is_file():
             is_new = child not in self._entries
@@ -165,7 +171,7 @@ class HashCache:
                 new_files.append(child)
             return hashed
         if entry.is_symlink():
-            return Hashed(_calc_link_stamp(child), "L" + os.readlink(child))
+            return _hash_link(child)
         return Hashed(_calc_link_stamp(child), "O")
 
     def _forget(self, path: str) -> None:
@@ -213,11 +219,12 @@ class Snapshot:
             return False
         if is_within(path, self._out_dir):
             return False
-        directories = path.split("/")[:-1]
-        if any(part.startswith(".") for part in directories):
+        directory = posixpath.dirname(path)
+        if any(part.startswith(".") for part in directory.split("/")):
             return False
         return not any(
-            os.path.islink("/".join(directories[: index + 1])) for index in range(len(directories))
+            os.path.islink(parent) or holds_state(parent)
+            for parent in iter_self_and_parents(directory)
         )
 
     def _find_marks_by_key(self, key: str) -> list[str | None]:
@@ -229,9 +236,12 @@ class Snapshot:
 
 
 def iter_listed_files(out_dir: str) -> Iterator[str]:
-    """Yield every file under the working directory, as normalize returns them, outside `out_dir` and any hidden directory, without entering a linked directory."""
+    """Yield every file under the working directory, as normalize returns them, outside `out_dir`, any other directory holding Facere's state, and any hidden directory, without entering a linked directory."""
     for directory, subdirectories, names in os.walk("."):
         relative = posixpath.normpath(directory.replace(os.sep, "/"))
+        if relative != "." and STATE_DIR_NAME in subdirectories and holds_state(relative):
+            subdirectories.clear()
+            continue
         subdirectories[:] = [
             name
             for name in subdirectories
@@ -246,6 +256,10 @@ def _calc_stamp(path: str, info: os.stat_result) -> tuple[str, int]:
     """Return the stamp of the file at `path` that `info` describes, and when it last changed, its content or metadata."""
     change_ns = read_change_time_ns(path) if sys.platform == "win32" else info.st_ctime_ns
     return _format_stamp(info, change_ns), max(info.st_mtime_ns, change_ns)
+
+
+def _hash_link(path: str) -> Hashed:
+    return Hashed(_calc_link_stamp(path), "L" + os.readlink(path))
 
 
 def _calc_link_stamp(path: str) -> str:

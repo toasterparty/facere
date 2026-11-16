@@ -262,6 +262,14 @@ def test_new_file_in_a_hidden_directory_is_never_listed(root: Path, fac: Fac) ->
     assert fac("-C", "project", "compile").err == UP_TO_DATE_ONE
 
 
+@pytest.mark.project("second_out")
+def test_files_another_output_directory_holds_are_never_listed(fac: Fac) -> None:
+    fac()
+    fac("--out", "build2")
+
+    assert fac().err == "Finished in <elapsed>. No work to do. 2 outputs up to date.\n"
+
+
 @pytest.mark.project("outside_root")
 def test_invocation_that_skips_the_shadowed_rule_keeps_it_stale(root: Path, fac: Fac) -> None:
     fac("-C", "project", "compile")
@@ -408,6 +416,18 @@ def test_rule_output_a_command_rewrites_as_it_was_before_its_first_report_never_
 def test_file_first_reported_from_a_hidden_directory_settles_after_one_execution(
     fac: Fac,
 ) -> None:
+    assert fac().err == EXECUTED_ONE
+
+    assert fac().err == UP_TO_DATE_ONE
+
+
+@pytest.mark.project("state_report")
+def test_file_first_reported_from_another_output_directory_settles_after_one_execution(
+    root: Path, fac: Fac
+) -> None:
+    (root / "build2").mkdir()
+    (root / "build2" / "a.h").write_text("sdk")
+    fac("--out", "build2")
     assert fac().err == EXECUTED_ONE
 
     assert fac().err == UP_TO_DATE_ONE

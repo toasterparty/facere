@@ -24,7 +24,7 @@ def greeting(path: fac.Output, text: str):
     fac.write_text(path, text)
 ```
 
-`fac greeting` builds both. Annotate a value `str` where it may look like a path, since an unannotated value naming a file under the root is an error. *(planned)* Keyword arguments become Facere's own options alone, so these two rules become two rows of `each=`, and a value every rule shares goes in `values={"text": "hello"}`.
+`fac greeting` builds both. Annotate a value `str` where it may look like a path, since an unannotated value naming a file under the root is an error. *(planned)* `fac.Text` takes the role of `str` here. Keyword arguments become Facere's own options alone, so these two rules become two rows of `each=`, and a value every rule shares goes in `values={"text": "hello"}`.
 
 ## Rows
 

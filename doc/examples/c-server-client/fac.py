@@ -51,7 +51,9 @@ for name, configuration in CONFIGURATIONS.items():
     vendor = fac.c.Toolchain(ar="gcc-ar", cflags=configuration["cflags"])
     common_sources = fac.sources("src/common/**/*.c")
     LIBRARIES[name] = [
-        toolchain(configuration).static_library("libcommon.a", common_sources, inputs=[CJSON_H], scope=scope),
+        toolchain(configuration).static_library(
+            "libcommon.a", common_sources, inputs=[CJSON_H], scope=scope
+        ),
         vendor.static_library("libcjson.a", [CJSON_C], scope=scope),
     ]
 
@@ -69,7 +71,9 @@ for program in PROGRAMS:
 TESTS = fac.scope("tests")
 for name, configuration in CONFIGURATIONS.items():
     scope = TESTS.scope(name, default=(name == "debug"))
-    programs = toolchain(configuration).executables(fac.sources("tests/*.c"), libraries=LIBRARIES[name], scope=scope)
+    programs = toolchain(configuration).executables(
+        fac.sources("tests/*.c"), libraries=LIBRARIES[name], scope=scope
+    )
     RUN_TASKS.append({"scope": scope, "programs": programs})
 
 

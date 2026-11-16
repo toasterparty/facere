@@ -9,14 +9,13 @@ from pathlib import PurePosixPath
 from typing import Annotated, Any, TypeVar, overload
 
 from facere._context import (
-    STATE_DIR_NAME,
-    STATE_FILE_NAME,
     Context,
     Declaration,
     Kind,
     calc_path_key,
     find_context,
     get_context,
+    holds_state,
     is_under_root,
     is_within,
     is_within_any,
@@ -233,25 +232,24 @@ def _glob(context: Context, pattern: str) -> list[str]:
     if relative.is_absolute() or os.path.isabs(pattern) or ".." in relative.parts:
         raise ValueError(f"fac.sources takes globs under the root, not {pattern!r}")
     paths = []
-    holds_state: dict[str, bool] = {}
+    is_state_by_directory: dict[str, bool] = {}
     for match in glob.glob(pattern, root_dir=context.root, recursive=True):
         path = normalize(match, context.root)
         absolute = os.path.join(context.root, path)
         is_listed = is_under_root(absolute, context.root) and not is_within(path, context.out_dir)
         if not is_listed or not os.path.isfile(absolute):
             continue
-        if not _is_in_output_directory(context.root, path, holds_state):
+        if not _is_in_output_directory(context.root, path, is_state_by_directory):
             paths.append(path)
     return paths
 
 
-def _is_in_output_directory(root: str, path: str, holds_state: dict[str, bool]) -> bool:
-    """Say whether `path` lies in a directory holding Facere's state, as another `--out` leaves one, caching each directory's answer in `holds_state`."""
+def _is_in_output_directory(root: str, path: str, is_state_by_directory: dict[str, bool]) -> bool:
+    """Say whether `path` lies in a directory holding Facere's state, as another `--out` leaves one, caching each directory's answer in `is_state_by_directory`."""
     for directory in iter_self_and_parents(posixpath.dirname(path)):
-        if directory not in holds_state:
-            state = os.path.join(root, directory, STATE_DIR_NAME, STATE_FILE_NAME)
-            holds_state[directory] = os.path.isfile(state)
-        if holds_state[directory]:
+        if directory not in is_state_by_directory:
+            is_state_by_directory[directory] = holds_state(os.path.join(root, directory))
+        if is_state_by_directory[directory]:
             return True
     return False
 

@@ -241,6 +241,36 @@ def test_changed_shared_module_code_the_recipe_never_reaches_reruns_nothing(
     assert result.err == "Finished in <elapsed>. No work to do. 1 output up to date.\n"
 
 
+@pytest.mark.project("module_value")
+def test_changed_shared_module_a_helper_receives_as_an_argument_reruns_the_rule(
+    root: Path, fac: Fac
+) -> None:
+    fac()
+    edit(root / "textutil.py", 'MARK = "!"', 'MARK = "?"')
+
+    assert fac().err == "Finished in <elapsed>. Executed 2 rules.\n"
+    assert (root / "build" / "a.txt").read_text() == "HI?"
+    assert (root / "build" / "b.txt").read_text() == "HO?"
+
+
+@pytest.mark.project("held_module")
+def test_changed_shared_module_a_constant_holds_reruns_the_rule(root: Path, fac: Fac) -> None:
+    fac()
+    edit(root / "textutil.py", 'MARK = "!"', 'MARK = "?"')
+
+    assert fac().err == "Finished in <elapsed>. Executed 1 rule.\n"
+    assert (root / "build" / "a.txt").read_text() == "HI?"
+
+
+@pytest.mark.project("namespace_package")
+def test_changed_module_in_a_package_without_init_reruns_the_rule(root: Path, fac: Fac) -> None:
+    fac()
+    edit(root / "tools" / "textutil.py", '"!"', '"?"')
+
+    assert fac().err == "Finished in <elapsed>. Executed 1 rule.\n"
+    assert (root / "build" / "a.txt").read_text() == "HI?"
+
+
 @pytest.mark.project("two_outputs")
 def test_outputs_swapped_between_parameters_rerun_the_rule(root: Path, fac: Fac) -> None:
     fac()
@@ -567,6 +597,26 @@ def test_changed_constant_a_nested_class_reads_reruns_the_rule(root: Path, fac: 
     assert (root / "build" / "a.txt").read_text() == "HI?"
 
 
+@pytest.mark.project("class_body")
+def test_changed_constant_a_class_body_binds_reruns_the_rule(root: Path, fac: Fac) -> None:
+    fac()
+    edit(root / "fac.py", 'MARK = "!"', 'MARK = "?"')
+
+    assert fac().err == "Finished in <elapsed>. Executed 1 rule.\n"
+    assert (root / "build" / "a.txt").read_text() == "HI?"
+
+
+@pytest.mark.project("class_body")
+def test_changed_function_a_class_body_binds_as_a_method_reruns_the_rule(
+    root: Path, fac: Fac
+) -> None:
+    fac()
+    edit(root / "fac.py", "text.upper()", "text.title()")
+
+    assert fac().err == "Finished in <elapsed>. Executed 1 rule.\n"
+    assert (root / "build" / "a.txt").read_text() == "Hi!"
+
+
 @pytest.mark.project("held_value")
 def test_changed_method_of_a_class_a_value_holds_reruns_the_rule(root: Path, fac: Fac) -> None:
     fac()
@@ -587,6 +637,17 @@ def test_value_holding_a_set_hashes_alike_under_any_hash_seed(
     result = run_fac(root)
 
     assert result.err == "Finished in <elapsed>. No work to do. 2 outputs up to date.\n"
+
+
+@pytest.mark.project("set_value")
+def test_value_changed_from_a_set_to_an_equal_frozenset_reruns_the_rule(
+    root: Path, fac: Fac
+) -> None:
+    fac()
+    edit(root / "fac.py", 'marks={"!"}', 'marks=frozenset({"!"})')
+
+    assert fac().err == "Finished in <elapsed>. Executed 1 rule.\n"
+    assert (root / "build" / "a.txt").read_text() == "frozenset({'!'})"
 
 
 @pytest.mark.project("pattern_default")

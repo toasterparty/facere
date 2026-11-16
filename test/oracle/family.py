@@ -5,7 +5,6 @@ Four rule functions chain. `generate` writes one header per row. `compile` expan
 
 from __future__ import annotations
 
-import copy
 import enum
 import functools
 import posixpath
@@ -47,23 +46,20 @@ ENVS: tuple[dict[str, str | None], ...] = (
 _T = TypeVar("_T")
 
 
-class Gap(enum.Enum):
-    """Something Facere gets wrong today, which the family leaves out while OPEN_GAPS holds its member."""
-
-    # A set and a frozenset of equal items hash alike, so swapping one for the other executes nothing.
-    SET_KINDS = enum.auto()
-    # A function a constant holds, as in a dict of handlers, hashes by name alone, where the design hashes its module.
-    HELD_FUNCTIONS = enum.auto()
-    # A constant a class body binds to an attribute stays out of the fingerprint.
-    CLASS_CONSTANTS = enum.auto()
-
-
-OPEN_GAPS = frozenset(Gap)
-"""The gaps not yet fixed. Remove a member to generate what it left out, then delete it with its guards once the oracle passes."""
-
 VALUES: tuple[object, ...] = (
-    *(1, True, 0, False, 1.0, "1", b"1", None, (1,), [1], {1}, {"k": 1}),
-    *(() if Gap.SET_KINDS in OPEN_GAPS else (frozenset({1}),)),
+    1,
+    True,
+    0,
+    False,
+    1.0,
+    "1",
+    b"1",
+    None,
+    (1,),
+    [1],
+    {1},
+    frozenset({1}),
+    {"k": 1},
 )
 
 _PRELUDES = {
@@ -152,10 +148,7 @@ class Form(enum.Enum):
     HELD = enum.auto()
 
 
-_FORMS = [form for form in Form if form is not Form.HELD or Gap.HELD_FUNCTIONS not in OPEN_GAPS]
-_K1_BINDING_FORMS = (
-    (Form.DEFAULT,) if Gap.CLASS_CONSTANTS in OPEN_GAPS else (Form.DEFAULT, Form.METHOD)
-)
+_K1_BINDING_FORMS = (Form.DEFAULT, Form.METHOD)
 
 
 class File(NamedTuple):
@@ -403,8 +396,6 @@ class Project:
             shown = repr(code.bound) if code.form in (Form.CLOSURE, Form.METHOD) else None
             facts[f"code {code.key}"] = (code.name, code.salt, code.noise, code.form, shown)
             defaults = [(code.module, "K1")] if code.form in _K1_BINDING_FORMS else []
-            if code.form is Form.HELD:
-                facts[f"syntax of {code.module}.py"] = self._render_syntax(code.module)
             for module, name in (*code.reads, *defaults):
                 facts[f"constant {module}.{name}"] = repr(self.constants[module, name])
             pending.extend(self.helpers[key] for key in code.calls)
@@ -412,14 +403,6 @@ class Project:
 
     def _calc_link_outputs(self) -> tuple[str, str]:
         return ("app.map", "app.txt") if self.is_swapped else ("app.txt", "app.map")
-
-    def _render_syntax(self, module: str) -> str:
-        """Return `module` as it renders without the comments, docstrings, and blank lines an edit to a layout changes, which is what its syntax tree holds."""
-        bare = copy.deepcopy(self)
-        bare.module_layouts = dict.fromkeys(MODULES, 0)
-        for code in bare.find_codes().values():
-            code.layout = 0
-        return bare._render_module(module)
 
     def _render_module(self, module: str) -> str:
         lines = [f"# layout {index}" for index in range(self.module_layouts[module])]
@@ -465,13 +448,11 @@ class Project:
                 ]
             case Form.METHOD:
                 method = self._render_function(helper, "def apply(self, text):", "text", ())
-                binds_constant = Form.METHOD in _K1_BINDING_FORMS
                 return [
                     f"class {name}_base:",
-                    *(["    mark = K1"] if binds_constant else []),
+                    "    mark = K1",
                     "    def finish(self, text):",
-                    f"        bound = {helper.bound!r}",
-                    *(["        bound = (bound, self.mark)"] if binds_constant else []),
+                    f"        bound = ({helper.bound!r}, self.mark)",
                     f'        return f"{{text}}[{helper.key} base {{bound!r}}]"',
                     f"class {name}({name}_base):",
                     *_indent([*method, "    return self.finish(text)"]),
@@ -557,7 +538,7 @@ def subsets(items: list[_T], max_size: int = 2) -> st.SearchStrategy[tuple[_T, .
 def projects(draw: st.DrawFn) -> Project:
     """Return a strategy for a member of the family whose every include resolves, and whose helpers mostly have a caller."""
     helpers = {
-        f"u{index}": draw(_codes(f"u{index}", st.sampled_from(MODULES), st.sampled_from(_FORMS)))
+        f"u{index}": draw(_codes(f"u{index}", st.sampled_from(MODULES), st.sampled_from(Form)))
         for index in range(draw(st.integers(2, 4)))
     }
     recipes = {name: draw(_codes(name, st.just("fac"), st.just(Form.PLAIN))) for name in RECIPES}

@@ -136,6 +136,11 @@ def iter_self_and_parents(path: str) -> Iterator[str]:
         path = parent
 
 
+def holds_state(directory: str) -> bool:
+    """Say whether `directory` holds Facere's state, as each output directory a build used does."""
+    return os.path.isfile(os.path.join(directory, STATE_DIR_NAME, STATE_FILE_NAME))
+
+
 def is_within_any(key: str, directories: Container[str]) -> bool:
     """Say whether the path key `key` is one of `directories`, or lies inside one."""
     return any(path in directories for path in iter_self_and_parents(key))

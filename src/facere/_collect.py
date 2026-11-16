@@ -38,9 +38,11 @@ from facere._hash import (
     calc_code_text,
     feed,
     feed_value,
+    find_class_reads,
     find_closure_values,
     find_default_values,
     find_methods,
+    find_module_values,
     find_named_parameters,
     find_read_globals,
     iter_strings,
@@ -49,7 +51,7 @@ from facere._version import VERSION
 
 MODULE_NAME = "__fac__"
 _RESERVED_OPTIONS = ("each", "name", "default", "max_jobs", "terminal", "always", "clear")
-_FINGERPRINT_FORMAT = b"facere fingerprint 6"
+_FINGERPRINT_FORMAT = b"facere fingerprint 7"
 _UNREADABLE_SOURCE = (OSError, LookupError, SyntaxError, ValueError)
 _PATH_ANNOTATIONS = {
     Kind.INPUT: "fac.Input",
@@ -286,7 +288,7 @@ def _check_import(context: Context, location: Location, name: str) -> Diagnostic
     candidates = [(f"{name}.py", f"{name}.py"), (f"{name}/__init__.py", f"{name}/")]
     held = [shown for path, shown in candidates if os.path.isfile(os.path.join(context.root, path))]
     module = sys.modules.get(name)
-    if not held or module is None or _is_from_root(context, module):
+    if not held or module is None or is_from_root(context.root, module):
         return None
     cause = f"since an earlier sys.path entry shadows {held[0]}"
     path = getattr(module, "__file__", None)
@@ -299,14 +301,19 @@ def _check_import(context: Context, location: Location, name: str) -> Diagnostic
     return Diagnostic(location, message, (Note(Location(path, 1, 1), f"{name} resolves here"),))
 
 
-def _is_from_root(context: Context, module: types.ModuleType) -> bool:
+def is_from_root(root: str, module: types.ModuleType) -> bool:
+    """Say whether `module` was imported from under `root`, a namespace package by any of its directories."""
     paths = [getattr(module, "__file__", None), *getattr(module, "__path__", ())]
-    return any(isinstance(path, str) and is_under_root(path, context.root) for path in paths)
+    return any(isinstance(path, str) and is_under_root(path, root) for path in paths)
 
 
 def _is_project_source(context: Context, path: str) -> bool:
     """Say whether `path` is Python the project wrote: under the root, outside the output directory, and in no hidden directory, where a virtual environment lives."""
-    if not path.endswith(".py") or not is_under_root(path, context.root):
+    return path.endswith(".py") and _is_project_path(context, path)
+
+
+def _is_project_path(context: Context, path: str) -> bool:
+    if not is_under_root(path, context.root):
         return False
     relative = normalize(path, context.root)
     parts = relative.split("/")
@@ -729,24 +736,17 @@ def _feed_reach(
     context: Context,
     digest: hashlib._Hash,
     recipe: types.FunctionType | None,
-    pending: list[types.FunctionType],
+    pending: list[Code],
     output_keys: Container[str],
     trees: dict[str, ast.Module],
     seen: set[object],
 ) -> list[str]:
-    """Feed `digest` the values that each of `pending` reads, the defaults of all but `recipe` included, and the syntax tree and values of every function and class of the project's they reach that `seen` lacks, returning what's wrong with them."""
+    """Feed `digest` the values that each of `pending` reads, the defaults of all but `recipe` included, and the syntax tree and values of every function, class, and module of the project's they reach that `seen` lacks, returning what's wrong with them."""
     problems = []
     while pending:
         current = pending.pop(0)
-        suffix = "" if current is recipe else f" through {current.__qualname__}"
-        for kind, values in (
-            (
-                "global",
-                find_read_globals(current, lambda module: _is_project_code(context, module)),
-            ),
-            ("closure variable", find_closure_values(current)),
-            ("default", {} if current is recipe else find_default_values(current)),
-        ):
+        suffix = "" if current is recipe else f" through {_calc_label(current)}"
+        for kind, values in _find_reads(context, current, recipe, trees):
             named = {f"{name}{suffix}": value for name, value in values.items()}
             held: list[Code] = []
             problems.extend(_feed_values(context, digest, kind, named, output_keys, False, held))
@@ -758,6 +758,32 @@ def _feed_reach(
     return problems
 
 
+def _find_reads(
+    context: Context,
+    code: Code,
+    recipe: types.FunctionType | None,
+    trees: dict[str, ast.Module],
+) -> tuple[tuple[str, dict[str, object]], ...]:
+    """Return what `code` reads, by kind: a function's globals, closure variables, and defaults unless it is `recipe`, what a class body read, or every global of a module."""
+
+    def follow(module: types.ModuleType) -> bool:
+        return _is_project_code(context, module)
+
+    if isinstance(code, types.ModuleType):
+        return (("global", find_module_values(code)),)
+    if isinstance(code, type):
+        return (("global", find_class_reads(code, trees, follow)),)
+    return (
+        ("global", find_read_globals(code, follow)),
+        ("closure variable", find_closure_values(code)),
+        ("default", {} if code is recipe else find_default_values(code)),
+    )
+
+
+def _calc_label(code: Code) -> str:
+    return code.__name__ if isinstance(code, types.ModuleType) else code.__qualname__
+
+
 def _feed_held_code(
     context: Context,
     digest: hashlib._Hash,
@@ -765,8 +791,8 @@ def _feed_held_code(
     output_keys: Container[str],
     trees: dict[str, ast.Module],
 ) -> list[str]:
-    """Feed `digest` the syntax tree and values of the project's functions and classes among `values`, and of all they reach, returning what's wrong with them."""
-    pending: list[types.FunctionType] = []
+    """Feed `digest` the syntax tree and values of the project's functions, classes, and modules among `values`, and of all they reach, returning what's wrong with them."""
+    pending: list[Code] = []
     seen: set[object] = set()
     problems = _feed_newly_reached(context, digest, values, trees, seen, pending)
     return [*problems, *_feed_reach(context, digest, None, pending, output_keys, trees, seen)]
@@ -778,9 +804,9 @@ def _feed_newly_reached(
     values: list[object],
     trees: dict[str, ast.Module],
     seen: set[object],
-    pending: list[types.FunctionType],
+    pending: list[Code],
 ) -> list[str]:
-    """Feed `digest` the syntax tree of the project's code that `values` reach and `seen` lacks, adding the functions whose reads join the fingerprint to `pending`, and return what's wrong with that code."""
+    """Feed `digest` the syntax tree of the project's code that `values` reach and `seen` lacks, adding the code whose reads join the fingerprint to `pending`, and return what's wrong with that code."""
     problems = []
     for code in (code for value in values for code in _find_reached(value)):
         if not _is_project_code(context, code) or code in seen:
@@ -790,22 +816,28 @@ def _feed_newly_reached(
         if problem is not None:
             problems.append(problem)
             continue
-        pending.extend(_find_callables(code, seen))
+        pending.extend(_find_readers(code, seen))
     return problems
 
 
 def _find_reached(value: object) -> list[Code]:
-    """Return the code that naming `value` reaches: a function, the one its decorators wrap, or a class and those it inherits from."""
+    """Return the code that naming `value` reaches: a function, the one its decorators wrap, a class and those it inherits from, or a module."""
     if isinstance(value, types.FunctionType):
         unwrapped = inspect.unwrap(value)
         reached = [value, unwrapped] if unwrapped is not value else [value]
         return [code for code in reached if isinstance(code, types.FunctionType)]
     if isinstance(value, type):
         return list(value.__mro__)
+    if isinstance(value, types.ModuleType):
+        return [value]
     return []
 
 
 def _feed_definition(digest: hashlib._Hash, code: Code, trees: dict[str, ast.Module]) -> str | None:
+    """Feed `digest` the syntax tree of `code`, or only the name of a module, whose every global joins the fingerprint as a value instead, returning what's wrong with it."""
+    if isinstance(code, types.ModuleType):
+        feed(digest, b"reached", code.__name__.encode())
+        return None
     try:
         text = (
             calc_code_text(code, trees, keep_decorators=True)
@@ -819,24 +851,27 @@ def _feed_definition(digest: hashlib._Hash, code: Code, trees: dict[str, ast.Mod
     return None
 
 
-def _find_callables(value: Code, seen: set[object]) -> list[types.FunctionType]:
-    """Return the functions whose reads join a fingerprint once `value` is reached: `value` itself, or a class's methods and those of the classes nested in it."""
-    if isinstance(value, types.FunctionType):
+def _find_readers(value: Code, seen: set[object]) -> list[Code]:
+    """Return the code whose reads join a fingerprint once `value` is reached: a function or module itself, or a class, its methods, and the classes nested in it with their methods."""
+    if not isinstance(value, type):
         return [value]
-    callables = []
+    readers: list[Code] = [value]
     for method in find_methods(value):
-        if method not in seen:
+        if method in seen:
+            continue
+        # A function defined elsewhere and bound in the class body stays unseen, so that the body's read of it feeds its syntax tree.
+        if _is_defined_in(method, value):
             seen.add(method)
-            callables.append(method)
+        readers.append(method)
     for nested in vars(value).values():
-        if (
-            isinstance(nested, type)
-            and nested not in seen
-            and nested.__qualname__.startswith(f"{value.__qualname__}.")
-        ):
+        if isinstance(nested, type) and nested not in seen and _is_defined_in(nested, value):
             seen.add(nested)
-            callables.extend(_find_callables(nested, seen))
-    return callables
+            readers.extend(_find_readers(nested, seen))
+    return readers
+
+
+def _is_defined_in(code: types.FunctionType | type, cls: type) -> bool:
+    return code.__qualname__.startswith(f"{cls.__qualname__}.")
 
 
 def _is_project_code(context: Context, value: types.ModuleType | Code) -> bool:
@@ -851,7 +886,15 @@ def _is_project_code(context: Context, value: types.ModuleType | Code) -> bool:
     module = (value.__name__ if isinstance(value, types.ModuleType) else value.__module__) or ""
     if module == "facere" or module.startswith("facere."):
         return False
-    return isinstance(path, str) and _is_project_source(context, os.path.abspath(path))
+    if isinstance(path, str):
+        return _is_project_source(context, os.path.abspath(path))
+    # A namespace package, a directory without __init__.py, has no file.
+    directories = getattr(value, "__path__", ()) if isinstance(value, types.ModuleType) else ()
+    return any(
+        _is_project_path(context, os.path.abspath(directory))
+        for directory in directories
+        if isinstance(directory, str)
+    )
 
 
 def _feed_values(

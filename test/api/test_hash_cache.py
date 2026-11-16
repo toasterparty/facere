@@ -126,6 +126,31 @@ def test_links_in_an_input_tree_that_loop_or_dangle_hash_as_their_text(
     assert fac().err == EXECUTED_ONE
 
 
+@pytest.mark.project("linked_tree")
+def test_edit_in_a_subdirectory_of_an_input_tree_reruns_the_rule(root: Path, fac: Fac) -> None:
+    (root / "tree" / "sub").mkdir()
+    (root / "tree" / "sub" / "b.txt").write_text("hi")
+    assert fac().err == EXECUTED_ONE
+    assert fac().err == UP_TO_DATE_ONE
+
+    (root / "tree" / "sub" / "b.txt").write_text("ho")
+
+    assert fac().err == EXECUTED_ONE
+
+
+@posix_only
+@pytest.mark.project("linked_tree")
+def test_pipe_in_an_input_tree_counts_by_its_presence(root: Path, fac: Fac) -> None:
+    assert sys.platform != "win32"
+    os.mkfifo(root / "tree" / "pipe")
+    assert fac().err == EXECUTED_ONE
+    assert fac().err == UP_TO_DATE_ONE
+
+    os.remove(root / "tree" / "pipe")
+
+    assert fac().err == EXECUTED_ONE
+
+
 @pytest.mark.project("regenerated")
 def test_file_back_in_a_directory_output_after_a_regeneration_dropped_it_makes_the_rule_stale(
     root: Path, fac: Fac

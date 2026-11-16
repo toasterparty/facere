@@ -1,6 +1,6 @@
 # Example: a C server and client, three ways
 
-> **Status:** planned. This example uses `facere.c`, `facere.fetch`, `fac.scope`, and `fac.override`, which no release supports yet, so it does not run on the current release.
+> **Status:** planned. This example uses `facere.c`, `facere.fetch`, `fac.scope`, `each=` on a task, and `fac.override`, which no release supports yet, so it does not run on the current release.
 
 It uses [C support](../../maintainer/design/extensions/c.md) and [Fetching](../../maintainer/design/extensions/fetch.md).
 
@@ -34,7 +34,7 @@ tests/test_message.c
 | test | catch as much as possible | AddressSanitizer and UBSan, with `-fno-sanitize-recover=all` so the first problem aborts. `-fanalyzer` runs GCC's static analyzer on every project compile, and `-Werror` turns every warning, analyzer findings included, into a failure |
 | release | fast and small | `-O2` with LTO. Function and data sections plus `--gc-sections` drop unused code, `-s` strips symbols, and `-DNDEBUG` removes asserts |
 
-Each program is an outer block holding one block per configuration, so names read program first: `server.release` is the release server, `fac server` makes the debug one, its block's default, and `fac '*.release'` makes every program's release build. The shared code is a block of its own, `common`, archived once per configuration, and each program links its configuration's libraries by path. The test binaries are one more such block, `tests`. Every program's configuration has a `run` task, decorated inside the block so it belongs to that configuration: `fac server.debug.run` makes the debug server and starts it, passing anything after `--`, and `fac 'tests.*.run'` runs every configuration's tests. The programs and the debug `compile_commands.json` are the defaults, so a plain `fac` makes the debug programs and what clangd reads.
+Each program is a scope holding one scope per configuration, so names read program first: `server.release` is the release server, `fac server` makes the debug one, its scope's default, and `fac '*.release'` makes every program's release build. The shared code is a scope of its own, `common`, archived once per configuration, and each program links its configuration's libraries by path. The test binaries are one more such scope, `tests`. Every program's configuration and every test configuration has a `run` task, one row of `run`'s `each=` carrying that configuration's scope: `fac server.debug.run` makes the debug server and starts it, passing anything after `--`, and `fac 'tests.*.run'` runs every configuration's tests. The programs and the debug `compile_commands.json` are the defaults, so a plain `fac` makes the debug programs and what clangd reads.
 
 ## Configurations and programs
 
@@ -42,7 +42,7 @@ The configurations and the two programs are different kinds of split. A configur
 
 The shared code is its own library, and each program's private code joins only that program, as the C conventions require, so a `handle_message` defined on both sides never links the wrong one. Separate code also keeps ownership visible in the tree. A test that reaches into one program's internals makes that program's directory a library as well and links it ahead of `common`.
 
-Where shared code truly must compile differently per program, such as an `#ifdef SERVER` in `src/common/`, the C conventions first move the difference into a header or into the program's own directory. If it cannot move, the program's own configuration block archives its own copy of the shared code, at the visible cost of compiling it twice per configuration.
+Where shared code truly must compile differently per program, such as an `#ifdef SERVER` in `src/common/`, the C conventions first move the difference into a header or into the program's own directory. If it cannot move, the program's own configuration scope archives its own copy of the shared code, at the visible cost of compiling it twice per configuration.
 
 ## A component's own flags
 

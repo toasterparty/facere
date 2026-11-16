@@ -2,6 +2,7 @@
 
 import argparse
 import contextlib
+import importlib
 import os
 import sys
 import time
@@ -9,7 +10,7 @@ import types
 from collections.abc import Generator
 
 from facere import _build, _bytecode, _collect
-from facere._context import Context, activate, is_under_root, normalize
+from facere._context import Context, activate, normalize
 from facere._diagnostics import (
     Diagnostic,
     FacereError,
@@ -138,6 +139,8 @@ def _enter_root(root: str, pycache_prefix: str) -> Generator[None]:
     try:
         os.chdir(root)
         sys.path.append(root)
+        # The import system caches directory listings, which a coarse mtime may leave stale across in-process invocations.
+        importlib.invalidate_caches()
         sys.pycache_prefix = pycache_prefix
         _bytecode.ensure_checked(root)
         yield
@@ -216,8 +219,7 @@ def _forget_modules(root: str, saved_modules: dict[str, types.ModuleType]) -> No
     for name, module in list(sys.modules.items()):
         if name in saved_modules:
             continue
-        path = getattr(module, "__file__", None)
-        if name == _collect.MODULE_NAME or (isinstance(path, str) and is_under_root(path, root)):
+        if name == _collect.MODULE_NAME or _collect.is_from_root(root, module):
             del sys.modules[name]
     if _collect.MODULE_NAME in saved_modules:
         sys.modules[_collect.MODULE_NAME] = saved_modules[_collect.MODULE_NAME]

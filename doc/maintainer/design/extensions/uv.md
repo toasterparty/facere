@@ -38,7 +38,7 @@ class Project:
             self.path,
             *([] if self.editable else ["--no-editable"]),
         ]
-        return fac.run("uv", "run", *options, *args, env=variables, **kwargs)
+        fac.run("uv", "run", *options, *args, env=variables, **kwargs)
 ```
 
 Every command runs under the uv on `PATH`, the user's own, which they keep current. A `Project` is a dataclass, so a recipe receives it as a value whose fields join the fingerprint, and it stores root-relative paths, since a recipe executes at the root. `--locked` fails a command when `uv.lock` disagrees with `pyproject.toml`, rather than rewriting the lockfile mid-run.

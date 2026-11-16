@@ -23,8 +23,8 @@ _Node = typing.TypeVar("_Node", bound=ast.AST)
 # Pinned, since a new default protocol could take values apart differently and change every fingerprint.
 _PICKLE_PROTOCOL = 5
 
-Code = types.FunctionType | type
-"""Code a value can hold, whose syntax tree joins a fingerprint when it lies under the root."""
+Code = types.FunctionType | type | types.ModuleType
+"""Code a value can hold, which joins a fingerprint when it lies under the root."""
 
 
 class UnhashableValueError(Exception):
@@ -47,7 +47,7 @@ def feed(digest: hashlib._Hash, tag: bytes, payload: bytes) -> None:
 
 
 def feed_value(digest: hashlib._Hash, value: object) -> list[Code]:
-    """Feed `value` to `digest` by its content, taking apart what is no plain container as pickle would, and return the functions and classes held inside it, `value` itself excluded.
+    """Feed `value` to `digest` by its content, taking apart what is no plain container as pickle would, and return the functions, classes, and modules held inside it, `value` itself excluded.
 
     Raises UnhashableValueError for a value pickle can't take apart, a path object, or a value that holds itself.
     """
@@ -78,6 +78,8 @@ def _feed_value(
         feed(digest, b"Y", value)
     elif isinstance(value, types.ModuleType):
         feed(digest, b"M", value.__name__.encode())
+        if enclosing:
+            held.append(value)
     elif isinstance(value, types.FunctionType | type):
         feed(digest, b"Q", f"{value.__module__}.{value.__qualname__}".encode())
         if enclosing:
@@ -115,7 +117,7 @@ def _feed_composite(
     elif cls is set or cls is frozenset:
         assert isinstance(value, set | frozenset)
         # Sorted, since a set's iteration order varies with PYTHONHASHSEED.
-        feed(digest, b"E", len(value).to_bytes(8, "little"))
+        feed(digest, b"E" if cls is set else b"Z", len(value).to_bytes(8, "little"))
         for item_digest in sorted(_calc_item_digest(item, held, enclosing) for item in value):
             digest.update(item_digest)
     else:
@@ -163,24 +165,79 @@ def iter_strings(value: object) -> Iterator[str]:
 def find_read_globals(
     fn: types.FunctionType, follow: Callable[[types.ModuleType], bool] = lambda _: False
 ) -> dict[str, object]:
-    """Return the module globals that the code of `fn`, or of a function nested in it, reads, by name, and the attributes it reads of each module `follow` accepts, by dotted name."""
-    values: dict[str, object] = {}
-    codes = [fn.__code__]
+    """Return the module globals that the code of `fn`, or of a function nested in it, reads, by name, and the attributes it reads of each module `follow` accepts, by dotted name. A module `follow` accepts is left out where the code only reads its attributes."""
+    return _find_code_reads(fn.__code__, fn.__globals__, follow, lambda _: True)
+
+
+def find_class_reads(
+    cls: type, trees: dict[str, ast.Module], follow: Callable[[types.ModuleType], bool]
+) -> dict[str, object]:
+    """Return what the body of `cls`, whose module has a source file, read as it executed, as find_read_globals returns for a function, leaving out what its methods and nested classes read. A class defined inside a function reads nothing here, since its whole module joins the fingerprint instead."""
+    if "<locals>" in cls.__qualname__:
+        return {}
+    node, path = _find_class_node(cls, trees)
+    module = compile(ast.Module(body=[node], type_ignores=[]), path, "exec")
+    body = _find_class_body(module, node.name)
+    namespace = vars(sys.modules[cls.__module__])
+    # Comprehensions and lambdas are code of their own, unlike methods and nested classes, which are reached apart.
+    return _find_code_reads(body, namespace, follow, lambda code: code.co_name.startswith("<"))
+
+
+def _find_class_body(module: types.CodeType, name: str) -> types.CodeType:
+    """Return the code of the body of the class `name` that compiling its definition alone gave `module`, under the function holding its type parameters where it has any."""
+    codes = [module]
     while codes:
-        code = codes.pop()
+        code = codes.pop(0)
+        if code.co_name == name:
+            return code
+        codes.extend(const for const in code.co_consts if isinstance(const, types.CodeType))
+    raise AssertionError(f"compiling class {name} gave no body")
+
+
+def _find_code_reads(
+    code: types.CodeType,
+    namespace: dict[str, object],
+    follow: Callable[[types.ModuleType], bool],
+    descend: Callable[[types.CodeType], bool],
+) -> dict[str, object]:
+    values: dict[str, object] = {}
+    used_whole: set[str] = set()
+    codes = [code]
+    while codes:
+        current = codes.pop()
         loaded: tuple[str, object] | None = None
-        for instruction in dis.get_instructions(code):
+        for instruction in dis.get_instructions(current):
             if instruction.opname == "EXTENDED_ARG":
                 continue
-            loaded = _find_loaded(fn, instruction, loaded, follow)
+            if (
+                loaded is not None
+                and instruction.opname not in _ATTRIBUTE_LOADS
+                and _is_followed(loaded[1], follow)
+            ):
+                used_whole.add(loaded[0])
+            loaded = _find_loaded(namespace, instruction, loaded, follow)
             if loaded is not None:
                 values[loaded[0]] = loaded[1]
-        codes.extend(const for const in code.co_consts if isinstance(const, types.CodeType))
-    return dict(sorted(values.items()))
+        codes.extend(
+            const
+            for const in current.co_consts
+            if isinstance(const, types.CodeType) and descend(const)
+        )
+    return dict(
+        sorted(
+            (name, value)
+            for name, value in values.items()
+            if name in used_whole or not _is_followed(value, follow)
+        )
+    )
+
+
+def _is_followed(value: object, follow: Callable[[types.ModuleType], bool]) -> bool:
+    return isinstance(value, types.ModuleType) and follow(value)
 
 
 def _find_loaded(
-    fn: types.FunctionType,
+    namespace: dict[str, object],
     instruction: dis.Instruction,
     previous: tuple[str, object] | None,
     follow: Callable[[types.ModuleType], bool],
@@ -189,13 +246,22 @@ def _find_loaded(
     name = instruction.argval
     if instruction.opname in _GLOBAL_LOADS:
         assert isinstance(name, str)
-        return (name, fn.__globals__[name]) if name in fn.__globals__ else None
+        return (name, namespace[name]) if name in namespace else None
     if instruction.opname not in _ATTRIBUTE_LOADS or previous is None:
         return None
     module = previous[1]
-    if not isinstance(module, types.ModuleType) or not follow(module) or not hasattr(module, name):
+    if not _is_followed(module, follow) or not hasattr(module, name):
         return None
     return f"{previous[0]}.{name}", getattr(module, name)
+
+
+def find_module_values(module: types.ModuleType) -> dict[str, object]:
+    """Return every global of `module` but its dunder names, by dotted name: all that code holding the module may read."""
+    return {
+        f"{module.__name__}.{name}": value
+        for name, value in sorted(vars(module).items())
+        if not (name.startswith("__") and name.endswith("__"))
+    }
 
 
 def find_closure_values(fn: types.FunctionType) -> dict[str, object]:
@@ -255,13 +321,28 @@ def _find_function_node(
 
 def calc_class_text(cls: type, trees: dict[str, ast.Module]) -> str:
     """Return a dump of the syntax tree of `cls`, whose module has a source file, without positions or docstrings, or of its whole module where `cls` is defined inside a function, parsing its file into `trees` once."""
+    if "<locals>" in cls.__qualname__:
+        node: ast.AST = _parse(_find_class_path(cls), trees)
+    else:
+        node, _ = _find_class_node(cls, trees)
+    return ast.dump(_strip_docstrings(node), include_attributes=False)
+
+
+def _find_class_path(cls: type) -> str:
     path = getattr(sys.modules.get(cls.__module__), "__file__", None)
     assert isinstance(path, str), f"{cls.__qualname__} has no source file"
+    return path
+
+
+def _find_class_node(cls: type, trees: dict[str, ast.Module]) -> tuple[ast.ClassDef, str]:
+    """Return the definition of `cls`, which no function encloses, and the path of its file."""
+    path = _find_class_path(cls)
     node: ast.AST = _parse(path, trees)
-    if "<locals>" not in cls.__qualname__:
-        for part in cls.__qualname__.split("."):
-            node = _find_child_definition(node, part, path, cls)
-    return ast.dump(_strip_docstrings(node), include_attributes=False)
+    for part in cls.__qualname__.split("."):
+        node = _find_child_definition(node, part, path, cls)
+    if not isinstance(node, ast.ClassDef):
+        raise LookupError(f"found no source for {cls.__qualname__} in {path}")
+    return node, path
 
 
 def find_methods(cls: type) -> list[types.FunctionType]:

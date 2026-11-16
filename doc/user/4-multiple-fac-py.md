@@ -14,7 +14,7 @@ from tools.settings import BASE_URL
 
 ## Separate projects
 
-Today a subdirectory holding a `fac.py` is a project of its own, until *(planned)* one graph loads every `fac.py` below the root, with its own rules and its own `build/`. Run it from anywhere with `-C`:
+Today a subdirectory holding a `fac.py` is a project of its own, with its own rules and its own `build/`, until *(planned)* one graph loads every `fac.py` below the root. Run it from anywhere with `-C`:
 
 ```
 $ fac -C lib

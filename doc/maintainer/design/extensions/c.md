@@ -84,7 +84,7 @@ def compile_commands(scope=None, match=None, default=False):
     if match is None:
         compiles = fac.rules(object_file, under=place())
     else:
-        compiles = fac.rules(object_file, scope=match)
+        compiles = fac.rules(object_file, match=match)
     fac.rule(
         each=[{"path": path, "scope": scope}],
         values={"compiles": compiles, "root": os.getcwd()},
@@ -142,7 +142,7 @@ gcc honors the last `-O` it sees, and since GCC 5 per-function optimization opti
 
 ## Configurations
 
-A configuration compiles the same source differently, so each needs its own objects and its own output directory: one scope per configuration, made inside one scope per program as `fac.scope("server").scope("release")`, so names read program first, as in `server.release`, and each configuration is a row passed to the toolchain's methods as `scope=`. Programs built mostly from the same objects share them through a `common` scope archived once per configuration, which each program links by path. A vendored dependency gets a toolchain of its own that takes each configuration's optimization and sanitizer flags, so ASan sees one consistent program, but not the project's warnings or `-Werror`. Release archives LTO objects with `gcc-ar`, which plain `ar` may not understand.
+A configuration compiles the same source differently, so each needs its own objects and its own output directory: one scope per configuration, made inside one scope per program as `fac.scope("server").scope("release")`, so names read program first, as in `server.release`, and each configuration's scope is passed to the toolchain's methods as `scope=`. Programs built mostly from the same objects share them through a `common` scope archived once per configuration, which each program links by path. A vendored dependency gets a toolchain of its own that takes each configuration's optimization and sanitizer flags, so ASan sees one consistent program, but not the project's warnings or `-Werror`. Release archives LTO objects with `gcc-ar`, which plain `ar` may not understand.
 
 ## Future work
 
