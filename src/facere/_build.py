@@ -1086,7 +1086,12 @@ class _Builder:
         if self._crash is not None:
             raise self._crash
         failure = failures[0] if failures else None
-        if not has_ended or isinstance(failure, _EndedError):
+        # On Windows the console can end a task's commands before this thread wakes to ask them to.
+        if (
+            not has_ended
+            or isinstance(failure, _EndedError)
+            or (failure is not None and invocation.signals.is_stop_requested)
+        ):
             self.ended.append((step, Diagnostic(task.location, f"stopped {task.label}")))
         elif failure is not None:
             self._report(failure)

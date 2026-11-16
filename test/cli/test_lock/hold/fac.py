@@ -33,6 +33,13 @@ def nested():
     fac.run(sys.executable, "-m", "facere", "quick")
 
 
+# Once it gives the lock, an invocation it starts on the same output directory takes it within the timeout.
+@fac.task
+def give_then_nest():
+    fac.give_lock()
+    fac.run(sys.executable, "-m", "facere", "--lock-timeout", "5", "quick")
+
+
 @fac.task
 def nested_elsewhere():
     fac.run(sys.executable, "-m", "facere", "--out", "build2", "quick")

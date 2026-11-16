@@ -263,7 +263,7 @@ def test_rule_reaching_a_helper_whose_source_facere_cannot_read_fails(root: Path
 
     assert result.status == 2
     assert result.err.splitlines() == [
-        f"fac.py:11:2: error: function page reaches shout, which has no source Facere can read, which a rule's fingerprint needs: [Errno 2] No such file or directory: '{root / 'gone.py'}'",
+        f"fac.py:11:2: error: function page reaches shout, which has no source Facere can read, which a rule's fingerprint needs: [Errno 2] No such file or directory: {str(root / 'gone.py')!r}",
         "Failed after <elapsed>.",
     ]
 

@@ -1,6 +1,7 @@
 """The my-site example, which getting started builds up to and which needs nothing but Python."""
 
 import re
+import signal
 import subprocess
 import sys
 import urllib.request
@@ -88,12 +89,15 @@ def test_serve_adds_reloading_to_pages_and_reports_each_rebuild(tmp_path: Path) 
         assert isinstance(body, bytes)
         return body.decode()
 
+    # A graceful stop, since on Windows terminate() kills Facere outright and leaves the server it started running.
+    stop_signal = signal.CTRL_BREAK_EVENT if sys.platform == "win32" else signal.SIGTERM
     server = subprocess.Popen(
         [sys.executable, "-m", "facere", "serve", "--", "0"],
         cwd=root,
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
         text=True,
+        creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0,
     )
     assert server.stdout is not None
     try:
@@ -114,6 +118,6 @@ def test_serve_adds_reloading_to_pages_and_reports_each_rebuild(tmp_path: Path) 
         assert fetch(f"{url}/__version") != version
         assert "making things" in fetch(f"{url}/about.html")
     finally:
-        server.terminate()
+        server.send_signal(stop_signal)
         server.wait()
         server.stdout.close()

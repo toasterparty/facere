@@ -1,16 +1,25 @@
 """The lock on an output directory: a second invocation waits for the first, which a task that keeps running lets in through fac.give_lock."""
 
+import sys
 from pathlib import Path
 
 import pytest
 
+from facere._lock import OutputLock
+
 from ..helpers import mask_elapsed, run_fac, start_fac, wait_for
+
+
+def _read_holder(root: Path) -> int:
+    """Return the PID the holding invocation wrote, which on Windows is not that of the process `start_fac` started, since a uv environment's python.exe is a launcher running the interpreter as its child."""
+    return int((root / "build" / ".fac" / "lock.pid").read_text())
 
 
 @pytest.mark.project("hold")
 def test_second_invocation_names_the_first_and_builds_once_it_ends(root: Path) -> None:
     first = start_fac(root)
     wait_for(root / "build" / "holding")
+    holder = _read_holder(root)
     second = start_fac(root, "quick")
     assert second.stderr is not None
     waiting = second.stderr.readline()
@@ -24,7 +33,7 @@ def test_second_invocation_names_the_first_and_builds_once_it_ends(root: Path) -
     assert first.returncode == 0, first_err
     assert second.wait(timeout=30) == 0, second_err
     assert waiting == (
-        f"fac: note: waiting for the invocation with PID {first.pid}, which holds the output directory build\n"
+        f"fac: note: waiting for the invocation with PID {holder}, which holds the output directory build\n"
     )
     assert mask_elapsed(second_err) == "Finished in <elapsed>. Executed 1 rule.\n"
 
@@ -33,6 +42,7 @@ def test_second_invocation_names_the_first_and_builds_once_it_ends(root: Path) -
 def test_lock_timeout_fails_with_status_three_once_it_runs_out(root: Path) -> None:
     first = start_fac(root)
     wait_for(root / "build" / "holding")
+    holder = _read_holder(root)
 
     result = run_fac(root, "--lock-timeout", "0", "quick")
     (root / "go").touch()
@@ -40,8 +50,38 @@ def test_lock_timeout_fails_with_status_three_once_it_runs_out(root: Path) -> No
 
     assert result.status == 3
     assert result.err == (
-        f"fac: error: the invocation with PID {first.pid} still held the output directory build after 0 seconds\n"
+        f"fac: error: the invocation with PID {holder} still held the output directory build after 0 seconds\n"
         "Failed after <elapsed>.\n"
+    )
+
+
+@pytest.mark.skipif(
+    sys.platform != "win32", reason="on Windows killing the holder abandons its named mutex"
+)
+@pytest.mark.project("hold")
+def test_lock_whose_holder_was_killed_is_taken_by_the_next_invocation(root: Path) -> None:
+    assert sys.platform == "win32"
+    import ctypes
+    from ctypes import wintypes
+
+    synchronize = 0x00100000
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenMutexW.restype = wintypes.HANDLE
+    first = start_fac(root)
+    wait_for(root / "build" / "holding")
+    key = OutputLock("build", str(root / "build" / ".fac"))._key
+    # A second handle keeps the mutex alive once its holder dies, as a waiter's does, so the next invocation finds it abandoned.
+    mutex = kernel32.OpenMutexW(synchronize, False, f"Local\\facere-{key}")
+    assert mutex, ctypes.get_last_error()
+    try:
+        first.kill()
+        first.communicate(timeout=30)
+        result = run_fac(root, "--lock-timeout", "5", "give_then_nest")
+    finally:
+        kernel32.CloseHandle(wintypes.HANDLE(mutex))
+
+    assert result.err == (
+        "Finished in <elapsed>. Executed 1 rule.\nFinished in <elapsed>. Executed 1 task.\n"
     )
 
 
