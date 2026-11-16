@@ -110,7 +110,7 @@ $ fac
 Finished in 96ms. Executed 1 rule. 2 outputs up to date.
 ```
 
-Name each depfile after the rule's own output, since output paths are unique. Facere cannot see writes, so two compiles sharing one depfile name race under `-j` *(planned)*, and the invocation still passes:
+Name each depfile after the rule's own output, since output paths are unique. Facere cannot see writes, so two compiles sharing one depfile name race when they execute at once *(0.4)*, and the invocation still passes:
 
 ```python
 # Bad: every compile writes the same depfile

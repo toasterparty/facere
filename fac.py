@@ -11,8 +11,10 @@ import shutil
 import tarfile
 import tempfile
 import tomllib
+from collections.abc import Callable
 from functools import cache
 from pathlib import Path
+from typing import cast
 
 import facere as fac
 import release
@@ -75,18 +77,26 @@ def _run_sdist_tests(pytest_args: list[str]) -> None:
         _uv("run", "--directory", unpacked, "pytest", *pytest_args)
 
 
-def _uv(*args: str, env: dict[str, str] | None = None) -> str:
-    return fac.run("uv", *args, env=env)
+def _uv(*args: str, env: dict[str, str] | None = None) -> None:
+    fac.run("uv", *args, env=env)
 
 
-def _uv_run(*args: str, env: dict[str, str] | None = None) -> str:
-    return _uv("run", "--locked", *args, env=env)
+def _uv_run(*args: str, env: dict[str, str] | None = None) -> None:
+    _uv("run", "--locked", *args, env=env)
+
+
+def _capture(*args: str) -> str:
+    """Return what the command printed, on a Facere older than 0.4 too, where fac.run returned it and fac.capture did not exist."""
+    if hasattr(fac, "capture"):
+        return fac.capture(*args)
+    legacy_run = cast("Callable[..., str]", fac.run)
+    return legacy_run(*args, quiet=True)
 
 
 @cache
 def _fetch_latest_release(repo: str) -> tuple[int, ...]:
     url = f"https://github.com/{repo}"
-    tags = fac.run("git", "ls-remote", "--tags", "--refs", url, quiet=True)
+    tags = _capture("git", "ls-remote", "--tags", "--refs", url)
     return max(tuple(map(int, match.groups())) for match in RELEASE_TAG.finditer(tags))
 
 
@@ -102,12 +112,12 @@ def _bump_action_pins(text: str) -> str:
 
 
 def _fetch_current_branch() -> str:
-    return fac.run("git", "branch", "--show-current", quiet=True).strip()
+    return _capture("git", "branch", "--show-current").strip()
 
 
 def _validate_wheel(directory: str, version: str) -> None:
     (wheel,) = glob.glob(f"{directory}/*.whl")
-    reported = fac.run("uvx", "--isolated", "--from", wheel, "fac", "--version", quiet=True).strip()
+    reported = _capture("uvx", "--isolated", "--from", wheel, "fac", "--version").strip()
     if reported != version:
         raise ValueError(f"{wheel} reports version {reported}, not {version}")
 
@@ -238,7 +248,7 @@ def dist(files: list[fac.Input] = PACKAGE_FILES, directory: fac.Output = DIST) -
 def build_release(args: fac.Args, version_file: str = VERSION_FILE) -> None:
     """Build a release of the type named after -- in a scratch clone, writing only under `build/`."""
     choice = release.parse_release_type(args)
-    current = release.parse_version(fac.run("git", "show", f"HEAD:{version_file}", quiet=True))
+    current = release.parse_version(_capture("git", "show", f"HEAD:{version_file}"))
     version = release.calc_next_version(current, choice)
     release.validate_release(version, choice, _fetch_current_branch())
     _remove_dir(RELEASE_DIR)

@@ -247,6 +247,7 @@ SITE = [rule["html"] for rule in PAGE_RULES] + [INDEX, SITEMAP]
 
 @fac.task
 def serve(args: fac.Args, files: list[fac.Input] = SITE, tool: fac.Input = SERVER_TOOL):
+    fac.give_lock()
     fac.run(sys.executable, tool, fac.out("pages"), args)
 
 
@@ -256,7 +257,7 @@ def clean():
         shutil.rmtree(fac.out())
 ```
 
-A task is a function decorated with `@fac.task` that executes whenever you ask. It reads files as a rule does but writes none that Facere tracks, and its commands print live. `fac serve` inputs every file of the site, so it builds whatever is stale, then serves the site at `http://localhost:8000` until you stop it. Leave it running, edit a page, and run `fac` in a second terminal: the open tab updates itself, since the server reloads a page when `build/pages` changes. *(planned)* `fac --watch serve` will rebuild on each save, with no second terminal. `fac clean` deletes the output directory, with Facere's state, its record of past builds, inside it. `fac.out()` *(0.2)* is that directory.
+A task is a function decorated with `@fac.task` that executes whenever you ask. It reads files as a rule does but writes none that Facere tracks, and its commands print live. `fac serve` inputs every file of the site, so it builds whatever is stale, then serves the site at `http://localhost:8000` until you stop it. Leave it running, edit a page, and run `fac` in a second terminal: the open tab updates itself, since the server reloads a page when `build/pages` changes. Two invocations on one output directory take turns, the second waiting for the first, so a task that keeps running calls `fac.give_lock()` *(0.4)* first, which lets the others in. *(planned)* `fac --watch serve` will rebuild on each save, with no second terminal. `fac clean` deletes the output directory, with Facere's state, its record of past builds, inside it. `fac.out()` *(0.2)* is that directory.
 
 Targets build in the order given, so `fac clean serve` rebuilds from nothing, then serves. *(0.2)* Whatever follows `--` goes to a task's `fac.Args` parameter, so `fac serve -- 8080` picks another port.
 
@@ -268,7 +269,9 @@ Delete a page and its old HTML stays in `build/pages`, still served, until `fac 
 | --- | --- |
 | `-C path/to/project` | Run as if started in that directory, from anywhere |
 | `--out build-debug` | Keep outputs and state in that directory instead of `build/`, leaving `build/` alone |
-| `-q` | Hide the output of every successful command |
+| `-q` | Hide the output of every successful command a rule runs |
+| `-j 4` *(0.4)* | Execute at most 4 rules at once, where the default is one per CPU |
+| `-k` *(0.4)* | After a failure, still build everything that does not depend on what failed |
 | `-v` *(0.2)* | Print each command, as one string, before it runs |
 
 `-v` shows what `fac.run` made of its arguments. The pages and the home page run no command, since their recipes are plain Python:
@@ -355,10 +358,11 @@ def sitemap(
     fac.run(sys.executable, tool, BASE_URL, "index.html", page_names, stdout=output)
 
 
-# A task executes every time you ask, after the rules that output its inputs. While it runs, `fac` in
-# another terminal rebuilds what an edit reached, and the server reloads each open page.
+# A task executes every time you ask, after the rules that output its inputs. Once it gives the lock,
+# `fac` in another terminal rebuilds what an edit reached, and the server reloads each open page.
 @fac.task
 def serve(args: fac.Args, files: list[fac.Input] = SITE, tool: fac.Input = SERVER_TOOL):
+    fac.give_lock()
     fac.run(sys.executable, tool, fac.out("pages"), args)
 
 

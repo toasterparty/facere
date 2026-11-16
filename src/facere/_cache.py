@@ -1,10 +1,12 @@
 """The hash cache, which pairs each file's hash with a stat taken before reading it, so an untouched file costs one stat, and the snapshot that a file a recipe first reports is compared against."""
 
+import enum
 import hashlib
 import os
 import posixpath
 import stat
 import sys
+import threading
 from collections.abc import Iterator
 from typing import NamedTuple
 
@@ -48,50 +50,76 @@ class HashChanges(NamedTuple):
     removed: frozenset[str]
 
 
-class HashCache:
-    """The hashes of files and directory trees, from `entries` where a stat vouches for one, and the paths fetched during this invocation.
+class Look(enum.Enum):
+    """What a fetch does where the session already saw the path.
 
-    An entry is trusted where its stamp matches a stat of the file, it isn't racy, and its file system's timestamps prove something. A file fetched once in an invocation keeps its result until fetched again with `is_fresh`, so the invocation sees the files as they stood when it first looked. `start_ns` is the clock's reading as the invocation started, which decides what is racy.
+    Only FIRST and AGAIN decide what the session saw, which is what the dependency engine was told. A CHECK compares against that, so however many recipes execute at once, none moves what another compares against.
+    """
+
+    FIRST = enum.auto()
+    """Return what the session first saw, reading the path only if it saw nothing."""
+    AGAIN = enum.auto()
+    """Read the path now, and keep that as what the session saw."""
+    CHECK = enum.auto()
+    """Read the path now, leaving what the session saw."""
+
+
+class HashCache:
+    """The hashes of files and directory trees, from `entries` where a stat vouches for one, and what this session saw of each path.
+
+    An entry is trusted where its stamp matches a stat of the file, it isn't racy, and its file system's timestamps prove something. `start_ns` is the clock's reading as the session started, which decides what is racy. Any thread may call any method: one lock guards the changes to save, and is never held while a file is read.
     """
 
     def __init__(self, entries: dict[str, Entry], start_ns: int) -> None:
         self._entries = entries
         self._start_ns = start_ns
         self._file_systems = FileSystems()
-        self._fetched: dict[str, Hashed] = {}
+        self._lock = threading.Lock()
+        self._seen: dict[str, Hashed] = {}
         self._walked: set[str] = set()
         self._saved: dict[str, Entry] = {}
         self._removed: set[str] = set()
 
     def fetch(
-        self, path: str, *, is_fresh: bool = False, new_files: list[str] | None = None
+        self, path: str, look: Look = Look.FIRST, new_files: list[str] | None = None
     ) -> Hashed | None:
         """Return the stamp and hash of the file or directory tree at `path`, or None where nothing is there.
 
-        A path already fetched in this invocation returns what it did then, unless `is_fresh`. A file a tree holds that had no entry, so is new since the tree was last hashed, is added to `new_files` where given.
+        A file a tree holds that had no entry, so is new since the tree was last hashed, is added to `new_files` where given.
         """
-        if not is_fresh:
-            fetched = self._fetched.get(path)
-            if fetched is not None:
-                return fetched
+        if look is Look.FIRST:
+            # One lookup, which a dict makes atomic with or without the GIL, so the common case takes no lock.
+            seen = self._seen.get(path)
+            if seen is not None:
+                return seen
         try:
             info = os.stat(path)
             if stat.S_ISDIR(info.st_mode):
-                hashed = self._fetch_tree(path, frozenset({os.path.realpath(path)}), new_files)
-            elif stat.S_ISREG(info.st_mode):
-                hashed = self._fetch_file(path, info)
-            else:
-                hashed = Hashed(_calc_stamp(path, info)[0], "O")
+                enclosing = frozenset({os.path.realpath(path)})
+                hashed = self._fetch_tree(path, enclosing, look, new_files)
+                if look is not Look.CHECK:
+                    with self._lock:
+                        self._seen[path] = hashed
+                return hashed
+            if stat.S_ISREG(info.st_mode):
+                return self._fetch_file(path, info, look is not Look.CHECK)
+            hashed = Hashed(_calc_stamp(path, info)[0], "O")
         except FileNotFoundError:
-            self._forget(path)
+            if look is not Look.CHECK:
+                self._forget(path)
             return None
-        self._fetched[path] = hashed
+        with self._lock:
+            if look is Look.FIRST:
+                return self._seen.setdefault(path, hashed)
+            if look is Look.AGAIN:
+                self._seen[path] = hashed
         return hashed
 
-    def has_moved_since_fetched(self, path: str) -> bool:
-        """Say whether the file at `path` changed since this invocation last fetched it, or was never fetched."""
-        before = self._fetched.get(path)
-        return before is None or self.fetch(path, is_fresh=True) != before
+    def has_moved(self, path: str) -> bool:
+        """Say whether the file at `path` differs from what the session saw of it, or was never seen."""
+        with self._lock:
+            seen = self._seen.get(path)
+        return seen is None or self.fetch(path, Look.CHECK) != seen
 
     def fetch_mark(self, path: str) -> str | None:
         """Return what shows a change to the file at `path` without its old content: its stamp, or where its file system's timestamps prove nothing, its hash. None where nothing is there."""
@@ -107,33 +135,48 @@ class HashCache:
         """Return the changes since the last call, and forget them. Where `is_final`, also drop the entries of files gone from the trees walked."""
         if is_final:
             self._drop_unwalked()
-        changes = HashChanges(self._saved, frozenset(self._removed))
-        self._saved = {}
-        self._removed = set()
+        with self._lock:
+            changes = HashChanges(self._saved, frozenset(self._removed))
+            self._saved = {}
+            self._removed = set()
         return changes
 
-    def _fetch_file(self, path: str, info: os.stat_result) -> Hashed:
+    def _fetch_file(self, path: str, info: os.stat_result, is_kept: bool) -> Hashed:
+        """Return the stamp and hash of the file at `path`, which `info` describes, keeping it as what the session saw where `is_kept`."""
         stamp, change_ns = _calc_stamp(path, info)
+        # A trusted entry costs no lock: each step reads or writes one table entry, which a dict makes atomic with
+        # or without the GIL, and two threads fetching one path at once each return what they saw.
+        seen = self._seen.get(path)
         entry = self._entries.get(path)
-        if (
+        is_vouched = (
             entry is not None
             and entry.stamp == stamp
-            and (path in self._fetched or not entry.is_racy)
+            and (seen is not None or not entry.is_racy)
             and self._file_systems.is_trusted(path, info)
-        ):
-            return Hashed(stamp, entry.digest)
+        )
+        if is_vouched:
+            assert entry is not None
+            hashed = Hashed(stamp, entry.digest)
+            if is_kept:
+                self._seen[path] = hashed
+            return hashed
         digest = _hash_file(path, info.st_mode)
+        hashed = Hashed(stamp, digest)
         hashed_entry = Entry(stamp, digest, change_ns >= self._start_ns - _RACY_MARGIN_NS)
-        if hashed_entry != entry:
-            self._entries[path] = self._saved[path] = hashed_entry
-            self._removed.discard(path)
-        return Hashed(stamp, digest)
+        with self._lock:
+            if hashed_entry != self._entries.get(path):
+                self._entries[path] = self._saved[path] = hashed_entry
+                self._removed.discard(path)
+            if is_kept:
+                self._seen[path] = hashed
+        return hashed
 
     def _fetch_tree(
-        self, path: str, enclosing: frozenset[str], new_files: list[str] | None
+        self, path: str, enclosing: frozenset[str], look: Look, new_files: list[str] | None
     ) -> Hashed:
-        """Return the stamp and hash of the tree at `path`, inside the resolved directories `enclosing`, which a link back into them must not enter again."""
-        self._walked.add(path)
+        """Return the stamp and hash of the tree at `path`, inside the resolved directories `enclosing`, which a link back into them must not enter again. The files it holds are each read now, whatever the session saw."""
+        with self._lock:
+            self._walked.add(path)
         digest = hashlib.sha256()
         stamps: list[tuple[str, Stamp]] = []
         with os.scandir(path) as scan:
@@ -141,7 +184,7 @@ class HashCache:
         for entry in entries:
             child = f"{path}/{entry.name}"
             try:
-                hashed = self._fetch_entry(entry, child, enclosing, new_files)
+                hashed = self._fetch_entry(entry, child, enclosing, look, new_files)
             except FileNotFoundError:
                 continue
             feed(digest, b"N", entry.name.encode("utf-8", "surrogateescape"))
@@ -154,6 +197,7 @@ class HashCache:
         entry: os.DirEntry[str],
         child: str,
         enclosing: frozenset[str],
+        look: Look,
         new_files: list[str] | None,
     ) -> Hashed:
         """Return the stamp and hash of what the tree entry `entry`, at `child`, names: a link that dangles or loops back into the tree as its text."""
@@ -161,11 +205,11 @@ class HashCache:
             resolved = os.path.realpath(child)
             if resolved in enclosing:
                 return _hash_link(child)
-            return self._fetch_tree(child, enclosing | {resolved}, new_files)
+            return self._fetch_tree(child, enclosing | {resolved}, look, new_files)
         if entry.is_file():
-            is_new = child not in self._entries
-            hashed = self._fetch_file(child, os.stat(child))
-            self._fetched[child] = hashed
+            with self._lock:
+                is_new = child not in self._entries
+            hashed = self._fetch_file(child, os.stat(child), look is not Look.CHECK)
             if is_new and new_files is not None:
                 new_files.append(child)
             return hashed
@@ -174,32 +218,40 @@ class HashCache:
         return Hashed(_calc_link_stamp(child), "O")
 
     def _forget(self, path: str) -> None:
-        self._fetched.pop(path, None)
+        with self._lock:
+            self._forget_locked(path)
+
+    def _forget_locked(self, path: str) -> None:
+        self._seen.pop(path, None)
         if self._entries.pop(path, None) is not None:
             self._saved.pop(path, None)
             self._removed.add(path)
 
     def _drop_unwalked(self) -> None:
-        """Drop the entry of each file inside a tree this invocation walked that no walk met or that is gone since, so the entries a tree holds are the files it held when last hashed."""
-        if not self._walked:
-            return
-        gone = [
-            path
-            for path in self._entries
-            if (path not in self._fetched or not os.path.lexists(path))
-            and any(parent in self._walked for parent in iter_self_and_parents(path))
-        ]
-        for path in gone:
-            self._forget(path)
+        """Drop the entry of each file inside a tree this session walked that no walk kept or that is gone since, so the entries a tree holds are the files it held when last hashed."""
+        with self._lock:
+            if not self._walked:
+                return
+            candidates = [
+                path
+                for path in self._entries
+                if any(parent in self._walked for parent in iter_self_and_parents(path))
+            ]
+            unseen = [path for path in candidates if path not in self._seen]
+        gone = [path for path in candidates if not os.path.lexists(path)]
+        with self._lock:
+            for path in (*unseen, *gone):
+                self._forget_locked(path)
 
 
 class Snapshot:
-    """The files under the root outside the output directory and hidden directories, as they stood before an invocation's first rule executed."""
+    """The files under the root outside the output directory and hidden directories, as they stood before a session's first rule executed. Any thread may ask it."""
 
     def __init__(self, cache: HashCache, out_dir: str) -> None:
         self._cache = cache
         self._out_dir = out_dir
         self._marks = {path: cache.fetch_mark(path) for path in iter_listed_files(out_dir)}
+        self._lock = threading.Lock()
         self._paths_by_key: dict[str, list[str]] | None = None
 
     def has_moved(self, path: str) -> bool:
@@ -227,11 +279,13 @@ class Snapshot:
         )
 
     def _find_marks_by_key(self, key: str) -> list[str | None]:
-        if self._paths_by_key is None:
-            self._paths_by_key = {}
-            for listed in self._marks:
-                self._paths_by_key.setdefault(calc_path_key(listed), []).append(listed)
-        return [self._marks[listed] for listed in self._paths_by_key.get(key, [])]
+        with self._lock:
+            if self._paths_by_key is None:
+                self._paths_by_key = {}
+                for listed in self._marks:
+                    self._paths_by_key.setdefault(calc_path_key(listed), []).append(listed)
+            paths = self._paths_by_key.get(key, [])
+        return [self._marks[listed] for listed in paths]
 
 
 def iter_listed_files(out_dir: str) -> Iterator[str]:

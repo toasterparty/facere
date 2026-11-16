@@ -187,6 +187,7 @@ def test_order_only_source_must_exist(fac: Fac) -> None:
     assert result.status == 2
     assert result.err == (
         "fac.py:4:2: error: rule 'compile' (build/main.o) inputs absent.h, which doesn't exist, and no rule outputs it\n"
+        "Failed after <elapsed>.\n"
     )
 
 
@@ -208,12 +209,13 @@ def test_a_task_declaring_order_only_fails_collection(fac: Fac) -> None:
 
 @pytest.mark.project("unordered")
 def test_reporting_another_rules_output_it_does_not_input_fails_naming_both(fac: Fac) -> None:
-    result = fac("generate", "racing")
+    result = fac("-j1", "generate", "racing")
 
     assert result.status == 1
     assert result.err.splitlines() == [
         "fac.py:20:2: error: rule 'racing' (build/racing.o) failed: its recipe reported reading build/gen/gen.h, though no fac.Input or fac.OrderOnly parameter orders it after the rule that outputs it",
         "fac.py:8:2: note: rule 'generate' (build/gen) outputs build/gen/gen.h",
+        "Failed after <elapsed>. Executed 1 rule.",
     ]
 
 
@@ -224,42 +226,42 @@ def test_reporting_a_file_inside_a_directory_the_rule_inputs_passes(fac: Fac) ->
 
 @pytest.mark.project("outside_root")
 def test_report_outside_the_root_makes_the_rule_stale_when_it_changes(root: Path, fac: Fac) -> None:
-    fac("-C", "project", "compile")
+    fac("compile", cwd=root / "project")
     (root / "sdk" / "stdlib.h").write_text("upgraded")
 
-    assert fac("-C", "project", "compile").err == EXECUTED_ONE
+    assert fac("compile", cwd=root / "project").err == EXECUTED_ONE
 
 
 @pytest.mark.project("outside_root")
 def test_new_file_named_as_a_report_outside_the_root_makes_the_rule_stale_once(
     root: Path, fac: Fac
 ) -> None:
-    fac("-C", "project", "compile")
-    assert fac("-C", "project", "compile").err == UP_TO_DATE_ONE
+    fac("compile", cwd=root / "project")
+    assert fac("compile", cwd=root / "project").err == UP_TO_DATE_ONE
 
     (root / "project" / "stdlib.h").write_text("shadow")
 
-    assert fac("-C", "project", "compile").err == EXECUTED_ONE
-    assert fac("-C", "project", "compile").err == UP_TO_DATE_ONE
+    assert fac("compile", cwd=root / "project").err == EXECUTED_ONE
+    assert fac("compile", cwd=root / "project").err == UP_TO_DATE_ONE
 
 
 @pytest.mark.project("outside_root")
 def test_new_file_named_otherwise_leaves_the_rule_up_to_date(root: Path, fac: Fac) -> None:
-    fac("-C", "project", "compile")
+    fac("compile", cwd=root / "project")
 
     (root / "project" / "unrelated.h").write_text("new")
 
-    assert fac("-C", "project", "compile").err == UP_TO_DATE_ONE
+    assert fac("compile", cwd=root / "project").err == UP_TO_DATE_ONE
 
 
 @pytest.mark.project("outside_root")
 def test_new_file_in_a_hidden_directory_is_never_listed(root: Path, fac: Fac) -> None:
-    fac("-C", "project", "compile")
+    fac("compile", cwd=root / "project")
 
     (root / "project" / ".hidden").mkdir()
     (root / "project" / ".hidden" / "stdlib.h").write_text("shadow")
 
-    assert fac("-C", "project", "compile").err == UP_TO_DATE_ONE
+    assert fac("compile", cwd=root / "project").err == UP_TO_DATE_ONE
 
 
 @pytest.mark.project("second_out")
@@ -272,12 +274,12 @@ def test_files_another_output_directory_holds_are_never_listed(fac: Fac) -> None
 
 @pytest.mark.project("outside_root")
 def test_invocation_that_skips_the_shadowed_rule_keeps_it_stale(root: Path, fac: Fac) -> None:
-    fac("-C", "project", "compile")
+    fac("compile", cwd=root / "project")
 
     (root / "project" / "stdlib.h").write_text("shadow")
-    assert fac("-C", "project", "other").err == EXECUTED_ONE
+    assert fac("other", cwd=root / "project").err == EXECUTED_ONE
 
-    assert fac("-C", "project", "compile").err == EXECUTED_ONE
+    assert fac("compile", cwd=root / "project").err == EXECUTED_ONE
 
 
 @pytest.mark.project("in_tree_scratch")
@@ -344,10 +346,10 @@ def test_reported_scratch_file_the_recipe_rewrites_settles_after_one_execution(
 @pytest.mark.project("linked_root")
 def test_report_resolved_through_a_link_to_the_root_tracks_the_file(root: Path, fac: Fac) -> None:
     os.symlink(root / "project", root / "link")
-    fac("-C", "link")
+    fac(cwd=root / "link")
     (root / "project" / "a.h").write_text("edited")
 
-    assert fac("-C", "link").err == EXECUTED_ONE
+    assert fac(cwd=root / "link").err == EXECUTED_ONE
     assert (root / "project" / "build" / "bundle.txt").read_text() == "edited"
 
 

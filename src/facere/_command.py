@@ -1,20 +1,83 @@
-"""fac.run, which spawns one command from a recipe."""
+"""fac.run and fac.capture, which spawn one command from a recipe, and the commands an invocation is running, which an interrupt kills.
+
+`subprocess` and `shutil` are imported only once a command runs, since together they cost an invocation that runs none 3 ms.
+"""
+
+from __future__ import annotations
 
 import contextlib
 import errno
 import os
 import shlex
-import shutil
 import signal
-import subprocess
 import sys
+import threading
 from collections.abc import Mapping
-from typing import IO, TextIO
+from typing import IO, TYPE_CHECKING
 
-from facere._context import get_context
-from facere._undeclared import validate_command_args, validate_program
+from facere._context import Context, Recipe, get_context
+from facere._diagnostics import format_entering, format_leaving
+from facere._output import write_data
+from facere._undeclared import note_misuse, validate_command_args, validate_program
+
+if TYPE_CHECKING:
+    import subprocess
 
 _Stream = int | IO[bytes] | None
+_Args = tuple[str | list[str] | tuple[str, ...], ...]
+_READ_BYTES = 65536
+
+
+class Commands:
+    """The commands an invocation is running, so the main thread can end what the recipes' threads started."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        # Each command with whether it runs in a session of its own and whether a task runs it.
+        self._running: dict[subprocess.Popen[bytes], tuple[bool, bool]] = {}
+        self._is_killed = False
+        self._are_tasks_stopped = False
+
+    def try_add(self, process: subprocess.Popen[bytes], in_session: bool, is_task: bool) -> bool:
+        """Count `process` as running, or return False where a kill or a stop already ended commands like it, so its spawner ends it."""
+        with self._lock:
+            if self.is_ended(is_task):
+                return False
+            self._running[process] = (in_session, is_task)
+            return True
+
+    def remove(self, process: subprocess.Popen[bytes]) -> None:
+        with self._lock:
+            self._running.pop(process, None)
+
+    def is_ended(self, is_task: bool) -> bool:
+        """Say whether a kill, or for a task's command a stop, ended the commands running then and refuses new ones."""
+        return self._is_killed or (is_task and self._are_tasks_stopped)
+
+    def kill(self) -> None:
+        """Kill every running command, a rule's with its whole session, and refuse every later one."""
+        with self._lock:
+            self._is_killed = True
+            running = list(self._running.items())
+        for process, (in_session, _) in running:
+            _send_kill(process, in_session)
+
+    def stop_tasks(self) -> None:
+        """Ask every command a task is running to end, as SIGTERM asks, and refuse a task's later ones.
+
+        On Windows the console already sent each one the CTRL_BREAK_EVENT that asked Facere to stop.
+        """
+        with self._lock:
+            self._are_tasks_stopped = True
+            running = [item for item in self._running.items() if item[1][1]]
+        if sys.platform == "win32":
+            return
+        for process, (in_session, _) in running:
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                if in_session:
+                    os.killpg(process.pid, signal.SIGTERM)
+                else:
+                    process.terminate()
 
 
 def run(
@@ -26,27 +89,92 @@ def run(
     stderr: str | None = None,
     timeout: float | None = None,
     quiet: bool = False,
-) -> str:
-    """Run one command without a shell and return its stdout decoded as UTF-8, raising subprocess.CalledProcessError on a non-zero exit.
+) -> None:
+    """Run one command without a shell, raising subprocess.CalledProcessError on a non-zero exit.
 
-    Each of `args` is one string, or a list or tuple of strings that contributes each of its items in order, so `fac.run(CC, CFLAGS, "-c", source)` needs no `*`. The first string is the program, the rest its arguments. The program resolves through `PATH`, or against the root when it contains a separator, and raises FileNotFoundError when it doesn't resolve. The command inherits Facere's environment, with what `fac.env` set over it, then `env` over both, where `None` unsets a variable. `cwd` is relative to the root. `stdin`, `stdout`, and `stderr` name files, relative to the root, to feed the command and fill, and a file both `stdout` and `stderr` name receives both streams. In a rule, the command reads an empty stdin unless `stdin` names a file, and its output is captured. On success it is printed whole unless `quiet` is true, and on failure it travels in the raised error, which Facere prints if it fails the recipe. In a task, the command shares Facere's standard streams, so its stdout is printed rather than returned, unless `quiet` is true, which runs it as in a rule and returns its stdout. `timeout` kills the command after that many seconds and raises subprocess.TimeoutExpired.
+    Each of `args` is one string, or a list or tuple of strings that contributes each of its items in order, so `fac.run(CC, CFLAGS, "-c", source)` needs no `*`. The first string is the program, the rest its arguments. The program resolves through `PATH`, or against the root when it contains a separator, and raises FileNotFoundError when it doesn't resolve. The command inherits Facere's environment, with what `fac.env` set over it, then `env` over both, where `None` unsets a variable. `cwd` is relative to the root. `stdin`, `stdout`, and `stderr` name files, relative to the root, to feed the command and fill, and a file both `stdout` and `stderr` name receives both streams.
+
+    In a rule, the command reads an empty stdin unless `stdin` names a file, has no terminal to prompt on, and its output is kept and printed whole once the rule finishes, unless `quiet` is true, which hides it. On failure the output travels in the raised error, which Facere prints if it fails the recipe. In a task, and in a rule declared with `terminal=True`, the command shares Facere's standard streams and its terminal instead, unless `quiet` is true, which runs it as in any other rule. `timeout` kills the command after that many seconds and raises subprocess.TimeoutExpired. Call it on the recipe's own thread, or in a task from any thread.
     """
-    context = get_context("fac.run")
-    recipe = context.running
+    context, recipe = _get_recipe("fac.run")
+    is_live = recipe.has_terminal and not quiet
+    is_shown = not (quiet or context.is_quiet)
+    _run(
+        "fac.run",
+        context,
+        recipe,
+        args,
+        cwd,
+        env,
+        stdin,
+        stdout,
+        stderr,
+        timeout,
+        is_live,
+        is_shown,
+    )
+
+
+def capture(
+    *args: str | list[str] | tuple[str, ...],
+    cwd: str | None = None,
+    env: Mapping[str, str | None] | None = None,
+    stdin: str | None = None,
+    stderr: str | None = None,
+    timeout: float | None = None,
+) -> str:
+    """Run one command as `fac.run` does in a rule, and return its stdout decoded as UTF-8, printing nothing when it succeeds.
+
+    It takes the arguments of `fac.run` but `stdout` and `quiet`, and behaves alike in a rule and a task: the command reads an empty stdin unless `stdin` names a file, and has no terminal.
+    """
+    context, recipe = _get_recipe("fac.capture")
+    out = _run(
+        "fac.capture", context, recipe, args, cwd, env, stdin, None, stderr, timeout, False, False
+    )
+    return out.decode("utf-8", "surrogateescape")
+
+
+def _get_recipe(caller: str) -> tuple[Context, Recipe]:
+    context = get_context(caller)
+    recipe = context.find_recipe()
     if recipe is None:
-        raise RuntimeError("fac.run runs a command only from the recipe of a rule or task")
-    argv = _flatten(args)
-    validate_command_args(context, argv, cwd)
+        note_misuse(context, caller)
+        raise RuntimeError(
+            f"{caller} runs a command only from the recipe of a rule or task, and in a rule only on the recipe's own thread"
+        )
+    return context, recipe
+
+
+def _run(
+    caller: str,
+    context: Context,
+    recipe: Recipe,
+    args: _Args,
+    cwd: str | None,
+    env: Mapping[str, str | None] | None,
+    stdin: str | None,
+    stdout: str | None,
+    stderr: str | None,
+    timeout: float | None,
+    is_live: bool,
+    is_shown: bool,
+) -> bytes:
+    """Run the command for `caller` and return what it wrote to a captured stdout.
+
+    A live command shares Facere's streams. Any other is captured, and where `is_shown`, its output joins the recipe's, or else goes straight to Facere's streams where the recipe has the terminal.
+    """
+    import subprocess
+
+    argv = _flatten(caller, args)
+    validate_command_args(context, recipe, argv, cwd)
     if context.is_verbose:
         print(shlex.join(argv), file=sys.stderr, flush=True)
     command_env = _build_env({**context.env, **(env or {})})
-    program = _resolve_program(argv[0], context.root, command_env)
-    validate_program(context, program)
-    in_rule = not recipe.is_task
-    is_captured = in_rule or quiet
-    captured = subprocess.PIPE if is_captured else None
+    program = _resolve_program(caller, argv[0], context.root, command_env)
+    validate_program(context, recipe, program)
+    captured = None if is_live else subprocess.PIPE
     with contextlib.ExitStack() as files:
-        stdin_stream: _Stream = subprocess.DEVNULL if is_captured else None
+        stdin_stream: _Stream = None if is_live else subprocess.DEVNULL
         stdout_stream: _Stream = captured
         stderr_stream: _Stream = captured
         if stdin is not None:
@@ -59,8 +187,11 @@ def run(
                 if stdout is not None and _is_same_path(stderr, stdout)
                 else files.enter_context(open(stderr, "wb"))
             )
+        if is_live and cwd is not None:
+            print(format_entering(cwd), file=sys.stderr, flush=True)
         try:
             returncode, out, err = _spawn(
+                context,
                 [program, *argv[1:]],
                 cwd=cwd,
                 env=command_env,
@@ -68,50 +199,58 @@ def run(
                 stdout=stdout_stream,
                 stderr=stderr_stream,
                 timeout=timeout,
-                is_captured=is_captured,
+                is_live=is_live,
+                is_task=recipe.is_task,
             )
         except subprocess.TimeoutExpired as error:
             # Without pipes, communicate() reports the time remaining, not the limit set.
             assert timeout is not None
-            raise subprocess.TimeoutExpired(argv, timeout, error.output, error.stderr) from None
-    text = out.decode("utf-8", "surrogateescape")
+            limit = subprocess.TimeoutExpired(argv, timeout, error.output, error.stderr)
+            raise _locate(limit, cwd, is_live) from None
+        finally:
+            if is_live and cwd is not None:
+                print(format_leaving(cwd), file=sys.stderr, flush=True)
     if returncode != 0:
-        raise subprocess.CalledProcessError(
-            returncode, argv, output=text, stderr=err.decode("utf-8", "surrogateescape")
+        failure = subprocess.CalledProcessError(
+            returncode,
+            argv,
+            output=None if is_live else out.decode("utf-8", "surrogateescape"),
+            stderr=None if is_live else err.decode("utf-8", "surrogateescape"),
         )
-    if in_rule and not (quiet or context.is_quiet):
-        write_output(err, out)
-    return text
+        raise _locate(failure, cwd, is_live)
+    if is_shown and not is_live and (err or out):
+        _show(recipe, [(True, err), (False, out)], cwd)
+    return out
 
 
-def write_output(err: bytes, out: bytes) -> None:
-    """Write a command's captured output unaltered to Facere's own streams, stderr first."""
-    _write_bytes(sys.stderr, err)
-    _write_bytes(sys.stdout, out)
+def _locate(
+    error: subprocess.SubprocessError, cwd: str | None, is_live: bool
+) -> subprocess.SubprocessError:
+    """Return `error` naming the directory its command ran in, for the lines Facere prints around the command's captured output."""
+    if cwd is not None and not is_live:
+        error.cwd = cwd  # ty: ignore[missing-attribute]
+    return error
 
 
-def _write_bytes(stream: TextIO, data: bytes) -> None:
-    if not data:
+def _show(recipe: Recipe, chunks: list[tuple[bool, bytes | str]], cwd: str | None) -> None:
+    if cwd is not None:
+        chunks = [(True, f"{format_entering(cwd)}\n"), *chunks, (True, f"{format_leaving(cwd)}\n")]
+    if not recipe.has_terminal:
+        recipe.output.extend(chunks)
         return
-    stream.flush()
-    buffer = getattr(stream, "buffer", None)
-    if buffer is None:
-        stream.write(data.decode("utf-8", "replace"))
-        stream.flush()
-        return
-    buffer.write(data)
-    buffer.flush()
+    for is_stderr, data in chunks:
+        write_data(sys.stderr if is_stderr else sys.stdout, data)
 
 
 def _is_same_path(path: str, other: str) -> bool:
     return os.path.normcase(os.path.normpath(path)) == os.path.normcase(os.path.normpath(other))
 
 
-def _flatten(args: tuple[str | list[str] | tuple[str, ...], ...]) -> list[str]:
+def _flatten(caller: str, args: _Args) -> list[str]:
     argv = [item for arg in args for item in (arg if isinstance(arg, list | tuple) else [arg])]
     if not argv or not all(isinstance(item, str) for item in argv):
         raise TypeError(
-            f"fac.run takes the program and its arguments as strings, or lists or tuples of strings, not {args!r}"
+            f"{caller} takes the program and its arguments as strings, or lists or tuples of strings, not {args!r}"
         )
     return argv
 
@@ -129,7 +268,9 @@ def _build_env(env: Mapping[str, str | None]) -> dict[str, str] | None:
     return merged
 
 
-def _resolve_program(program: str, root: str, env: dict[str, str] | None) -> str:
+def _resolve_program(caller: str, program: str, root: str, env: dict[str, str] | None) -> str:
+    import shutil
+
     search_path = None if env is None else env.get("PATH", os.defpath)
     has_separator = "/" in program or os.sep in program
     resolved = (
@@ -140,12 +281,13 @@ def _resolve_program(program: str, root: str, env: dict[str, str] | None) -> str
     if resolved is None:
         where = "relative to the root" if has_separator else "on PATH"
         raise FileNotFoundError(
-            errno.ENOENT, f"fac.run found no program {program!r} {where}", program
+            errno.ENOENT, f"{caller} found no program {program!r} {where}", program
         )
     return os.path.abspath(resolved)
 
 
 def _spawn(
+    context: Context,
     argv: list[str],
     *,
     cwd: str | None,
@@ -154,42 +296,147 @@ def _spawn(
     stdout: _Stream,
     stderr: _Stream,
     timeout: float | None,
-    is_captured: bool,
+    is_live: bool,
+    is_task: bool,
 ) -> tuple[int, bytes, bytes]:
-    if not is_captured:
+    """Run `argv` to its end and return its exit status with what it wrote to a captured stdout and stderr, raising KeyboardInterrupt where the invocation ended it."""
+    import subprocess
+
+    commands = context.commands
+    if is_live:
         sys.stdout.flush()
         sys.stderr.flush()
-    # Killing the whole session closes the pipes, which a surviving grandchild would hold open.
-    in_session = is_captured and sys.platform != "win32"
-    with subprocess.Popen(
-        argv,
-        cwd=cwd,
-        env=env,
-        stdin=stdin,
-        stdout=stdout,
-        stderr=stderr,
-        start_new_session=in_session,
-    ) as process:
-        try:
-            out, err = process.communicate(timeout=timeout)
-        except subprocess.TimeoutExpired as error:
-            _kill(process, in_session)
-            error.output, error.stderr = process.communicate()
-            raise
-        except BaseException:
-            _kill(process, in_session)
-            raise
+    # A session of its own has no terminal to prompt on, and killing it whole closes the pipes a surviving grandchild would hold open.
+    in_session = not is_live and sys.platform != "win32"
+    # A process group of its own keeps the console's CTRL_BREAK_EVENT, a graceful stop, from ending a rule's command.
+    creationflags = (
+        subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" and not is_live else 0
+    )
+    reader = None
+    terminal = None
+    if stderr == subprocess.PIPE and context.window_size is not None and sys.platform != "win32":
+        reader, terminal = _open_terminal(context.window_size)
+        stderr = terminal
+    try:
+        process = subprocess.Popen(
+            argv,
+            cwd=cwd,
+            env=env,
+            stdin=stdin,
+            stdout=stdout,
+            stderr=stderr,
+            start_new_session=in_session,
+            creationflags=creationflags,
+        )
+    except BaseException:
+        if reader is not None:
+            reader.close()
+        raise
+    finally:
+        if terminal is not None:
+            os.close(terminal)
+    if reader is not None:
+        reader.start()
+    is_added = commands.try_add(process, in_session, is_task)
+    try:
+        with process:
+            if not is_added:
+                _kill(process, in_session)
+            try:
+                out, err = process.communicate(timeout=timeout)
+            except subprocess.TimeoutExpired as error:
+                _kill(process, in_session)
+                error.output, error.stderr = process.communicate()
+                if reader is not None:
+                    error.stderr = reader.join()
+                raise
+            except BaseException:
+                _kill(process, in_session)
+                raise
+    finally:
+        commands.remove(process)
+    if reader is not None:
+        err = reader.join()
+    if commands.is_ended(is_task):
+        raise KeyboardInterrupt
     returncode = process.returncode
     assert isinstance(returncode, int)
     return returncode, out or b"", err or b""
 
 
-def _kill(process: subprocess.Popen[bytes], in_session: bool) -> None:
+class _TerminalReader:
+    """Reads everything written to a pseudo-terminal, from the end its commands don't hold."""
+
+    def __init__(self, descriptor: int) -> None:
+        self._descriptor = descriptor
+        self._chunks: list[bytes] = []
+        self._thread = threading.Thread(target=self._read, daemon=True)
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def join(self) -> bytes:
+        """Wait until every process closed the terminal, and return what they wrote."""
+        self._thread.join()
+        return b"".join(self._chunks)
+
+    def close(self) -> None:
+        """Close the terminal, unless reading started, which closes it as it ends."""
+        if not self._thread.is_alive() and self._descriptor >= 0:
+            os.close(self._descriptor)
+            self._descriptor = -1
+
+    def _read(self) -> None:
+        try:
+            while True:
+                try:
+                    chunk = os.read(self._descriptor, _READ_BYTES)
+                except OSError:
+                    # Linux raises EIO once every command closed its end.
+                    return
+                if not chunk:
+                    return
+                self._chunks.append(chunk)
+        finally:
+            os.close(self._descriptor)
+            self._descriptor = -1
+
+
+if sys.platform != "win32":
+
+    def _open_terminal(window_size: tuple[int, int]) -> tuple[_TerminalReader, int]:
+        """Return a reader of a new pseudo-terminal `window_size` rows by columns, and the end of it a command writes to, which the caller closes."""
+        # Imported here, since only a terminal needs it.
+        import termios
+
+        # Both libc's openpty and Python's fallback open the terminal's end with O_NOCTTY on Linux, and other systems
+        # make a terminal the controlling one only on request, so a command never gets one to prompt on.
+        primary, terminal = os.openpty()
+        reader = _TerminalReader(primary)
+        try:
+            attributes = termios.tcgetattr(terminal)
+            # Without output processing, the kernel leaves each newline as the command wrote it.
+            attributes[1] &= ~termios.OPOST
+            termios.tcsetattr(terminal, termios.TCSANOW, attributes)
+            termios.tcsetwinsize(terminal, window_size)
+        except BaseException:
+            reader.close()
+            os.close(terminal)
+            raise
+        return reader, terminal
+
+
+def _send_kill(process: subprocess.Popen[bytes], in_session: bool) -> None:
     # in_session already excludes Windows, but ty needs the platform check to accept os.killpg there.
     if sys.platform == "win32" or not in_session:
-        process.kill()
+        with contextlib.suppress(OSError):
+            process.kill()
     else:
         with contextlib.suppress(ProcessLookupError, PermissionError):
             os.killpg(process.pid, signal.SIGKILL)
+
+
+def _kill(process: subprocess.Popen[bytes], in_session: bool) -> None:
+    _send_kill(process, in_session)
     # Popen.__exit__ waits only briefly after an interrupt, which would leave the killed command unreaped.
     process.wait()

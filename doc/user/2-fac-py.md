@@ -29,6 +29,19 @@ The function's body is the rule's recipe. Facere executes it only when an output
 
 *(0.4)* `@fac.rule(always=True)` executes its rules whenever a target reaches them, for what Facere cannot see change, such as a program's version, as [module-level code](./7-best-practices.md#module-level-code) shows. A rule downstream still executes only when an output it inputs comes out different.
 
+*(0.4)* Rules that do not depend on one another execute at once, one per CPU by default, as `-j` sets. A pool caps that for the rules given it, such as links that each need much memory, or a tool that runs workers of its own:
+
+```python
+LINKS = fac.pool(2)
+
+
+@fac.rule(each=APP_RULES, pool=LINKS)
+def app(objects: list[fac.Input], program: fac.Output):
+    fac.run(CC, objects, "-o", program)
+```
+
+*(0.4)* `@fac.rule(terminal=True)` gives a rule's commands the terminal, as a task's have, for a rule that needs a person, such as signing with a PIN. Such a rule executes while no other rule's output is shown, and fails without a terminal, so CI never waits on it. It still executes only when stale.
+
 *(planned)* `@fac.rule(clear=True)` deletes every output before the recipe executes, for a tool that keeps what an earlier execution left, such as `ar r`, `zip`, or `uv build --out-dir`.
 
 ## Paths
@@ -49,23 +62,27 @@ Before executing any recipe, Facere loads `fac.py` and checks every rule, so a m
 
 ## Commands
 
-`fac.run` runs one command. In a rule it returns the command's standard output as text, and in a task, whose commands print live, it returns an empty string unless `quiet=True` *(0.3)*. *(planned)* `fac.run` will return nothing, and `fac.capture`, taking the same arguments, will return the standard output in a rule and a task alike, so `quiet=True` only hides output. It runs without a shell, so pass the program and each argument separately: `fac.run("pandoc", source)`, never `fac.run("pandoc about.txt")`. A list or tuple of strings passes each of its elements as one argument. A command that exits non-zero fails the recipe.
+`fac.run` runs one command, and *(0.4)* returns nothing. It runs without a shell, so pass the program and each argument separately: `fac.run("pandoc", source)`, never `fac.run("pandoc about.txt")`. A list or tuple of strings passes each of its elements as one argument. A command that exits non-zero fails the recipe.
 
-In a rule, a command reads an empty standard input and its output is printed once it finishes. Keyword arguments adjust that:
+*(0.4)* `fac.capture` takes the same arguments but `stdout=` and `quiet=`, and returns the command's standard output as text, printing nothing else when the command succeeds, in a rule and a task alike: `version = fac.capture("git", "describe")`.
+
+In a rule, a command reads an empty standard input and has no terminal to prompt on, so one that would ask for a password fails at once. *(0.4)* Its output, and whatever the recipe prints, is kept and printed whole once the rule finishes, so rules executing at once never mix their lines. When `fac` runs in a terminal, the command's standard error is a terminal of its own outside Windows, so a compiler colors its diagnostics as it would on its own, while its standard output stays a pipe. Keyword arguments adjust that:
 
 | Argument | Effect |
 | --- | --- |
 | `stdin=`, `stdout=`, `stderr=` | Name a file to read standard input from or write a stream to. A file both `stdout=` and `stderr=` name gets both streams |
 | `env=` | Set environment variables over the inherited ones and those `fac.env` sets. `None` unsets a variable |
-| `cwd=` | Run in another directory, relative to the root |
-| `quiet=True` | Hide the command's output when it succeeds. *(0.3)* In a task, `fac.run` also returns the standard output as text, and the command reads an empty standard input as in a rule, so it can't prompt. *(planned)* `fac.capture` takes over returning the output, and `quiet=True` only hides it |
+| `cwd=` | Run in another directory, relative to the root. *(0.4)* Its output is framed by `fac: Entering directory` and `fac: Leaving directory` lines, as make prints them, so an editor resolves the relative paths in a tool's diagnostics |
+| `quiet=True` | Hide the command's output when it succeeds. *(0.4)* In a task, the command runs as in a rule instead, with its output kept and an empty standard input |
 | `timeout=` | Kill the command after that many seconds, failing the recipe |
 
 *(0.2)* `fac.env(LC_ALL="C")`, called while `fac.py` loads, sets a variable for every command, or unsets it with `None`. Calls may repeat a variable's value, but one that changes it fails, naming both calls. Unlike a variable inherited from your shell, it joins every rule's fingerprint, so changing it re-executes them.
 
 ## Tasks
 
-A task is a function decorated with `@fac.task`, for work that must happen whenever you ask, such as running tests, a server, or a deploy. It takes inputs and values but no outputs, and executes every time `fac` is asked for it, after the rules that output its inputs. *(planned)* The targets after a task build from a fresh load of `fac.py`, so a file the task wrote, such as a bumped version, counts. Its commands print live and read from the terminal.
+A task is a function decorated with `@fac.task`, for work that must happen whenever you ask, such as running tests, a server, or a deploy. It takes inputs and values but no outputs, and executes every time `fac` is asked for it, alone, after the rules that output its inputs. *(0.4)* The targets after a task build from a fresh load of `fac.py`, so a file the task wrote, such as a bumped version or a new file a glob lists, counts. Its commands print live and read from the terminal.
+
+*(0.4)* A second `fac` on the same output directory waits for the first to finish, printing which one it waits for, so a task that keeps running, such as a server, calls `fac.give_lock()` to let the others in. Facere first checks that every output the invocation built is as its rule left it, and takes the lock back before any target after the task. From then on another `fac` may rebuild a file the task uses, which is what a server reloading on each build wants.
 
 *(0.2)* A task receives the arguments after `--` on the command line through a parameter annotated `fac.Args`, a tuple of strings. Without `--`, the parameter holds its default, or `()` when it has none.
 

@@ -1,5 +1,6 @@
-"""The line closing an invocation: how long it took, what ran, and what was already current."""
+"""The line closing an invocation: how it ended, how long it took, what ran, and what was already current."""
 
+import enum
 from dataclasses import dataclass, field
 
 from facere._diagnostics import Diagnostic
@@ -10,25 +11,51 @@ _TENTHS_PER_MINUTE = 600
 _MINUTES_PER_HOUR = 60
 
 
+class Outcome(enum.Enum):
+    """How an invocation ended. Each value is the exit status."""
+
+    FINISHED = 0
+    FAILED = 1
+    UNSTARTED = 2
+    LOCK_TIMEOUT = 3
+    CRASHED = 4
+    INTERRUPTED = 130
+    STOPPED = 143
+
+
+# The first word of the closing line, which a caller may parse.
+_LEADS = {
+    Outcome.FINISHED: "Finished in",
+    Outcome.FAILED: "Failed after",
+    Outcome.UNSTARTED: "Failed after",
+    Outcome.LOCK_TIMEOUT: "Failed after",
+    Outcome.CRASHED: "Failed after",
+    Outcome.INTERRUPTED: "Interrupted after",
+    Outcome.STOPPED: "Stopped after",
+}
+
+
 @dataclass(slots=True)
 class Summary:
-    """What an invocation did. `unsettled` holds one warning per rule that an input changing during its recipe left stale twice in a row."""
+    """What an invocation did.
+
+    `failed` counts the rules and tasks that failed. `ended` holds one note per recipe that an interrupt or a stop ended, and `unsettled` one warning per rule that an input changing during its recipe left stale twice in a row.
+    """
 
     tasks_run: int = 0
     rules_run: int = 0
     outputs_current: int = 0
-    stopped: str | None = None
+    failed: int = 0
+    ended: list[Diagnostic] = field(default_factory=list)
     unsettled: list[Diagnostic] = field(default_factory=list)
 
 
-def format_summary(summary: Summary, elapsed_s: float, *, is_interrupted: bool) -> str:
-    """Return the closing line, leaving out each section with nothing to report, under a line naming the definition an interrupt stopped.
+def format_summary(summary: Summary, elapsed_s: float, outcome: Outcome) -> str:
+    """Return the closing line, leaving out each section with nothing to report.
 
     Sections are separated by `. `.
     """
-    elapsed = _format_elapsed(elapsed_s)
-    lead = f"Interrupted after {elapsed}" if is_interrupted else f"Finished in {elapsed}"
-    sections = [lead]
+    sections = [f"{_LEADS[outcome]} {_format_elapsed(elapsed_s)}"]
     ran = [
         _format_count(count, noun)
         for count, noun in ((summary.tasks_run, "task"), (summary.rules_run, "rule"))
@@ -36,14 +63,11 @@ def format_summary(summary: Summary, elapsed_s: float, *, is_interrupted: bool) 
     ]
     if ran:
         sections.append(f"Executed {' and '.join(ran)}")
-    elif not is_interrupted:
+    elif outcome is Outcome.FINISHED:
         sections.append("No work to do")
     if summary.outputs_current:
         sections.append(f"{_format_count(summary.outputs_current, 'output')} up to date")
-    line = ". ".join(sections) + "."
-    if summary.stopped is None:
-        return line
-    return f"Stopped {summary.stopped}\n{line}"
+    return ". ".join(sections) + "."
 
 
 def _format_count(count: int, noun: str) -> str:

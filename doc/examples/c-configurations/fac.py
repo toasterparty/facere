@@ -29,6 +29,8 @@ for config in CONFIGS:
 
 DEBUG_PROGRAM = fac.out(f"debug/{PROGRAM_NAME}")
 RELEASE_PROGRAM = fac.out(f"release/{PROGRAM_NAME}")
+# A link holds a whole program in memory, so one executes at a time, while the compiles use every CPU.
+LINKS = fac.pool(1)
 
 
 # A depfile is a Makefile fragment: the object, a colon, then each file the compile read. A space
@@ -47,7 +49,7 @@ def object_file(source: fac.Input, obj: fac.Output, cflags):
 
 
 # `fac build/release/app` names one program by its path, and builds only what it needs.
-@fac.rule(each=APP_RULES, default=True)
+@fac.rule(each=APP_RULES, default=True, pool=LINKS)
 def app(objects: list[fac.Input], program: fac.Output):
     fac.run(CC, objects, "-o", program)
 

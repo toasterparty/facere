@@ -12,6 +12,7 @@ from facere._context import (
     Context,
     Declaration,
     Kind,
+    Pool,
     calc_path_key,
     find_context,
     get_context,
@@ -23,6 +24,7 @@ from facere._context import (
     normalize,
 )
 from facere._diagnostics import Diagnostic, FacereError, Note, find_caller_locations
+from facere._undeclared import note_misuse
 from facere._version import VERSION
 
 Input = Annotated[str, Kind.INPUT]
@@ -48,6 +50,8 @@ def rule(
     name: str | None = None,
     default: bool = False,
     always: bool = False,
+    pool: Pool | None = None,
+    terminal: bool = False,
     **values: object,
 ) -> Callable[[_F], _F]: ...
 
@@ -60,11 +64,13 @@ def rule(
     name: str | None = None,
     default: bool = False,
     always: bool = False,
+    pool: Pool | None = None,
+    terminal: bool = False,
     **values: object,
 ) -> _F | Callable[[_F], _F]:
     """Define rules from a function, returned unchanged.
 
-    The function's signature declares what each rule reads and writes: a parameter annotated `fac.Input` or `list[fac.Input]` holds the files or directories it reads, one annotated `fac.OrderOnly` or `list[fac.OrderOnly]` those it may read, one annotated `fac.Output` or `list[fac.Output]` files or directories it writes, and any other parameter a value. `each=` takes an iterable of dicts, read once here, and defines one rule per dict, each key filling the parameter it names. Keyword arguments fill the parameters they name in every rule, and defaults fill the rest. `name=` replaces the function's name, less one trailing underscore, on the command line, and `default=True` builds the rules when `fac` gets no targets, in place of every rule. `always=True` executes the rules whenever a target reaches them, for what Facere can't see change, such as a program's version, while the rules downstream execute only when an output's content changed.
+    The function's signature declares what each rule reads and writes: a parameter annotated `fac.Input` or `list[fac.Input]` holds the files or directories it reads, one annotated `fac.OrderOnly` or `list[fac.OrderOnly]` those it may read, one annotated `fac.Output` or `list[fac.Output]` files or directories it writes, and any other parameter a value. `each=` takes an iterable of dicts, read once here, and defines one rule per dict, each key filling the parameter it names. Keyword arguments fill the parameters they name in every rule, and defaults fill the rest. `name=` replaces the function's name, less one trailing underscore, on the command line, and `default=True` builds the rules when `fac` gets no targets, in place of every rule. `always=True` executes the rules whenever a target reaches them, for what Facere can't see change, such as a program's version, while the rules downstream execute only when an output's content changed. `pool=` takes what `fac.pool` returned, and caps how many of the rules given that pool execute at once. `terminal=True` gives the rules' commands and prints Facere's standard streams and its terminal, as a task's have, for a rule that needs a person, such as one signing with a PIN: one such rule executes at a time, and without a terminal it fails.
     """
     rows = None if each is None else tuple(each)
     return _declarator(
@@ -73,6 +79,8 @@ def rule(
         name=name,
         is_default=default,
         is_always=always,
+        pool=pool,
+        has_terminal=terminal,
         rows=rows,
         values=values,
     )
@@ -93,10 +101,18 @@ def task(
 ) -> _F | Callable[[_F], _F]:
     """Define a task from a function, returned unchanged.
 
-    A task takes inputs and values only, and executes whenever a target reaches it, after the rules that output its inputs, with its commands sharing Facere's standard streams. A parameter annotated `fac.Args` holds the arguments after `--` on the command line when the task is among the targets, else its default, else `()`. `name=`, `default=True`, and keyword arguments mean what they mean for `fac.rule`.
+    A task takes inputs and values only, and executes whenever a target reaches it, alone, after the rules that output its inputs, with its commands sharing Facere's standard streams and its terminal. A parameter annotated `fac.Args` holds the arguments after `--` on the command line when the task is among the targets, else its default, else `()`. `name=`, `default=True`, and keyword arguments mean what they mean for `fac.rule`.
     """
     return _declarator(
-        fn, is_task=True, name=name, is_default=default, is_always=False, rows=None, values=values
+        fn,
+        is_task=True,
+        name=name,
+        is_default=default,
+        is_always=False,
+        pool=None,
+        has_terminal=True,
+        rows=None,
+        values=values,
     )
 
 
@@ -118,16 +134,38 @@ def out(path: str = ".", suffix: str | None = None) -> str:
     return PurePosixPath(mirrored).with_suffix(suffix).as_posix()
 
 
+def pool(size: int) -> Pool:
+    """Return a pool that lets `size` of the rules given it execute at once, as in `LINKS = fac.pool(2)` and `@fac.rule(pool=LINKS)`, for rules that are bound by memory or that run workers of their own."""
+    if isinstance(size, bool) or not isinstance(size, int) or size < 1:
+        raise ValueError(f"fac.pool takes how many rules may execute at once, not {size!r}")
+    return Pool(size)
+
+
+def give_lock() -> None:
+    """Let other invocations use the output directory while the calling task goes on, as a server that keeps running does.
+
+    Facere first saves its state and checks that every output this invocation built is still as its rule left it. From then on, another invocation may rebuild a file the task is using. Facere takes the lock again before the targets after the task. A second call does nothing, and a rule's recipe that calls it fails, since recording a rule needs the lock.
+    """
+    context = get_context("fac.give_lock")
+    recipe = context.find_recipe()
+    if recipe is None or not recipe.is_task or context.give_lock_cb is None:
+        raise RuntimeError(
+            "fac.give_lock works only in the recipe of a task, since recording a rule needs the lock"
+        )
+    context.give_lock_cb()
+
+
 def add_inputs(paths: Iterable[str]) -> None:
     """Report files the running rule's recipe read, usually what a tool's depfile lists, so a change to any of them makes the rule stale.
 
     Call it once its tool has run or before reading a file in Python. Each path is relative to the root, or absolute, and any spelling of one counts, such as `src/a/../b.h`. A new file under the root with the name of a reported file makes the rule stale. A file inside the output directory that no rule outputs is scratch, so only its name is kept. A file reported for the first time that changed since the invocation's first rule started executing, or since the rule outputting it finished, leaves the rule stale. Raises IsADirectoryError for a directory, and FileNotFoundError for a kept path that doesn't exist.
     """
     context = get_context("fac.add_inputs")
-    recipe = context.running
-    if recipe is None or recipe.is_task:
+    recipe = context.find_rule_recipe()
+    if recipe is None:
+        note_misuse(context, "fac.add_inputs")
         raise RuntimeError(
-            "fac.add_inputs reports inputs only from the recipe of a rule, since a task records nothing"
+            "fac.add_inputs reports inputs only from the recipe of a rule, on the recipe's own thread, since a task records nothing"
         )
     if isinstance(paths, str):
         raise TypeError(f"fac.add_inputs takes a list of paths, not the string {paths!r}")
@@ -218,7 +256,7 @@ def minimum_version(version: str) -> None:
 
 def _get_loading_context(caller: str) -> Context:
     context = get_context(caller)
-    if context.running is not None:
+    if not context.is_loading:
         raise RuntimeError(
             f"{caller} works only while fac.py loads, since a recipe that calls it reads what no fingerprint holds"
         )
@@ -274,6 +312,8 @@ def _declarator(
     name: str | None,
     is_default: bool,
     is_always: bool,
+    pool: object,
+    has_terminal: bool,
     rows: tuple[object, ...] | None,
     values: dict[str, object],
 ) -> _F | Callable[[_F], _F]:
@@ -287,6 +327,8 @@ def _declarator(
                 name=name,
                 is_default=is_default,
                 is_always=is_always,
+                pool=pool,
+                has_terminal=has_terminal,
                 rows=rows,
                 values=values,
                 location=location,

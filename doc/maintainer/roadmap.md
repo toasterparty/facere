@@ -8,13 +8,12 @@
 
 ## Next
 
-Scheduling, milestone 2 below, before any other.
+Watch mode, milestone 3 below, before any other.
 
 ## Phase 1 milestones
 
-A proposal, ordered to rough in the whole path first. Each ends with its tests passing on Linux and Windows. Milestone 1, correctness, is done.
+A proposal, ordered to rough in the whole path first. Each ends with its tests passing on Linux and Windows. Milestones 1, correctness, and 2, scheduling, are done.
 
-2. **Scheduling.** Parallel jobs, `fac.pool` and `pool=`, failure and `-k`, interrupt and graceful stop, the lock and `--lock-timeout`, `fac.give_lock()`, the terminal for tasks, and the pseudo-terminal for rules' commands, so a compiler keeps its color. The exit statuses and output contract in [the command line](./design/command-line.md), with every invocation closing on `Finished`, `Failed`, `Stopped`, or `Interrupted` and Facere's own output on stderr. `fac.run` returning `None` beside `fac.capture`, and collecting again after each batch that executed a task. The `serve` task in the `my-site` example calls `fac.give_lock()` once it exists, so `fac` in a second terminal does not wait on it.
 3. **Watch mode.** The set of paths a cycle observed, then [the supervisor](./design/watch.md).
 4. **Stores.** `fac.Virtual`, `fac.VirtualInput`, `fac.VirtualOutput`, `fac.read` and `fac.write`, `fac.FileStore`, virtual output records and stamps in the state, the flush and its round-trip check, and file outputs moved onto the same code path as the built-in store. A task declaring `fac.VirtualInput` fails.
 5. **Names.** Loading every `fac.py` under the root into one graph, with `fac.exclude`, root-relative paths everywhere, and `fac.here`. Scopes as values with `fac.Scope`, `each=` on tasks, groups, patterns, `::`, the name grammar, `--list`, `--check`, `--inputs` and `--outputs`, `--json` with its object layout, and `-v` reasons, which name the input that moved for a rule left unrecorded. Failing an output inside another rule's directory output.

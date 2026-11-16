@@ -1,8 +1,7 @@
-"""The status row pinned to the bottom of a terminal, run on a pseudo-terminal 10 rows by 40 columns."""
+"""The status row pinned to the bottom of a terminal."""
 
 import os
 import signal
-import subprocess
 import sys
 import time
 from pathlib import Path
@@ -10,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from ..helpers import mask_elapsed
+from .terminal import read_all, start_on_terminal
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="the row needs a POSIX terminal")
 
@@ -17,47 +17,13 @@ SCROLL_REGION = "\x1b7\x1b[1;9r\x1b8\x1b[1A"
 CLEAR_ROW = "\x1b7\x1b[10;1H\x1b[2K"
 
 
-def _start_on_terminal(root: Path, *args: str) -> tuple[subprocess.Popen[bytes], int]:
-    assert sys.platform != "win32"
-    import fcntl
-    import pty
-    import struct
-    import termios
-
-    master, slave = pty.openpty()
-    fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 10, 40, 0, 0))
-    process = subprocess.Popen(
-        [sys.executable, "-m", "facere", *args],
-        cwd=root,
-        stdout=slave,
-        stderr=slave,
-        env={**os.environ, "TERM": "xterm"},
-    )
-    os.close(slave)
-    return process, master
-
-
-def _read_all(master: int) -> str:
-    chunks = []
-    while True:
-        try:
-            chunk = os.read(master, 4096)
-        except OSError:
-            break
-        if not chunk:
-            break
-        chunks.append(chunk)
-    os.close(master)
-    return b"".join(chunks).decode()
-
-
 @pytest.mark.project("touch")
 def test_row_shows_each_executing_rule_below_a_scroll_region_and_is_erased_at_the_end(
     root: Path,
 ) -> None:
-    process, master = _start_on_terminal(root)
+    process, master = start_on_terminal(root)
 
-    output = mask_elapsed(_read_all(master))
+    output = mask_elapsed(read_all(master))
 
     assert process.wait(timeout=30) == 0
     assert output == (
@@ -70,9 +36,9 @@ def test_row_shows_each_executing_rule_below_a_scroll_region_and_is_erased_at_th
 
 @pytest.mark.project("chain")
 def test_position_counts_each_rule_reached_once_per_batch_that_a_task_ends(root: Path) -> None:
-    process, master = _start_on_terminal(root, "second", "second", "between", "second")
+    process, master = start_on_terminal(root, "second", "second", "between", "second")
 
-    output = mask_elapsed(_read_all(master))
+    output = mask_elapsed(read_all(master))
 
     assert process.wait(timeout=30) == 0
     assert output == (
@@ -86,21 +52,26 @@ def test_position_counts_each_rule_reached_once_per_batch_that_a_task_ends(root:
 
 
 @pytest.mark.project("interrupt")
-def test_terminating_signal_restores_the_scroll_region_before_the_process_dies(
+def test_hangup_kills_the_command_and_restores_the_scroll_region_before_the_process_dies(
     root: Path,
 ) -> None:
     assert sys.platform != "win32"
     (root / "block").touch()
-    process, master = _start_on_terminal(root)
+    process, master = start_on_terminal(root)
     pid_file = root / "build" / "pid"
     deadline = time.monotonic() + 30
     while not (pid_file.exists() and pid_file.read_text()) and time.monotonic() < deadline:
         time.sleep(0.05)
     command_pid = int(pid_file.read_text())
 
-    process.send_signal(signal.SIGTERM)
-    output = _read_all(master)
-    os.kill(command_pid, signal.SIGKILL)
+    process.send_signal(signal.SIGHUP)
+    output = mask_elapsed(read_all(master))
 
-    assert process.wait(timeout=30) == -signal.SIGTERM
-    assert output.endswith(f"{CLEAR_ROW}\x1b[r\x1b8")
+    assert process.wait(timeout=30) == -signal.SIGHUP
+    assert output.endswith(
+        f"{CLEAR_ROW}\x1b[r\x1b8"
+        "fac.py:8:2: note: interrupted rule 'slow' (build/a.txt)\r\n"
+        "Interrupted after <elapsed>.\r\n"
+    )
+    with pytest.raises(ProcessLookupError):
+        os.kill(command_pid, 0)

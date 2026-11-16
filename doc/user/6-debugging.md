@@ -22,11 +22,11 @@ sitemap.py: no base URL given
 fac.py:60:2: error: rule 'sitemap' (build/pages/sitemap.txt) failed
 ```
 
-A Python exception in a recipe prints its traceback in place of the command. A mistake in the `fac.py` itself, such as two rules outputting one path, a dependency cycle, or an unannotated path, fails before any recipe executes, naming the lines involved.
+A Python exception in a recipe prints its traceback in place of the command. *(0.4)* The invocation then ends on a line starting with `Failed`, after the rules already executing finish, and no other rule starts. `fac -k` instead keeps building everything that does not depend on what failed, printing each failure as it happens. A mistake in the `fac.py` itself, such as two rules outputting one path, a dependency cycle, or an unannotated path, fails before any recipe executes, naming the lines involved.
 
 ## Step through a recipe
 
-Recipes are ordinary Python running inside `fac`, so `print` and `breakpoint()` work in them. Adding one changes the recipe's code, so the rule executes once more. A `print` at module level runs on every invocation, as the file loads.
+Recipes are ordinary Python running inside `fac`, so `print` and `breakpoint()` work in them. Adding one changes the recipe's code, so the rule executes once more. *(0.4)* A rule's prints appear once it finishes, so to step through a rule with `breakpoint()`, also declare it with `terminal=True`, which gives it the terminal while it executes. A `print` at module level runs on every invocation, as the file loads.
 
 ## Work out why a rule did or did not execute
 

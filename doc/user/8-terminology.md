@@ -13,7 +13,7 @@ Each term is defined using only the terms above it, so reading top to bottom nev
 | Rule | A function in a `fac.py`, decorated with `@fac.rule`, whose signature declares the files it reads and at least one file it writes. |
 | Task | A function in a `fac.py`, decorated with `@fac.task`, that reads files as a rule does but writes none Facere tracks, and executes whenever requested. |
 | Recipe | The Python function a rule or task executes, together with the commands it runs. |
-| Command | A program a recipe runs through `fac.run`, with its arguments. |
+| Command | A program a recipe runs through `fac.run` or *(0.4)* `fac.capture`, with its arguments. |
 | Collection | Loading every `fac.py` and defining its rules and tasks, before any recipe executes. |
 | Store *(planned)* | An object defined in a `fac.py` that holds values under keys, such as the rows of one file or the resources of an HTTP REST API, and reads and writes them through its own methods. The filesystem is the store Facere has built in. |
 | Virtual output *(planned)* | One key of a store together with its value, named by the store and the key, which a rule writes as it does a file. |
@@ -33,7 +33,10 @@ Each term is defined using only the terms above it, so reading top to bottom nev
 | Shared module | An ordinary Python module under the root that `fac.py` files import for the code and facts they share, and whose code joins the fingerprint of every rule that reaches it. |
 | Target | A name or output path given on the command line, which `fac` builds. |
 | Build | To execute the recipe of each stale rule that targets need, and of each task they reach. |
-| Batch *(planned)* | A maximal run of consecutive targets that reach no task, which `fac` builds together, in parallel. |
+| Batch *(0.4)* | A maximal run of consecutive targets that reach no task, which `fac` builds together, in parallel. |
+| Job *(0.4)* | A rule's recipe executing beside others in one batch, of which `-j` caps how many at once. |
+| Pool *(0.4)* | A cap on how many of the rules given it execute at once, below the jobs. |
+| Lock *(0.4)* | The hold an invocation keeps on its output directory, for which a second invocation on the same directory waits. |
 | Group *(planned)* | A named set of targets, such as `all`, built together. |
 | Scope *(planned)* | A namespace whose name prefixes every name defined inside it: the directory of each `fac.py`, and each value `fac.scope` returns, which a rule or task joins through a parameter annotated `fac.Scope`. |
 | Name | The dotted string you type to reach a rule, task, group, or scope, such as `server.release`. |

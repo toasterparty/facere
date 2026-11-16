@@ -3,7 +3,6 @@
 import _imp
 import importlib.util
 import os
-import py_compile
 import warnings
 from collections.abc import Iterator
 
@@ -39,6 +38,9 @@ def _is_checked_hash(path: str) -> bool:
 
 def _try_recompile(path: str, root: str, cached_root: str) -> bool:
     """Compile the source `path` caches into it as a checked hash-based file, and say whether that source exists, compiles, and is cached there at this interpreter's optimization level."""
+    # Imported here, since it imports traceback, which costs an invocation 5 ms, and only a stale file needs it.
+    import py_compile
+
     directory, name = os.path.split(os.path.relpath(path, cached_root))
     source = os.path.join(root, directory, f"{name.partition('.')[0]}.py")
     if importlib.util.cache_from_source(source) != path:

@@ -1,4 +1,4 @@
-"""What fac prints: command output whole and unaltered, at most 3 lines of its own on success, and failures led by the command."""
+"""What fac prints: each rule's output whole and unaltered, at most 3 lines of its own on success, failures led by the command, and a closing line whatever happened."""
 
 from pathlib import Path
 from types import SimpleNamespace
@@ -43,6 +43,7 @@ def test_failed_command_leads_with_the_command_and_its_output_then_names_the_rul
     assert lines[1:] == [
         "err",
         "fac.py:18:2: error: rule 'failing_echo' (build/failing.txt) failed",
+        "Failed after <elapsed>.",
     ]
 
 
@@ -54,29 +55,44 @@ def test_failed_recipe_prints_its_traceback_then_names_the_rule(fac: Fac) -> Non
     lines = result.err.splitlines()
     assert lines[0] == "Traceback (most recent call last):"
     assert '    assert 1 + 1 == 3, "arithmetic"' in lines
-    assert lines[-2:] == [
+    assert lines[-3:] == [
         "AssertionError: arithmetic",
         "fac.py:4:2: error: rule 'check' (build/checked.txt) failed",
+        "Failed after <elapsed>.",
     ]
     assert "_build.py" not in result.err
 
 
 @pytest.mark.project("file_under_file")
 def test_error_on_a_rule_path_fails_the_rule_naming_it(fac: Fac) -> None:
-    result = fac("file", "nested")
+    result = fac("-j1", "file", "nested")
 
     assert result.status == 1
-    (line,) = result.err.splitlines()
+    line, closing = result.err.splitlines()
     assert line.startswith("fac.py:9:2: error: rule 'nested' (build/x/y) failed: ")
     assert line.endswith(" 'build/x'")
+    assert closing == "Failed after <elapsed>. Executed 1 rule."
 
 
 @pytest.mark.project("fail_then_touch")
-def test_first_failure_stops_the_build(root: Path, fac: Fac) -> None:
-    result = fac("fail", "after")
+def test_first_failure_starts_no_rule_after_it(root: Path, fac: Fac) -> None:
+    result = fac("-j1", "fail", "after")
 
     assert result.status == 1
     assert not (root / "build" / "b.txt").exists()
+
+
+@pytest.mark.project("fail_then_touch")
+def test_keep_going_builds_what_does_not_depend_on_the_failure(root: Path, fac: Fac) -> None:
+    result = fac("-j1", "-k", "fail", "after", "downstream")
+
+    assert result.status == 1
+    assert result.err.splitlines()[-2:] == [
+        "fac.py:4:2: error: rule 'fail' (build/a.txt) failed",
+        "Failed after <elapsed>. Executed 1 rule.",
+    ]
+    assert (root / "build" / "b.txt").exists()
+    assert not (root / "build" / "c.txt").exists()
 
 
 @pytest.mark.project("many_rules")

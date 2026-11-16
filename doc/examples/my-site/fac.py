@@ -65,10 +65,11 @@ def sitemap(
     fac.run(sys.executable, tool, BASE_URL, "index.html", page_names, stdout=output)
 
 
-# A task executes every time you ask, after the rules that output its inputs. While it runs, `fac` in
-# another terminal rebuilds what an edit reached, and the server reloads each open page.
+# A task executes every time you ask, after the rules that output its inputs. Once it gives the lock,
+# `fac` in another terminal rebuilds what an edit reached, and the server reloads each open page.
 @fac.task
 def serve(args: fac.Args, files: list[fac.Input] = SITE, tool: fac.Input = SERVER_TOOL):
+    fac.give_lock()
     fac.run(sys.executable, tool, fac.out("pages"), args)
 
 

@@ -33,7 +33,7 @@ A finish is `OK`, `FAILED`, or `UNSETTLED`, which succeeded but leaves no trace,
 
 `decide(step, trace, digests)` is the whole staleness decision as a pure function, returning a verdict or the keys it still needs. It reads a step's inputs first, and its found inputs and outputs only once the trace matches those, so a step already known stale costs no stat of its outputs. Keys are asked for a step at a time, not one by one, since each event costs a host with several workers a turn at its mutex. The reasons, in the order checked, are `INPUT_MISSING`, `ALWAYS`, `NO_TRACE`, `STEP_CHANGED`, `INPUT_CHANGED` and `OUTPUT_CHANGED` with the key, and `CURRENT`. `--check` and the `-v` reasons are to print these verdicts, the ones a build acts on, so neither can disagree with it.
 
-An `Engine` is one session. It observes each key once and keeps the digest, so a session is correct for the keys as they stood when it first looked, and it asks again only for a step's outputs once that step ran. A later `request` in the same session checks only what no earlier one settled. Facere starts a new session after each task, since a task may change any file.
+An `Engine` is one session. It observes each key once and keeps the digest, so a session is correct for the keys as they stood when it first looked, and it asks again only for a step's outputs once that step ran. A later `request` in the same session checks only what no earlier one settled. Facere starts a new session after each task, with the project collected again, since a task may change any file.
 
 ## Threads
 
@@ -44,7 +44,7 @@ The engine holds no lock. One mutex of the host's is all a parallel build needs,
 - a `Run` arrives only once every step upstream is settled, and takes its pool's room as it is handed out
 - `IDLE` means other workers hold what everything left waits on, so waking the idle after each answer is the whole wake-up rule
 
-Among the steps that are ready, the one declared first is handed out first, so one worker gives a reproducible order, and the order between recipes comes from the graph alone, never from the order of the targets. With `keep_going`, a failure skips only the steps downstream of it. Without it, or after `stop`, no further step is checked or run, while the steps running finish and are traced. Facere uses one worker, no pool, and neither option until [scheduling](./execution.md#scheduling) is built on them.
+Among the steps that are ready, the one declared first is handed out first, so one worker gives a reproducible order, and the order between recipes comes from the graph alone, never from the order of the targets. With `keep_going`, a failure skips only the steps downstream of it. Without it, or after `stop`, no further step is checked or run, while the steps running finish and are traced. Facere's workers are the threads [scheduling](./execution.md#scheduling) describes, with `-k` as `keep_going`, a graceful stop as `stop`, and each `fac.pool` as a pool. The host wakes the idle workers only when some wait, since a `Condition`'s notify costs a no-op about a millisecond over its events.
 
 ## Found inputs
 
@@ -58,7 +58,7 @@ Facere's side of the engine is `_build.py`, with the graph built in `_collect.py
 
 - A key is a path as `normalize` returns it, spelled as declared, since two sources differing only in case are two files on Linux. Outputs are also indexed by their case-folded key, which answers what the graph cannot: which output holds a given path.
 - Containment becomes plain edges. An input inside a directory output, or a directory input holding outputs, gets an order-only key for each such output, so the engine orders the rule after their rules while only the input's own digest decides staleness. For a found input, `load_trace` takes the keys to follow in place of the keys found, so one inside a directory output follows that directory.
-- An output is hashed afresh whenever the engine asks, and any other path as the session first saw it. The host keeps what it told the engine of each path, with its stamp, and compares against that after a recipe, so a rule is recorded only where nothing it read moved since the engine decided on it.
+- An output is hashed afresh whenever the engine asks, and any other path as the session first saw it. The host keeps what it told the engine of each path, with its stamp, and compares against that after a recipe, so a rule is recorded only where nothing it read moved since the engine decided on it. The damage checks and the checks for changes during a recipe read files afresh without changing what the session saw, so one rule's check never moves another's reference.
 - The damage checks, the snapshot, shadowing, the `moved` table, tasks, and every message stay in the host. Shadowing reaches the engine as `forget_trace`.
 
 ## Scenarios

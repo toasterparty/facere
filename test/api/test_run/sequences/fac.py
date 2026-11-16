@@ -8,6 +8,6 @@ SCRIPT = "import sys; print(*sys.argv[1:], end='')"
 
 @fac.rule(default=True)
 def argv(target: fac.Output = fac.out("argv.txt")):
-    shown = fac.run(PYTHON, SCRIPT, ["a", "b"], "c", ("d",), [], quiet=True)
+    shown = fac.capture(PYTHON, SCRIPT, ["a", "b"], "c", ("d",), [])
     with open(target, "w") as file:
         file.write(shown)

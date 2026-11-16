@@ -18,10 +18,13 @@ def test_all_exports_exactly_the_fac_py_interface() -> None:
         "OrderOnly",
         "Output",
         "add_inputs",
+        "capture",
         "env",
+        "give_lock",
         "main",
         "minimum_version",
         "out",
+        "pool",
         "read_text",
         "rule",
         "run",
@@ -88,6 +91,7 @@ def test_out_flag_naming_the_root_fails(root: Path, fac: Fac) -> None:
     assert result.status == 2
     assert result.err.splitlines() == [
         "fac: error: --out names the root, where outputs would mix with sources",
+        "Failed after <elapsed>.",
     ]
     assert not (root / ".fac").exists()
 
@@ -111,6 +115,7 @@ def test_missing_fac_py_fails_naming_the_nearest_ancestor_holding_one(root: Path
     assert result.err.splitlines() == [
         "fac: error: no fac.py in the working directory",
         "fac: note: the nearest directory holding a fac.py is ../..",
+        "Failed after <elapsed>.",
     ]
 
 
@@ -130,6 +135,7 @@ def test_minimum_version_above_the_running_version_fails_naming_the_upgrade(
     assert result.status == 2
     assert result.err.splitlines() == [
         "fac.py:3:1: error: this project needs Facere 999.0 or newer. Detected 0.1: run `uv tool upgrade facere`",
+        "Failed after <elapsed>.",
     ]
 
 
@@ -144,6 +150,7 @@ def test_minimum_version_shows_the_patch_where_only_it_tells_the_versions_apart(
     assert result.status == 2
     assert result.err.splitlines() == [
         "fac.py:3:1: error: this project needs Facere 0.2.1 or newer. Detected 0.2.0: run `uv tool upgrade facere`",
+        "Failed after <elapsed>.",
     ]
 
 
@@ -156,7 +163,7 @@ def test_minimum_version_that_is_not_dotted_numbers_fails_loading(fac: Fac) -> N
         "ValueError: fac.minimum_version takes a version such as \"0.1\", not '1.x'"
         in result.err.splitlines()
     )
-    assert result.err.splitlines()[-1] == "fac.py:3:1: error: loading fac.py raised ValueError"
+    assert result.err.splitlines()[-2] == "fac.py:3:1: error: loading fac.py raised ValueError"
 
 
 @pytest.mark.project("shared_module")
@@ -221,6 +228,7 @@ def test_importing_fac_py_fails_saying_it_ran_twice(fac: Fac) -> None:
     assert result.status == 2
     assert result.err.splitlines() == [
         "fac.py:6:2: error: fac.py ran a second time because a module imported it",
+        "Failed after <elapsed>.",
     ]
 
 
@@ -232,6 +240,7 @@ def test_importing_another_projects_fac_py_fails_naming_its_definitions(fac: Fac
     assert result.err.splitlines() == [
         "fac.py:1:1: error: this definition comes from another project's fac.py, which a module imported",
         "other/fac.py:4:2: note: declared here",
+        "Failed after <elapsed>.",
     ]
 
 
@@ -254,6 +263,7 @@ def test_import_shadowed_by_an_earlier_sys_path_entry_fails_naming_both_modules(
     assert result.err.splitlines() == [
         "fac.py:1:1: error: import facere_test_words resolves outside the root, though the root holds facere_test_words.py, since an earlier sys.path entry shadows facere_test_words.py",
         f"{shadow}:1:1: note: facere_test_words resolves here",
+        "Failed after <elapsed>.",
     ]
 
 
@@ -264,6 +274,7 @@ def test_import_shadowed_by_a_built_in_module_fails(fac: Fac) -> None:
     assert result.status == 2
     assert result.err.splitlines() == [
         "fac.py:1:1: error: import sys resolves to a built-in module, though the root holds sys.py, since an earlier sys.path entry shadows sys.py",
+        "Failed after <elapsed>.",
     ]
 
 
@@ -295,7 +306,7 @@ def test_sources_glob_reaching_outside_the_root_fails_loading(fac: Fac) -> None:
 
     assert result.status == 2
     assert "ValueError: fac.sources takes globs under the root, not '../*.c'" in result.err
-    assert result.err.splitlines()[-1] == "fac.py:3:1: error: loading fac.py raised ValueError"
+    assert result.err.splitlines()[-2] == "fac.py:3:1: error: loading fac.py raised ValueError"
 
 
 @pytest.mark.project("second_output_directory")

@@ -1,4 +1,4 @@
-"""fac.run: one command without a shell, its program resolved before spawning, its streams redirected to files on request."""
+"""fac.run and fac.capture: one command without a shell, its program resolved before spawning, its streams redirected to files on request."""
 
 import os
 import subprocess
@@ -11,7 +11,7 @@ from ..helpers import Fac, run_fac
 
 
 @pytest.mark.project("answer")
-def test_run_returns_the_command_stdout(root: Path, fac: Fac) -> None:
+def test_capture_returns_the_command_stdout(root: Path, fac: Fac) -> None:
     result = fac()
 
     assert result.status == 0, result.err
@@ -115,6 +115,7 @@ def test_project_env_changing_a_variables_value_fails_naming_both_calls(fac: Fac
     assert result.err.splitlines() == [
         "fac.py:4:1: error: fac.env sets LC_ALL to 'C.UTF-8', though another call set it to 'C'",
         "fac.py:3:1: note: fac.env sets LC_ALL here",
+        "Failed after <elapsed>.",
     ]
 
 
@@ -185,15 +186,15 @@ def test_timeout_failure_names_the_limit_set_not_the_time_remaining(
 
 
 @pytest.mark.project("task")
-def test_task_command_shares_facere_streams_so_run_returns_nothing(fac: Fac) -> None:
+def test_task_command_shares_facere_streams_and_run_returns_none(fac: Fac) -> None:
     result = fac()
 
     assert result.status == 0, result.err
     assert result.out == "hello\n"
 
 
-@pytest.mark.project("task_quiet")
-def test_quiet_task_command_returns_its_stdout_without_printing_it(fac: Fac) -> None:
+@pytest.mark.project("task_capture")
+def test_capture_in_a_task_returns_the_command_stdout_without_printing_it(fac: Fac) -> None:
     result = fac()
 
     assert result.status == 0, result.err
@@ -201,16 +202,16 @@ def test_quiet_task_command_returns_its_stdout_without_printing_it(fac: Fac) -> 
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="sessions are POSIX")
-@pytest.mark.project("task_quiet_session")
-def test_quiet_task_command_runs_in_a_session_a_timeout_can_kill_whole(fac: Fac) -> None:
+@pytest.mark.project("task_capture_session")
+def test_capture_in_a_task_runs_the_command_in_a_session_of_its_own(fac: Fac) -> None:
     result = fac()
 
     assert result.status == 0, result.err
     assert result.out == "True\n"
 
 
-@pytest.mark.project("task_quiet_stdin")
-def test_quiet_task_command_ignores_typed_stdin_unless_stdin_names_a_file(root: Path) -> None:
+@pytest.mark.project("task_capture_stdin")
+def test_capture_in_a_task_ignores_typed_stdin_unless_stdin_names_a_file(root: Path) -> None:
     result = run_fac(root, stdin_text="typed")
 
     assert result.status == 0, result.err
@@ -232,6 +233,6 @@ def test_run_outside_a_recipe_fails_collection(fac: Fac) -> None:
 
     assert result.status == 2
     assert (
-        "RuntimeError: fac.run runs a command only from the recipe of a rule or task"
+        "RuntimeError: fac.run runs a command only from the recipe of a rule or task, and in a rule only on the recipe's own thread"
         in result.err.splitlines()
     )

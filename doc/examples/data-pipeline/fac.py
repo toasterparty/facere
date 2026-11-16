@@ -1,4 +1,4 @@
-"""Regional sales figures cleaned, totaled, and reported, showing each thing fac.run can do for a command. It needs nothing but Python."""
+"""Regional sales figures cleaned, totaled, and reported, showing each thing fac.run and fac.capture can do for a command. It needs nothing but Python."""
 
 import os
 import shutil
@@ -55,7 +55,7 @@ def total(
     fac.run(sys.executable, tool, outputs, tables, env=env, timeout=60)
 
 
-# `quiet=True` hides the output the recipe reads back. `title: str` marks a value, never read as a file.
+# `fac.capture` returns what the command printed, and prints nothing. `title: str` marks a value, never read as a file.
 @fac.rule
 def report(
     totals: fac.Input = TOTALS,
@@ -64,7 +64,7 @@ def report(
     output: fac.Output = REPORT,
     title: str = TITLE,
 ):
-    table = fac.run(sys.executable, tool, totals, quiet=True)
+    table = fac.capture(sys.executable, tool, totals)
     fac.write_text(output, f"{title}\n\n{table}\nTotal: {fac.read_text(summary)}")
 
 

@@ -5,5 +5,5 @@ import facere as fac
 
 @fac.task(default=True)
 def answer():
-    stdout = fac.run(sys.executable, "-c", "print(6 * 7)", quiet=True)
+    stdout = fac.capture(sys.executable, "-c", "print(6 * 7)")
     print(f"read {stdout.strip()}")

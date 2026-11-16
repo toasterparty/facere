@@ -10,8 +10,10 @@ from facere._api import (
     Output,
     add_inputs,
     env,
+    give_lock,
     minimum_version,
     out,
+    pool,
     read_text,
     rule,
     sources,
@@ -19,7 +21,7 @@ from facere._api import (
     write_text,
 )
 from facere._cli import main
-from facere._command import run
+from facere._command import capture, run
 
 __all__ = [
     "Args",
@@ -27,10 +29,13 @@ __all__ = [
     "OrderOnly",
     "Output",
     "add_inputs",
+    "capture",
     "env",
+    "give_lock",
     "main",
     "minimum_version",
     "out",
+    "pool",
     "read_text",
     "rule",
     "run",

@@ -4,9 +4,14 @@ import contextlib
 import enum
 import os
 import posixpath
+import sys
+import threading
 from collections.abc import Callable, Container, Generator, Iterator
 from dataclasses import dataclass, field
-from typing import NamedTuple
+from typing import TYPE_CHECKING, NamedTuple
+
+if TYPE_CHECKING:
+    from facere._command import Commands
 
 STATE_DIR_NAME = ".fac"
 STATE_FILE_NAME = "state.db"
@@ -38,6 +43,8 @@ class Declaration:
     name: str | None
     is_default: bool
     is_always: bool
+    pool: object
+    has_terminal: bool
     rows: tuple[object, ...] | None
     values: dict[str, object]
     location: Location
@@ -49,15 +56,24 @@ class UndeclaredUse(NamedTuple):
     reason: str
 
 
+class Pool:
+    """A cap on how many of the rules given it execute at once, compared by identity."""
+
+    __slots__ = ("size",)
+
+    def __init__(self, size: int) -> None:
+        self.size = size
+
+
 @dataclass(slots=True)
 class Recipe:
-    """The recipe executing now, with what the undeclared-path check and fac.add_inputs track of it.
+    """One executing recipe, with what the undeclared-path check and fac.add_inputs track of it.
 
-    Every path is keyed by calc_path_key, but `reported`, which keeps each reported path as normalize returns it, so two files differing only in case stay apart where the file system tells them apart. `tracked` holds the rule's inputs and outputs, `exempt` what its `str` parameters hold, and `output_keys` every output in the project. A recipe may open a shared module, but no command may name one, since only the recipe's reach puts one in a fingerprint. `reported_names` holds the file name of every path reported outside `tracked`, dropped ones included. `undeclared`, the first use the check rejected, fails the rule however the recipe treats the error.
+    `has_terminal` holds for a task and for a rule declared with `terminal=True`, whose commands and prints share Facere's own streams. Any other recipe's are captured in `output`, in the order written, each chunk for stderr or else stdout. Every path is keyed by calc_path_key, but `reported`, which keeps each reported path as normalize returns it, so two files differing only in case stay apart where the file system tells them apart. `tracked` holds the rule's inputs and outputs, `exempt` what its `str` parameters hold, and `output_keys` every output in the project. A recipe may open a shared module, but no command may name one, since only the recipe's reach puts one in a fingerprint. `reported_names` holds the file name of every path reported outside `tracked`, dropped ones included. `undeclared`, the first use the check rejected, fails the rule however the recipe treats the error, as does `misuse`, the first call a thread the recipe started made that only the recipe's own thread may.
     """
 
     is_task: bool
-    thread_id: int
+    has_terminal: bool
     tracked: frozenset[str]
     order_only: frozenset[str]
     exempt: frozenset[str]
@@ -68,23 +84,94 @@ class Recipe:
     reported_names: set[str] = field(default_factory=set)
     written: set[str] = field(default_factory=set)
     undeclared: UndeclaredUse | None = None
+    misuse: str | None = None
+    output: list[tuple[bool, bytes | str]] = field(default_factory=list)
+
+
+class _Threads(threading.local):
+    """The recipe each thread executes, so rules executing at once never read one another's."""
+
+    recipe: Recipe | None = None
 
 
 @dataclass(slots=True)
 class Context:
+    """What one invocation shares.
+
+    `is_loading` holds while a fac.py loads. `task` is the task executing, which executes alone, so any thread without a recipe of its own acts for it. `window_size` is the terminal's rows and columns where Facere's stderr is a terminal a rule's command may be given one like, else None. `give_lock_cb` gives the output directory's lock on a task's request.
+    """
+
     root: str
     out_dir: str
     fac_py: str
     is_quiet: bool
     is_verbose: bool
+    commands: "Commands"
     declarations: list[Declaration] = field(default_factory=list)
     env: dict[str, str | None] = field(default_factory=dict)
     env_locations: dict[str, Location] = field(default_factory=dict)
-    running: Recipe | None = None
+    is_loading: bool = False
+    task: Recipe | None = None
+    window_size: tuple[int, int] | None = None
+    give_lock_cb: Callable[[], None] | None = None
+    _threads: _Threads = field(default_factory=_Threads)
+    _starters_lock: threading.Lock = field(default_factory=threading.Lock)
+    # Each thread a rule's recipe started, until that recipe ends, and each rule's recipe executing.
+    _starters: dict[threading.Thread, Recipe] = field(default_factory=dict)
+    _executing: list[Recipe] = field(default_factory=list)
 
     @property
     def state_dir(self) -> str:
         return posixpath.normpath(posixpath.join(self.out_dir, STATE_DIR_NAME))
+
+    def find_rule_recipe(self) -> Recipe | None:
+        """Return the rule's recipe the calling thread executes, or None."""
+        return self._threads.recipe
+
+    def find_recipe(self) -> Recipe | None:
+        """Return the recipe the calling thread acts for: its own, or else the executing task's."""
+        return self._threads.recipe or self.task
+
+    def find_starters(self) -> list[Recipe]:
+        """Return the rule's recipe that started the calling thread, itself or through a thread it started. Before Python 3.12, which tells no thread's start, return every rule's recipe executing, since any of them may have."""
+        with self._starters_lock:
+            if sys.version_info < (3, 12):
+                return list(self._executing)
+            starter = self._starters.get(threading.current_thread())
+            return [] if starter is None else [starter]
+
+    def note_started(self, thread: threading.Thread) -> None:
+        """Remember that the calling thread starts `thread`, where it executes a rule's recipe or such a recipe started it."""
+        recipe = self._threads.recipe
+        with self._starters_lock:
+            recipe = recipe or self._starters.get(threading.current_thread())
+            if recipe is not None:
+                self._starters[thread] = recipe
+
+    @contextlib.contextmanager
+    def executing(self, recipe: Recipe) -> Generator[None]:
+        """Execute `recipe` on the calling thread for the length of the block."""
+        if recipe.is_task:
+            self.task = recipe
+        else:
+            self._threads.recipe = recipe
+            with self._starters_lock:
+                self._executing.append(recipe)
+        try:
+            yield
+        finally:
+            self.task = None
+            self._threads.recipe = None
+            with self._starters_lock:
+                for thread in [key for key, value in self._starters.items() if value is recipe]:
+                    del self._starters[thread]
+                self._executing[:] = [other for other in self._executing if other is not recipe]
+
+    def forget_collection(self) -> None:
+        """Drop what loading the fac.py declared, before loading it again."""
+        self.declarations.clear()
+        self.env.clear()
+        self.env_locations.clear()
 
 
 _current: Context | None = None

@@ -20,7 +20,7 @@ def test_argument_naming_an_undeclared_file_fails_before_the_command_runs(
     result = fac()
 
     assert result.status == 1
-    assert result.err == _error("6:2", "gave a command", "tool.cfg") + "\n"
+    assert result.err == _error("6:2", "gave a command", "tool.cfg") + "\nFailed after <elapsed>.\n"
     assert not (root / "build" / "result.txt").exists()
 
 
@@ -31,7 +31,7 @@ def test_flag_parts_split_at_equals_and_comma_are_checked(root: Path, fac: Fac) 
     result = fac()
 
     assert result.status == 1
-    assert result.err == _error("6:2", "gave a command", "tool.cfg") + "\n"
+    assert result.err == _error("6:2", "gave a command", "tool.cfg") + "\nFailed after <elapsed>.\n"
 
 
 @pytest.mark.project("command")
@@ -42,7 +42,10 @@ def test_relative_argument_resolves_against_cwd(root: Path, fac: Fac) -> None:
     result = fac()
 
     assert result.status == 1
-    assert result.err == _error("6:2", "gave a command", "sub/near.cfg") + "\n"
+    assert (
+        result.err
+        == _error("6:2", "gave a command", "sub/near.cfg") + "\nFailed after <elapsed>.\n"
+    )
 
 
 @pytest.mark.project("command")
@@ -67,7 +70,7 @@ def test_program_under_the_root_must_be_declared(fac: Fac) -> None:
     result = fac()
 
     assert result.status == 1
-    assert result.err == _error("4:2", "ran", "tools/run.py") + "\n"
+    assert result.err == _error("4:2", "ran", "tools/run.py") + "\nFailed after <elapsed>.\n"
 
 
 @pytest.mark.project("unbuilt_tool")
@@ -78,6 +81,7 @@ def test_running_another_rules_output_names_that_rule_rather_than_a_missing_file
     assert result.err.splitlines() == [
         _error("11:2", "ran", "build/tool"),
         "fac.py:6:2: note: rule 'build_tool' (build/tool) outputs build/tool",
+        "Failed after <elapsed>.",
     ]
 
 
@@ -104,7 +108,10 @@ def test_command_given_a_shared_module_fails_since_no_fingerprint_holds_it(
     result = fac()
 
     assert result.status == 1
-    assert result.err == _error("6:2", "gave a command", "helpers_shared.py") + "\n"
+    assert (
+        result.err
+        == _error("6:2", "gave a command", "helpers_shared.py") + "\nFailed after <elapsed>.\n"
+    )
 
 
 @pytest.mark.project("exempt")
@@ -120,7 +127,7 @@ def test_opening_an_undeclared_file_fails(fac: Fac) -> None:
     result = fac()
 
     assert result.status == 1
-    assert result.err == _error("4:2", "opened", "tool.cfg") + "\n"
+    assert result.err == _error("4:2", "opened", "tool.cfg") + "\nFailed after <elapsed>.\n"
 
 
 @pytest.mark.project("opened")
@@ -130,7 +137,7 @@ def test_opening_an_undeclared_file_to_read_and_write_fails(root: Path, fac: Fac
     result = fac()
 
     assert result.status == 1
-    assert result.err == _error("4:2", "opened", "tool.cfg") + "\n"
+    assert result.err == _error("4:2", "opened", "tool.cfg") + "\nFailed after <elapsed>.\n"
 
 
 @pytest.mark.project("open_in_thread")
@@ -143,7 +150,7 @@ def test_except_exception_cannot_hide_the_failure(fac: Fac) -> None:
     result = fac()
 
     assert result.status == 1
-    assert result.err == _error("6:2", "opened", "tool.cfg") + "\n"
+    assert result.err == _error("6:2", "opened", "tool.cfg") + "\nFailed after <elapsed>.\n"
 
 
 @pytest.mark.filterwarnings("ignore::pytest.PytestUnhandledThreadExceptionWarning")
@@ -152,7 +159,10 @@ def test_command_from_a_thread_the_recipe_starts_still_fails_the_rule(fac: Fac) 
     result = fac()
 
     assert result.status == 1
-    assert result.err.splitlines()[-1] == _error("7:2", "gave a command", "tool.cfg")
+    assert result.err.splitlines()[-2:] == [
+        "fac.py:7:2: error: rule 'use' (build/result.txt) failed: a thread its recipe started called fac.run, which in a rule works only on the recipe's own thread",
+        "Failed after <elapsed>.",
+    ]
 
 
 @pytest.mark.project("report_first")
@@ -173,6 +183,7 @@ def test_opening_another_rules_output_names_that_rule(fac: Fac) -> None:
     assert result.err.splitlines() == [
         _error("9:2", "opened", "build/made.txt"),
         "fac.py:4:2: note: rule 'make' (build/made.txt) outputs build/made.txt",
+        "Failed after <elapsed>.",
     ]
 
 

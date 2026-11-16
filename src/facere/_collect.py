@@ -11,7 +11,6 @@ import inspect
 import os
 import posixpath
 import sys
-import traceback
 import types
 import typing
 from collections.abc import Callable, Container, Iterable, Mapping
@@ -24,6 +23,7 @@ from facere._context import (
     Declaration,
     Kind,
     Location,
+    Pool,
     calc_path_key,
     is_under_root,
     is_within,
@@ -51,7 +51,7 @@ from facere._hash import (
 from facere._version import VERSION
 
 MODULE_NAME = "__fac__"
-_RESERVED_OPTIONS = ("each", "name", "default", "max_jobs", "terminal", "always", "clear")
+_RESERVED_OPTIONS = ("each", "name", "default", "pool", "terminal", "always", "clear")
 _FINGERPRINT_FORMAT = b"facere fingerprint 7"
 _UNREADABLE_SOURCE = (OSError, LookupError, SyntaxError, ValueError)
 _PATH_ANNOTATIONS = {
@@ -96,7 +96,7 @@ def _diagnose(subject: _Declared, message: str, notes: tuple[Note, ...] = ()) ->
 class Definition:
     """A rule, or a task when `is_task`, with every parameter filled.
 
-    `args_slot` places a task's fac.Args parameter: an index into `args`, a key of `kwargs`, or None when it has none. `path_values` holds the paths of each fac.Input, fac.OrderOnly, and fac.Output parameter, and `order_only_parameters` names the fac.OrderOnly ones among them.
+    `args_slot` places a task's fac.Args parameter: an index into `args`, a key of `kwargs`, or None when it has none. `path_values` holds the paths of each fac.Input, fac.OrderOnly, and fac.Output parameter, and `order_only_parameters` names the fac.OrderOnly ones among them. `has_terminal` holds for a task, and for a rule whose commands share Facere's streams as a task's do.
     """
 
     is_task: bool
@@ -105,6 +105,8 @@ class Definition:
     origin: Location
     is_default: bool
     is_always: bool
+    pool: Pool | None
+    has_terminal: bool
     fn: Callable[..., object]
     args: tuple[object, ...]
     kwargs: dict[str, object]
@@ -141,18 +143,23 @@ class Definition:
 
 @dataclass(frozen=True, slots=True)
 class Project:
-    """A root's rules and tasks. `graph` holds one step per definition, in order, whose keys are paths as normalize returns them, and `producers_by_key` maps the path key of each output to its rule."""
+    """A root's rules and tasks. `graph` holds one step per definition, in order, whose keys are paths as normalize returns them, `pool_sizes` how many steps of each pool the graph names may run at once, and `producers_by_key` maps the path key of each output to its rule."""
 
     definitions: tuple[Definition, ...]
     by_name: dict[str, list[Definition]]
     graph: Graph
+    pool_sizes: dict[str, int]
     producers_by_key: dict[str, Definition]
     shared_modules: frozenset[str]
 
 
 def collect(context: Context) -> Project:
     """Load the root's fac.py and return its validated rules and tasks, raising one FacereError listing every problem found."""
-    imported = _load(context)
+    context.is_loading = True
+    try:
+        imported = _load(context)
+    finally:
+        context.is_loading = False
     errors: list[Diagnostic] = []
     _validate_imports(context, imported, errors)
     definitions = tuple(_define_all(context, errors))
@@ -169,11 +176,17 @@ def collect(context: Context) -> Project:
     _validate_inputs(context, definitions, producers, outputs_by_key, related, errors)
     if errors:
         raise FacereError(*errors)
-    graph = _build_graph(definitions, related, code_digests)
+    pools = {
+        definition.pool: f"pool {number}"
+        for number, definition in enumerate(definitions)
+        if definition.pool is not None
+    }
+    graph = _build_graph(definitions, related, code_digests, pools)
     if graph.cycle is not None:
         raise FacereError(_build_cycle_error(definitions, graph.cycle, related))
     shared_modules = frozenset(calc_path_key(normalize(path, context.root)) for path in imported)
-    return Project(definitions, by_name, graph, producers_by_key, shared_modules)
+    pool_sizes = {name: pool.size for pool, name in pools.items()}
+    return Project(definitions, by_name, graph, pool_sizes, producers_by_key, shared_modules)
 
 
 def _map_related_outputs(
@@ -202,6 +215,7 @@ def _build_graph(
     definitions: tuple[Definition, ...],
     related: dict[str, tuple[str, ...]],
     code_digests: dict[Definition, bytes],
+    pools: dict[Pool, str],
 ) -> Graph:
     """Return a step per definition, ordered after the rule of each output related to a path the definition must have built first. Only an input's own content makes its step stale, so every other related output is order-only."""
     steps = []
@@ -220,6 +234,7 @@ def _build_graph(
                 order_only,
                 definition.outputs,
                 definition.is_always,
+                None if definition.pool is None else pools[definition.pool],
             )
         )
     return Graph(steps)
@@ -265,6 +280,8 @@ def _load(context: Context) -> list[str]:
 
 
 def _to_load_error(context: Context, error: BaseException) -> FacereError:
+    import traceback
+
     frames = traceback.extract_tb(error.__traceback__)
     in_fac_py = [frame for frame in frames if frame.filename == context.fac_py]
     first = frames.index(in_fac_py[0]) if in_fac_py else 0
@@ -376,6 +393,10 @@ def _define(
             problems.append(f"{decorator} takes no {key}= option in Facere {VERSION}")
         elif key not in signature.parameters:
             problems.append(f"{decorator}({key}=...) names no parameter of {fn.__name__}")
+    if declaration.pool is not None and not isinstance(declaration.pool, Pool):
+        problems.append(f"pool= takes what fac.pool returned, not {declaration.pool!r}")
+    if not isinstance(declaration.has_terminal, bool):
+        problems.append(f"terminal= takes True or False, not {declaration.has_terminal!r}")
     if problems:
         return []
     definitions = []
@@ -580,6 +601,8 @@ def _build_definition(
         origin=declaration.origin,
         is_default=declaration.is_default,
         is_always=declaration.is_always,
+        pool=declaration.pool if isinstance(declaration.pool, Pool) else None,
+        has_terminal=declaration.has_terminal,
         fn=declaration.fn,
         args=args,
         kwargs=kwargs,

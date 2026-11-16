@@ -4,23 +4,31 @@ import argparse
 import contextlib
 import importlib
 import os
+import signal
 import sys
 import time
 import types
 from collections.abc import Generator
 
 from facere import _build, _bytecode, _collect
+from facere._command import Commands
 from facere._context import Context, activate, normalize
 from facere._diagnostics import (
     Diagnostic,
     FacereError,
     Note,
+    format_entering,
+    format_leaving,
+    format_line,
     format_path,
     print_error,
     print_warning,
 )
+from facere._lock import LockTimeoutError, OutputLock, describe_wait
+from facere._output import Output, capture_recipes
+from facere._schedule import Signals, watch_signals
 from facere._status import pin_status
-from facere._summary import Summary, format_summary
+from facere._summary import Outcome, Summary, format_summary
 from facere._version import VERSION
 
 _HELP_EPILOG = """\
@@ -30,17 +38,24 @@ arguments after --:
 
 exit status:
   0    every target was built
-  1    a recipe failed
+  1    a recipe failed, or an output changed after its rule finished
   2    the build could not start: the command line, a fac.py, or a target is in error
+  3    --lock-timeout ran out while another invocation held the output directory
+  4    Facere itself raised, a bug, printed with its traceback
   130  the invocation was interrupted
+  143  the invocation was asked to stop, as SIGTERM asks, and let the rules executing finish
+
+Every invocation that parsed its arguments ends on a line starting with
+Finished, Failed, Stopped, or Interrupted.
 """
+_AUTO = "auto"
 
 
 def main(args: list[str]) -> int:
     """Run the fac command line in-process with `args`, the arguments after the program name, and return its exit status."""
     parser = argparse.ArgumentParser(
         prog="fac",
-        usage="%(prog)s [-h] [-C DIR] [--out DIR] [-q] [-v] [--version] [TARGET ...] [-- ARG ...]",
+        usage="%(prog)s [-h] [-C DIR] [--out DIR] [-j N] [-k] [--lock-timeout SECONDS] [-q] [-v] [--version] [TARGET ...] [-- ARG ...]",
         description="Build each TARGET of the project the fac.py in the root defines, in the order given.",
         epilog=_HELP_EPILOG,
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -50,7 +65,7 @@ def main(args: list[str]) -> int:
         "targets",
         nargs="*",
         metavar="TARGET",
-        help="a rule or task name, which covers every rule its function defines, or, when it contains a path separator, one path a rule outputs, relative to the root. Without a TARGET, every rule and task declared with default=True, or else every rule and no task",
+        help="a rule or task name, which covers every rule its function defines, or, when it contains a path separator, one path a rule outputs, relative to the root. Without a TARGET, every rule and task declared with default=True, or else every rule and no task. Consecutive targets that name no task are built together, and a task executes alone, once the targets before it are built",
     )
     parser.add_argument(
         "-C",
@@ -65,7 +80,31 @@ def main(args: list[str]) -> int:
         help="output directory, relative to the root and other than it (default: build)",
     )
     parser.add_argument(
-        "-q", "--quiet", action="store_true", help="hide the output of every successful command"
+        "-j",
+        "--jobs",
+        type=_parse_jobs,
+        default=None,
+        metavar="N",
+        help="how many rules may execute at once, or auto for every CPU Facere may use (default: auto)",
+    )
+    parser.add_argument(
+        "-k",
+        "--keep-going",
+        action="store_true",
+        help="after a failure, still build everything that does not depend on what failed",
+    )
+    parser.add_argument(
+        "--lock-timeout",
+        type=_parse_seconds,
+        default=None,
+        metavar="SECONDS",
+        help="fail with status 3 instead of waiting longer than SECONDS for another invocation on the same output directory, where 0 fails at once (default: wait as long as it takes)",
+    )
+    parser.add_argument(
+        "-q",
+        "--quiet",
+        action="store_true",
+        help="hide the output of every successful command a rule runs",
     )
     parser.add_argument(
         "-v",
@@ -86,40 +125,199 @@ def main(args: list[str]) -> int:
             parser.error("-- passes arguments to the tasks among the targets, which name none")
     except SystemExit as exit_:
         return exit_.code if isinstance(exit_.code, int) else 1
-    return _invoke(
-        options.directory, options.out, options.quiet, options.verbose, options.targets, task_args
-    )
+    return _invoke(options, task_args)
 
 
 def console_main() -> int:
     return main(sys.argv[1:])
 
 
-def _invoke(
-    directory: str | None,
-    out: str,
-    is_quiet: bool,
-    is_verbose: bool,
-    targets: list[str],
-    task_args: tuple[str, ...] | None,
-) -> int:
+def _parse_jobs(text: str) -> int | None:
+    if text == _AUTO:
+        return None
+    if not text.isdecimal() or int(text) < 1:
+        raise argparse.ArgumentTypeError(f"takes a count of 1 or more, or {_AUTO}, not {text!r}")
+    return int(text)
+
+
+def _parse_seconds(text: str) -> float:
+    try:
+        seconds = float(text)
+    except ValueError:
+        seconds = -1.0
+    # Also rejects nan, which compares false.
+    if not 0 <= seconds < float("inf"):
+        raise argparse.ArgumentTypeError(f"takes a number of seconds, 0 or more, not {text!r}")
+    return seconds
+
+
+def _invoke(options: argparse.Namespace, task_args: tuple[str, ...] | None) -> int:
+    """Run the invocation the parsed `options` ask for, end it on the closing line, and return its exit status."""
     start_dir = os.getcwd()
-    root = _resolve_root(directory) if directory is not None else start_dir
+    start_s = time.perf_counter()
+    summary = Summary()
+    root = _resolve_root(options.directory) if options.directory is not None else start_dir
+    if options.directory is not None:
+        print(format_entering(root), file=sys.stderr)
+    with watch_signals() as signals:
+        outcome = _try_run(options, task_args, root, start_dir, summary, signals)
+    if summary.unsettled:
+        print_warning(_merge(summary.unsettled, ", as for {} more rule{}"), start_dir)
+    if summary.ended:
+        note = _merge(summary.ended, ", and {} more recipe{}")
+        print(format_line(note, "note", start_dir), file=sys.stderr)
+    if options.directory is not None:
+        print(format_leaving(root), file=sys.stderr)
+    print(format_summary(summary, time.perf_counter() - start_s, outcome), file=sys.stderr)
+    if signals.is_hung_up and sys.platform != "win32":
+        # Everything is cleaned up, so the signal now ends the process as it would have.
+        signal.signal(signal.SIGHUP, signal.SIG_DFL)
+        os.kill(os.getpid(), signal.SIGHUP)
+    return outcome.value
+
+
+def _merge(diagnostics: list[Diagnostic], more: str) -> Diagnostic:
+    """Return the first of `diagnostics` counting the rest through `more`, so an invocation's own output stays within three lines."""
+    first, *others = diagnostics
+    if not others:
+        return first
+    counted = more.format(len(others), "" if len(others) == 1 else "s")
+    return Diagnostic(first.location, first.message + counted)
+
+
+def _try_run(
+    options: argparse.Namespace,
+    task_args: tuple[str, ...] | None,
+    root: str,
+    start_dir: str,
+    summary: Summary,
+    signals: Signals,
+) -> Outcome:
+    """Run the invocation, printing whatever kept it from finishing, and return how it ended."""
+    try:
+        _run(options, task_args, root, start_dir, summary, signals)
+    except FacereError as error:
+        print_error(error, start_dir)
+        return Outcome.UNSTARTED
+    except LockTimeoutError as error:
+        print(f"fac: error: {error}", file=sys.stderr)
+        return Outcome.LOCK_TIMEOUT
+    except KeyboardInterrupt:
+        return Outcome.INTERRUPTED
+    except Exception:  # noqa: BLE001 - whatever Facere itself raises is reported as its bug
+        import traceback
+
+        traceback.print_exc()
+        print("fac: error: Facere itself raised this, which is a bug in Facere", file=sys.stderr)
+        return Outcome.CRASHED
+    if summary.failed:
+        return Outcome.FAILED
+    return Outcome.STOPPED if signals.is_stop_requested else Outcome.FINISHED
+
+
+def _run(
+    options: argparse.Namespace,
+    task_args: tuple[str, ...] | None,
+    root: str,
+    start_dir: str,
+    summary: Summary,
+    signals: Signals,
+) -> None:
     fac_py = os.path.join(root, "fac.py")
     if not os.path.isfile(fac_py):
-        print_error(FacereError(_build_missing_root_error(root, start_dir)), start_dir)
-        return 2
-    out_dir = normalize(out, root)
+        raise FacereError(_build_missing_root_error(root, start_dir))
+    out_dir = normalize(options.out, root)
     if out_dir == ".":
         message = "--out names the root, where outputs would mix with sources"
-        print_error(FacereError(Diagnostic(None, message)), start_dir)
-        return 2
+        raise FacereError(Diagnostic(None, message))
+    if sys.flags.optimize:
+        print(
+            "fac: warning: Python runs with assertions disabled, so no recipe's assert checks anything",
+            file=sys.stderr,
+        )
     context = Context(
-        root=root, out_dir=out_dir, fac_py=fac_py, is_quiet=is_quiet, is_verbose=is_verbose
+        root=root,
+        out_dir=out_dir,
+        fac_py=fac_py,
+        is_quiet=options.quiet,
+        is_verbose=options.verbose,
+        commands=Commands(),
+        window_size=_try_fetch_window_size(),
     )
+    lock = OutputLock(out_dir, os.path.join(root, context.state_dir))
+
+    def take_lock() -> None:
+        if not lock.is_held:
+            lock.take(
+                options.lock_timeout,
+                lambda holder: print(
+                    f"fac: note: {describe_wait(holder, out_dir)}", file=sys.stderr, flush=True
+                ),
+            )
+
     pycache_prefix = os.path.abspath(os.path.join(root, context.state_dir, "pycache"))
-    with _enter_root(root, pycache_prefix), activate(context):
-        return _run(context, targets, task_args, start_dir)
+    with _enter_root(root, pycache_prefix) as saved_modules, activate(context):
+        has_collected = False
+
+        def collect() -> _collect.Project:
+            nonlocal has_collected
+            if has_collected:
+                context.forget_collection()
+                _forget_modules(root, saved_modules)
+                importlib.invalidate_caches()
+            has_collected = True
+            _bytecode.ensure_checked(root)
+            return _collect.collect(context)
+
+        try:
+            take_lock()
+            project = collect()
+            with (
+                pin_status(sys.stderr) as status_cb,
+                capture_recipes(context) as (stdout, stderr),
+            ):
+                invocation = _build.Invocation(
+                    context=context,
+                    output=Output(stdout, stderr, status_cb),
+                    signals=signals,
+                    summary=summary,
+                    lock=lock,
+                    start_dir=start_dir,
+                    collect_cb=collect,
+                    take_lock_cb=take_lock,
+                    calc_jobs=lambda: options.jobs or _calc_default_jobs(),
+                    keep_going=options.keep_going,
+                    has_terminal=_is_terminal(sys.stdin) and _is_terminal(stderr),
+                    task_args=task_args,
+                )
+                _build.build(invocation, project, options.targets)
+        finally:
+            lock.give()
+
+
+def _calc_default_jobs() -> int:
+    # Imported here, since a build that executes no more than one rule never asks.
+    from facere._jobs import calc_default_jobs
+
+    return calc_default_jobs()
+
+
+def _is_terminal(stream: object) -> bool:
+    try:
+        return bool(stream.isatty())  # ty: ignore[missing-attribute]
+    except (AttributeError, ValueError):
+        return False
+
+
+def _try_fetch_window_size() -> tuple[int, int] | None:
+    """Return the rows and columns of the terminal Facere's stderr is, where a rule's command may get one like it, or None."""
+    if sys.platform == "win32" or not _is_terminal(sys.stderr):
+        return None
+    try:
+        size = os.get_terminal_size(sys.stderr.fileno())
+    except (OSError, ValueError):
+        return None
+    return size.lines, size.columns
 
 
 def _resolve_root(directory: str) -> str:
@@ -130,8 +328,8 @@ def _resolve_root(directory: str) -> str:
 
 
 @contextlib.contextmanager
-def _enter_root(root: str, pycache_prefix: str) -> Generator[None]:
-    """Run from `root`, importable and caching bytecode under `pycache_prefix`, then restore the interpreter and forget the modules imported from `root`."""
+def _enter_root(root: str, pycache_prefix: str) -> Generator[dict[str, types.ModuleType]]:
+    """Run from `root`, importable and caching bytecode under `pycache_prefix`, then restore the interpreter and forget the modules imported from `root`. Yields the modules imported before, which loading the project again keeps."""
     start_dir = os.getcwd()
     saved_path = list(sys.path)
     saved_prefix = sys.pycache_prefix
@@ -142,56 +340,12 @@ def _enter_root(root: str, pycache_prefix: str) -> Generator[None]:
         # The import system caches directory listings, which a coarse mtime may leave stale across in-process invocations.
         importlib.invalidate_caches()
         sys.pycache_prefix = pycache_prefix
-        _bytecode.ensure_checked(root)
-        yield
+        yield saved_modules
     finally:
         os.chdir(start_dir)
         sys.path[:] = saved_path
         sys.pycache_prefix = saved_prefix
         _forget_modules(root, saved_modules)
-
-
-def _run(
-    context: Context, targets: list[str], task_args: tuple[str, ...] | None, start_dir: str
-) -> int:
-    if sys.flags.optimize:
-        print(
-            "fac: warning: Python runs with assertions disabled, so no recipe's assert checks anything",
-            file=sys.stderr,
-        )
-    start_s = time.perf_counter()
-    summary = Summary()
-    try:
-        project = _collect.collect(context)
-        resolved = _build.resolve_targets(project, context.root, targets)
-        _build.validate_task_args(resolved, task_args)
-        with pin_status(sys.stderr) as progress_cb:
-            _build.build(context, project, resolved, summary, progress_cb, task_args)
-    except FacereError as error:
-        print_error(error, start_dir)
-        return 2
-    except _build.RecipeFailure as failure:
-        _build.report_failure(failure, start_dir)
-        return 1
-    except KeyboardInterrupt:
-        _print_summary(summary, start_s, start_dir, is_interrupted=True)
-        return 130
-    _print_summary(summary, start_s, start_dir, is_interrupted=False)
-    return 0
-
-
-def _print_summary(
-    summary: Summary, start_s: float, start_dir: str, *, is_interrupted: bool
-) -> None:
-    """Print the closing line, under one warning for all the rules left unsettled, so an invocation's own output stays within three lines."""
-    elapsed_s = time.perf_counter() - start_s
-    if summary.unsettled:
-        first, *others = summary.unsettled
-        more = (
-            f", as for {len(others)} more rule{'' if len(others) == 1 else 's'}" if others else ""
-        )
-        print_warning(Diagnostic(first.location, first.message + more), start_dir)
-    print(format_summary(summary, elapsed_s, is_interrupted=is_interrupted), file=sys.stderr)
 
 
 def _build_missing_root_error(root: str, start_dir: str) -> Diagnostic:

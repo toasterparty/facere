@@ -44,10 +44,11 @@ class FacereError(Exception):
 
     @override
     def __str__(self) -> str:
-        return "\n".join(_format_error(self, os.getcwd()))
+        return "\n".join(format_error(self, os.getcwd()))
 
 
-def _format_error(error: FacereError, start_dir: str) -> list[str]:
+def format_error(error: FacereError, start_dir: str) -> list[str]:
+    """Return the lines of `error`, with each path relative to `start_dir`."""
     lines = [error.detail.rstrip("\n")] if error.detail else []
     for diagnostic in error.diagnostics:
         lines.append(
@@ -61,19 +62,34 @@ def _format_error(error: FacereError, start_dir: str) -> list[str]:
 
 
 def print_error(error: FacereError, start_dir: str) -> None:
-    for line in _format_error(error, start_dir):
+    for line in format_error(error, start_dir):
         print(line, file=sys.stderr)
 
 
 def print_warning(diagnostic: Diagnostic, start_dir: str) -> None:
+    print(format_line(diagnostic, "warning", start_dir), file=sys.stderr)
+
+
+def format_line(diagnostic: Diagnostic, severity: str, start_dir: str) -> str:
+    """Return `diagnostic` alone, without its notes, as a line of the given `severity`."""
     location = _format_location(diagnostic.location, start_dir)
-    print(f"{location}: warning: {diagnostic.message}", file=sys.stderr)
+    return f"{location}: {severity}: {diagnostic.message}"
 
 
 def _format_location(location: Location | None, start_dir: str) -> str:
     if location is None:
         return "fac"
     return f"{format_path(location.path, start_dir)}:{location.line}:{location.column}"
+
+
+def format_entering(directory: str) -> str:
+    """Return the line that says the paths in the output after it are relative to `directory`, as make prints it."""
+    return f"fac: Entering directory '{os.path.abspath(directory)}'"
+
+
+def format_leaving(directory: str) -> str:
+    """Return the line that ends what format_entering began."""
+    return f"fac: Leaving directory '{os.path.abspath(directory)}'"
 
 
 def format_path(path: str, start_dir: str) -> str:

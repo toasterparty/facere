@@ -116,7 +116,7 @@ A rule downstream executes only when an output it inputs comes out different, so
 
 ## Rule granularity
 
-Write one rule per independent output and one per tool invocation. Facere re-executes a rule whole, so batching independent files re-executes them all when one changes. Splitting one invocation is worse: several rules each declaring one of its files all write every file, an undeclared race under `-j` *(planned)*. Batch only tools with a heavy startup, such as a JVM or Nuitka. Many small results that belong together, such as the rows of one table, stay one rule each as the virtual outputs of a [store](./5-virtual-outputs.md) *(planned)*, never one file each only to be tracked.
+Write one rule per independent output and one per tool invocation. Facere re-executes a rule whole, so batching independent files re-executes them all when one changes. Splitting one invocation is worse: several rules each declaring one of its files all write every file, an undeclared race once they execute at once *(0.4)*. Batch only tools with a heavy startup, such as a JVM or Nuitka. Many small results that belong together, such as the rows of one table, stay one rule each as the virtual outputs of a [store](./5-virtual-outputs.md) *(planned)*, never one file each only to be tracked.
 
 ## Names for many rules
 
@@ -155,14 +155,14 @@ Module-level code runs on every invocation, `--list` and `--check` *(planned)* i
 ```python
 @fac.rule(always=True)
 def gcc_version(path: fac.Output = GCC_VERSION):
-    version = fac.run("gcc", "-dumpversion", quiet=True).strip()
+    version = fac.capture("gcc", "-dumpversion").strip()
     assert int(version.split(".")[0]) >= 14, f"gcc 14 or newer required, found {version}"
     fac.write_text(path, f"{version}\n")
 ```
 
 ### Scratch files
 
-Name every scratch file after one of the rule's own outputs, since output paths are unique. Facere cannot see writes: two rules writing one undeclared path, such as a shared depfile name, race under `-j` *(planned)* and the invocation still passes. Never read another rule's scratch file, since that orders nothing.
+Name every scratch file after one of the rule's own outputs, since output paths are unique. Facere cannot see writes: two rules writing one undeclared path, such as a shared depfile name, race when they execute at once *(0.4)*, and the invocation still passes. Never read another rule's scratch file, since that orders nothing.
 
 Once a tool succeeds, report what it read through `fac.add_inputs` *(0.4)*, or editing a file it read executes nothing. [Building a C program](./9-building-c.md) shows this for a compiler's depfile. Never report a file the recipe deletes, since a file gone when reported, or removed afterward, fails the rule. Report files only: *(0.4)* a directory fails the rule, so declare a directory a recipe reads as a `fac.Input`. Declare a file a tool writes outside the output directory as an output: when reported instead, it reads as changed during every execution, so its rule executes on every invocation, and `fac` warns from the second.
 

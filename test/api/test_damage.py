@@ -17,6 +17,7 @@ def test_input_changed_after_its_rule_finished_fails_its_reader_without_executin
     assert result.err.splitlines() == [
         "fac.py:16:2: error: rule 'consume' (build/copy.txt) failed: its input build/a.txt changed after rule 'generate' (build/a.txt) finished",
         "fac.py:4:2: note: rule 'generate' (build/a.txt) outputs build/a.txt",
+        "Failed after <elapsed>. Executed 2 rules.",
     ]
     assert not (root / "build" / "copy.txt").exists()
 
@@ -28,6 +29,7 @@ def test_output_changed_after_its_rule_finished_fails_the_invocation(fac: Fac) -
     assert result.status == 1
     assert result.err == (
         "fac.py:6:2: error: rule 'copy' (build/a.txt) failed: its output build/a.txt changed after it finished\n"
+        "Failed after <elapsed>. Executed 1 task and 1 rule.\n"
     )
 
 

@@ -33,7 +33,7 @@ _MOUNTINFO_FIELDS_SEPARATOR = "-"
 
 
 class FileSystems:
-    """What each file system an invocation meets can vouch for, looked up once per device."""
+    """What each file system an invocation meets can vouch for, looked up once per device. Any thread may ask, since threads racing on one device only look it up twice."""
 
     def __init__(self) -> None:
         self._trust_by_device: dict[int, bool] = {}

@@ -343,6 +343,7 @@ def test_unwritable_state_fails_the_rule_naming_the_database(root: Path, fac: Fa
     assert result.status == 1
     assert result.err.splitlines() == [
         "fac.py:7:2: error: rule 'shout' (build/a.txt) failed: build/.fac/state.db: attempt to write a readonly database",
+        "Failed after <elapsed>.",
     ]
 
 
@@ -359,6 +360,7 @@ def test_unwritable_state_holding_an_undeclared_output_fails_before_building(
     assert result.status == 2
     assert result.err.splitlines() == [
         "fac: error: build/.fac/state.db: attempt to write a readonly database",
+        "Failed after <elapsed>.",
     ]
     assert not (root / "build" / "y.txt").exists()
 
@@ -394,6 +396,7 @@ def test_recipe_succeeding_without_writing_its_output_fails(fac: Fac) -> None:
     assert result.status == 1
     assert result.err.splitlines() == [
         "fac.py:4:2: error: rule 'forget' (build/never.txt) failed: its recipe succeeded without writing build/never.txt",
+        "Failed after <elapsed>.",
     ]
 
 

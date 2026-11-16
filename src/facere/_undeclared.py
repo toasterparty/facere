@@ -20,6 +20,8 @@ from facere._context import (
 
 _FLAG_SEPARATORS = re.compile("[=,]")
 _WRITE_ACCESS = os.O_WRONLY | os.O_RDWR
+# What threading.Thread.start raises, before Python 3.13 and from it, each with the thread's bound method first.
+_THREAD_STARTS = ("_thread.start_new_thread", "_thread.start_joinable_thread")
 
 _is_audit_hook_added = False
 
@@ -28,10 +30,10 @@ class UndeclaredPathError(Exception):
     pass
 
 
-def validate_command_args(context: Context, argv: list[str], cwd: str | None) -> None:
-    """Raise UndeclaredPathError for a path in `argv` the running rule doesn't declare: a program holding a separator, against the root, or an argument or its parts split at `=` and `,`, against `cwd`."""
-    recipe = context.running
-    assert recipe is not None
+def validate_command_args(
+    context: Context, recipe: Recipe, argv: list[str], cwd: str | None
+) -> None:
+    """Raise UndeclaredPathError for a path in `argv` that the rule executing `recipe` doesn't declare: a program holding a separator, against the root, or an argument or its parts split at `=` and `,`, against `cwd`."""
     if recipe.is_task:
         return
     program, *args = argv
@@ -42,10 +44,8 @@ def validate_command_args(context: Context, argv: list[str], cwd: str | None) ->
             _validate_used(context, recipe, os.path.join(cwd or "", part), "gave a command")
 
 
-def validate_program(context: Context, program: str) -> None:
-    """Raise UndeclaredPathError when the resolved, absolute `program` is one the running rule doesn't declare."""
-    recipe = context.running
-    assert recipe is not None
+def validate_program(context: Context, recipe: Recipe, program: str) -> None:
+    """Raise UndeclaredPathError when the resolved, absolute `program` is one the rule executing `recipe` doesn't declare."""
     if not recipe.is_task:
         _validate_used(context, recipe, program, "ran")
 
@@ -58,14 +58,24 @@ def ensure_audit_hook() -> None:
         _is_audit_hook_added = True
 
 
+def note_misuse(context: Context, caller: str) -> None:
+    """Fail the rule whose recipe started the calling thread, if one did, for calling `caller`, which only a recipe's own thread may, so the rule fails though its recipe never sees what the call raised."""
+    for starter in context.find_starters():
+        if starter.misuse is None:
+            starter.misuse = f"a thread its recipe started called {caller}, which in a rule works only on the recipe's own thread"
+
+
 def _on_audit(event: str, args: tuple[object, ...]) -> None:
     if event != "open":
+        if event in _THREAD_STARTS:
+            _on_thread_start(args)
         return
     context = find_context()
     if context is None:
         return
-    recipe = context.running
-    if recipe is None or recipe.is_task or recipe.thread_id != threading.get_ident():
+    # Only the thread a rule's recipe executes on has one, so rules executing at once are each checked against their own.
+    recipe = context.find_rule_recipe()
+    if recipe is None:
         return
     path, _, flags = args
     if not isinstance(path, str | bytes | os.PathLike) or not isinstance(flags, int):
@@ -77,6 +87,13 @@ def _on_audit(event: str, args: tuple[object, ...]) -> None:
         _validate_used(context, recipe, absolute, "opened")
     if access != os.O_RDONLY:
         recipe.written.add(key)
+
+
+def _on_thread_start(args: tuple[object, ...]) -> None:
+    context = find_context()
+    thread = getattr(args[0], "__self__", None) if args else None
+    if context is not None and isinstance(thread, threading.Thread):
+        context.note_started(thread)
 
 
 def _validate_used(context: Context, recipe: Recipe, path: str, action: str) -> None:

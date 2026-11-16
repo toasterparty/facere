@@ -49,6 +49,7 @@ def test_arguments_with_only_rules_as_targets_fail(fac: Fac) -> None:
     assert result.status == 2
     assert result.err.splitlines() == [
         "fac: error: -- passes arguments to the tasks among the targets, which name none",
+        "Failed after <elapsed>.",
     ]
 
 
@@ -60,6 +61,7 @@ def test_arguments_no_task_takes_fail_naming_every_task(fac: Fac) -> None:
     assert result.err.splitlines() == [
         "fac.py:19:2: error: task 'silent' takes no arguments, and -- passes some",
         "fac.py:24:2: note: task 'hello' takes none either",
+        "Failed after <elapsed>.",
     ]
 
 
@@ -179,6 +181,7 @@ def test_unknown_target_fails_listing_the_names(root: Path, fac: Fac) -> None:
     assert result.err.splitlines() == [
         "fac: error: unknown target 'pages', 'build/c.html'",
         "fac: note: names: clean, index, list, page",
+        "Failed after <elapsed>.",
     ]
     assert not (root / "build" / "index.html").exists()
 

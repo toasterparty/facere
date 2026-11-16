@@ -19,7 +19,7 @@ _MIN_ROWS = 3
 def pin_status(stream: TextIO) -> Generator[Callable[[str], None]]:
     """Yield a function that shows its text on the bottom row of `stream`'s terminal, scrolling everything else above it.
 
-    Only a terminal on a POSIX system gets the row, and anything else gets a function that does nothing. The row is erased and the scroll region restored on exit, including when a signal ends the process.
+    Only a terminal on a POSIX system gets the row, and anything else gets a function that does nothing. The row is erased and the scroll region restored on exit.
     """
     row = _StatusRow(stream)
     row.enable()
@@ -49,14 +49,7 @@ class _StatusRow:
         self._cols, self._rows = size
         self._is_enabled = True
         self._write(f"\n{_SAVE_CURSOR}{self._calc_region()}{_RESTORE_CURSOR}{_CSI}1A")
-        self._saved_handlers = {
-            signum: signal.signal(signum, handler)
-            for signum, handler in (
-                (signal.SIGWINCH, self._on_resize),
-                (signal.SIGTERM, self._on_kill),
-                (signal.SIGHUP, self._on_kill),
-            )
-        }
+        self._saved_handlers = {signal.SIGWINCH: signal.signal(signal.SIGWINCH, self._on_resize)}
 
     def disable(self) -> None:
         if not self._is_enabled:
@@ -110,8 +103,3 @@ class _StatusRow:
         self._write(
             f"{_SAVE_CURSOR}{cleared}{self._calc_region()}{self._calc_draw()}{_RESTORE_CURSOR}"
         )
-
-    def _on_kill(self, signum: int, frame: FrameType | None) -> None:
-        self.disable()
-        signal.signal(signum, signal.SIG_DFL)
-        os.kill(os.getpid(), signum)

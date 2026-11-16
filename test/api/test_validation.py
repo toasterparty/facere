@@ -17,6 +17,7 @@ def test_two_rules_outputting_one_path_compared_without_case_fail(root: Path, fa
         "fac.py:4:2: error: 2 outputs claim build/x.txt, compared without case",
         "fac.py:4:2: note: rule 'lower' (build/x.txt) outputs build/x.txt",
         "fac.py:9:2: note: rule 'upper' (build/X.txt) outputs build/X.txt",
+        "Failed after <elapsed>.",
     ]
     assert not (root / "build" / "x.txt").exists()
 
@@ -30,6 +31,7 @@ def test_args_parameter_outside_one_task_or_filled_by_a_keyword_fails(fac: Fac) 
         "fac.py:4:2: error: rule rule_args takes words, annotated fac.Args, but only a task receives the command line's arguments",
         "fac.py:9:2: error: task two_args takes 2 parameters annotated fac.Args, though only one receives the arguments after --",
         "fac.py:14:2: error: parameter words is annotated fac.Args, so only the command line fills it",
+        "Failed after <elapsed>.",
     ]
 
 
@@ -41,6 +43,7 @@ def test_error_in_a_definition_a_module_declared_notes_the_decorator(fac: Fac) -
     assert result.err.splitlines() == [
         "fac.py:1:1: error: starred takes *paths, which no rule or task can fill",
         "tools/tasks.py:4:2: note: declared here",
+        "Failed after <elapsed>.",
     ]
 
 
@@ -51,6 +54,7 @@ def test_rule_without_output_fails(fac: Fac) -> None:
     assert result.status == 2
     assert result.err.splitlines() == [
         "fac.py:4:2: error: rule nothing declares no output",
+        "Failed after <elapsed>.",
     ]
 
 
@@ -61,6 +65,7 @@ def test_task_with_output_fails(fac: Fac) -> None:
     assert result.status == 2
     assert result.err.splitlines() == [
         "fac.py:4:2: error: task report declares an output, but a task writes no tracked output",
+        "Failed after <elapsed>.",
     ]
 
 
@@ -72,6 +77,7 @@ def test_rule_taking_star_args_or_star_star_kwargs_fails(fac: Fac) -> None:
     assert result.err.splitlines() == [
         "fac.py:4:2: error: positional takes *paths, which no rule or task can fill",
         "fac.py:9:2: error: keyword takes **options, which no rule or task can fill",
+        "Failed after <elapsed>.",
     ]
 
 
@@ -84,6 +90,7 @@ def test_path_parameter_holding_no_path_fails_naming_its_annotation(fac: Fac) ->
         "fac.py:4:2: error: parameter source is annotated fac.Input but holds '', not a path",
         "fac.py:9:2: error: parameter pages is annotated list[fac.Input] but holds 'a.md', not a list of paths",
         "fac.py:14:2: error: parameter out is annotated fac.Output but holds '', not a path",
+        "Failed after <elapsed>.",
     ]
 
 
@@ -95,6 +102,7 @@ def test_empty_name_fails(fac: Fac) -> None:
     assert result.err.splitlines() == [
         "fac.py:4:2: error: the name '' can't be typed as a target",
         "fac.py:9:2: error: the name '' can't be typed as a target",
+        "Failed after <elapsed>.",
     ]
 
 
@@ -106,6 +114,7 @@ def test_annotation_facere_cannot_read_fails(fac: Fac) -> None:
     assert result.err.splitlines() == [
         "fac.py:6:2: error: parameter source has an annotation Facere can't read, and reads only fac.Input, list[fac.Input], fac.OrderOnly, list[fac.OrderOnly], fac.Output, list[fac.Output], and fac.Args",
         "fac.py:11:2: error: can't read the annotations of undefined: NameError: name 'Missing' is not defined",
+        "Failed after <elapsed>.",
     ]
 
 
@@ -117,6 +126,7 @@ def test_output_holding_the_state_fails(fac: Fac) -> None:
     assert result.err.splitlines() == [
         "fac.py:4:2: error: rule 'everything' (build) outputs build, which holds Facere's state",
         "fac.py:9:2: error: rule 'inside' (build/.fac/a) outputs build/.fac/a, which holds Facere's state",
+        "Failed after <elapsed>.",
     ]
 
 
@@ -128,6 +138,7 @@ def test_rule_input_holding_the_output_directory_fails(fac: Fac) -> None:
     assert result.err.splitlines() == [
         "fac.py:4:2: error: rule 'tree' (build/tree.tar) inputs ., which holds the output directory build, so its content changes on every build",
         "fac.py:9:2: error: rule 'build_dir' (build/build.tar) inputs build, which holds the output directory build, so its content changes on every build",
+        "Failed after <elapsed>.",
     ]
 
 
@@ -138,6 +149,7 @@ def test_root_input_passes_once_the_output_directory_lies_outside_the_root(fac: 
     assert result.status == 2
     assert result.err.splitlines() == [
         "fac.py:9:2: error: rule 'build_dir' (../elsewhere/build.tar) inputs ../elsewhere, which holds the output directory ../elsewhere, so its content changes on every build",
+        "Failed after <elapsed>.",
     ]
 
 
@@ -150,6 +162,7 @@ def test_two_functions_sharing_a_name_fail(fac: Fac) -> None:
         "fac.py:4:2: error: 2 definitions share the name docs",
         "fac.py:4:2: note: rule 'docs' (build/a) is defined here",
         "fac.py:9:2: note: rule 'docs' (build/b) is defined here",
+        "Failed after <elapsed>.",
     ]
 
 
@@ -162,6 +175,7 @@ def test_two_tasks_sharing_a_name_fail(fac: Fac) -> None:
         "fac.py:8:1: error: 2 definitions share the name greet",
         "fac.py:8:1: note: task 'greet' is defined here",
         "fac.py:9:1: note: task 'greet' is defined here",
+        "Failed after <elapsed>.",
     ]
 
 
@@ -172,6 +186,7 @@ def test_parameter_without_value_fails(fac: Fac) -> None:
     assert result.status == 2
     assert result.err.splitlines() == [
         "fac.py:4:2: error: parameter source has no value",
+        "Failed after <elapsed>.",
     ]
 
 
@@ -182,6 +197,7 @@ def test_parameter_named_after_an_option_fails(fac: Fac) -> None:
     assert result.status == 2
     assert result.err.splitlines() == [
         "fac.py:4:2: error: parameter always is named after a fac.rule option, so no keyword argument can fill it",
+        "Failed after <elapsed>.",
     ]
 
 
@@ -193,6 +209,7 @@ def test_value_facere_cannot_hash_fails_naming_its_type(fac: Fac) -> None:
     assert result.err.splitlines() == [
         "fac.py:8:2: error: function page reads global LOCK, of type _thread.lock, which Facere can't hash, since pickle can't take it apart: cannot pickle '_thread.lock' object",
         "fac.py:8:2: error: rule 'page' (build/a) reads parameter lock, of type _thread.lock, which Facere can't hash, since pickle can't take it apart: cannot pickle '_thread.lock' object",
+        "Failed after <elapsed>.",
     ]
 
 
@@ -203,6 +220,7 @@ def test_value_holding_itself_fails_collection(fac: Fac) -> None:
     assert result.status == 2
     assert result.err.splitlines() == [
         "fac.py:7:2: error: function page reads global LOOP, of type list, which Facere can't hash, since it holds itself",
+        "Failed after <elapsed>.",
     ]
 
 
@@ -213,6 +231,7 @@ def test_helper_default_facere_cannot_hash_fails_naming_the_helper(fac: Fac) -> 
     assert result.status == 2
     assert result.err.splitlines() == [
         "fac.py:10:2: error: function shout reads default lock through exclaim, of type _thread.lock, which Facere can't hash, since pickle can't take it apart: cannot pickle '_thread.lock' object",
+        "Failed after <elapsed>.",
     ]
 
 
@@ -224,6 +243,7 @@ def test_pathlib_path_value_fails_naming_string_paths(fac: Fac) -> None:
     assert result.err.splitlines() == [
         # Python 3.13 alone defines the class in pathlib._local.
         f"fac.py:6:2: error: rule 'page' (build/a) reads parameter directory, of type {PurePosixPath.__module__}.PurePosixPath, which Facere can't hash, since Facere paths are strings with /",
+        "Failed after <elapsed>.",
     ]
 
 
@@ -244,6 +264,7 @@ def test_rule_reaching_a_helper_whose_source_facere_cannot_read_fails(root: Path
     assert result.status == 2
     assert result.err.splitlines() == [
         f"fac.py:11:2: error: function page reaches shout, which has no source Facere can read, which a rule's fingerprint needs: [Errno 2] No such file or directory: '{root / 'gone.py'}'",
+        "Failed after <elapsed>.",
     ]
 
 
@@ -254,6 +275,7 @@ def test_unannotated_value_naming_a_file_under_the_root_fails(fac: Fac) -> None:
     assert result.status == 2
     assert result.err.splitlines() == [
         "fac.py:4:2: error: rule 'page' (build/a) reads parameter source, which names the path notes.txt unannotated",
+        "Failed after <elapsed>.",
     ]
 
 
@@ -264,6 +286,7 @@ def test_unannotated_value_naming_a_path_a_rule_outputs_fails(fac: Fac) -> None:
     assert result.status == 2
     assert result.err.splitlines() == [
         "fac.py:9:2: error: rule 'index' (build/index.html) reads parameter pages, which names the path build/page.html unannotated",
+        "Failed after <elapsed>.",
     ]
 
 
@@ -274,6 +297,7 @@ def test_global_naming_a_file_under_the_root_fails(fac: Fac) -> None:
     assert result.status == 2
     assert result.err.splitlines() == [
         "fac.py:6:2: error: function page reads global NOTES, which names the path notes.txt",
+        "Failed after <elapsed>.",
     ]
 
 
@@ -284,6 +308,7 @@ def test_global_a_helper_reads_naming_a_file_under_the_root_fails(fac: Fac) -> N
     assert result.status == 2
     assert result.err.splitlines() == [
         "fac.py:11:2: error: function page reads global NOTES through read_notes, which names the path notes.txt",
+        "Failed after <elapsed>.",
     ]
 
 
@@ -339,6 +364,7 @@ def test_missing_source_fails(fac: Fac) -> None:
     assert result.status == 2
     assert result.err.splitlines() == [
         "fac.py:4:2: error: rule 'page' (build/page.html) inputs page.md, which doesn't exist, and no rule outputs it",
+        "Failed after <elapsed>.",
     ]
 
 
@@ -352,6 +378,7 @@ def test_dependency_cycle_fails_printing_the_full_loop(fac: Fac) -> None:
         "fac.py:4:2: note: rule 'first' (build/a) inputs build/c, which rule 'third' (build/c) outputs",
         "fac.py:14:2: note: rule 'third' (build/c) inputs build/b, which rule 'second' (build/b) outputs",
         "fac.py:9:2: note: rule 'second' (build/b) inputs build/a, which rule 'first' (build/a) outputs",
+        "Failed after <elapsed>.",
     ]
 
 
@@ -364,6 +391,7 @@ def test_dependency_cycle_reached_from_outside_names_only_its_members(fac: Fac) 
         "fac.py:9:2: error: dependency cycle: rule 'first' (build/a) -> rule 'second' (build/b) -> rule 'first' (build/a)",
         "fac.py:9:2: note: rule 'first' (build/a) inputs build/b, which rule 'second' (build/b) outputs",
         "fac.py:14:2: note: rule 'second' (build/b) inputs build/a, which rule 'first' (build/a) outputs",
+        "Failed after <elapsed>.",
     ]
 
 
@@ -375,6 +403,7 @@ def test_rule_inputting_a_directory_holding_its_own_output_fails_as_a_cycle(fac:
     assert result.err.splitlines() == [
         "fac.py:4:2: error: dependency cycle: rule 'generate' (src/gen.c) -> rule 'generate' (src/gen.c)",
         "fac.py:4:2: note: rule 'generate' (src/gen.c) inputs src, which holds src/gen.c, which rule 'generate' (src/gen.c) outputs",
+        "Failed after <elapsed>.",
     ]
 
 
@@ -385,6 +414,7 @@ def test_each_item_that_is_not_a_dict_fails(fac: Fac) -> None:
     assert result.status == 2
     assert result.err.splitlines() == [
         "fac.py:4:2: error: each= item 1 is a list, not a dict",
+        "Failed after <elapsed>.",
     ]
 
 
@@ -396,6 +426,7 @@ def test_each_item_key_naming_no_parameter_fails(fac: Fac) -> None:
     assert result.err.splitlines() == [
         "fac.py:4:2: error: each= item 0 fills 'ouput', which names no parameter",
         "fac.py:4:2: error: parameter output has no value",
+        "Failed after <elapsed>.",
     ]
 
 
@@ -404,7 +435,7 @@ def test_error_in_fac_py_prints_its_traceback_then_its_location(fac: Fac) -> Non
     result = fac()
 
     assert result.status == 2
-    assert result.err.splitlines()[-1] == "fac.py:1:19: error: loading fac.py raised NameError"
+    assert result.err.splitlines()[-2] == "fac.py:1:19: error: loading fac.py raised NameError"
     assert "NameError: name 'UNDEFINED' is not defined" in result.err
 
 

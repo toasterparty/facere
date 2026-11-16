@@ -3,6 +3,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from collections.abc import Callable
 from pathlib import Path
 from types import ModuleType
@@ -20,7 +21,9 @@ class Result(NamedTuple):
 
 Fac = Callable[..., Result]
 
-_ELAPSED = re.compile(r"(Finished in|Interrupted after) (?:\d+hr )?(?:\d+min )?(?:\d+\.\ds|\d+ms)")
+_ELAPSED = re.compile(
+    r"(Finished in|(?:Failed|Stopped|Interrupted) after) (?:\d+hr )?(?:\d+min )?(?:\d+\.\ds|\d+ms)"
+)
 
 
 def mask_elapsed(text: str) -> str:
@@ -41,6 +44,22 @@ def run_fac(
         check=False,
     )
     return Result(completed.returncode, completed.stdout, mask_elapsed(completed.stderr))
+
+
+def start_fac(root: Path, *args: str) -> subprocess.Popen[str]:
+    """Start `python -m facere ARGS...` in `root` and return it, with its stderr a pipe."""
+    return subprocess.Popen(
+        [sys.executable, "-m", "facere", *args], cwd=root, stderr=subprocess.PIPE, text=True
+    )
+
+
+def wait_for(path: Path) -> str:
+    """Wait until the file at `path` holds something, and return its text."""
+    deadline = time.monotonic() + 30
+    while not (path.exists() and path.read_text()):
+        assert time.monotonic() < deadline, f"{path} never appeared"
+        time.sleep(0.01)
+    return path.read_text()
 
 
 def closing_line(root: Path, *args: str) -> str:

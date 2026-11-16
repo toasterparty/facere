@@ -3,7 +3,7 @@
 | Usage | Effect |
 |---|---|
 | `fac [TARGET...] [-- ARG...]` | Build the targets, in the order given, passing every `ARG` to each task they reach that takes `fac.Args`, which at least one must when an `ARG` is given. With no targets, the root's defaults, and `--` is an error. With no defaults, every rule and no task, which for a project with no rules succeeds, doing nothing |
-| `-C DIR` | Run as if started in `DIR`, which becomes the root |
+| `-C DIR` | Run as if started in `DIR`, which becomes the root, framing the invocation's output with `fac: Entering directory` and `fac: Leaving directory` lines |
 | `-j N`, `--jobs N` | Parallel jobs, or `auto`, the default, for all usable CPUs |
 | `-k`, `--keep-going` | Continue past failures |
 | `-q`, `--quiet` | Hide the output of every successful command a rule runs |
@@ -21,7 +21,7 @@
 
 `fac --help` is the only user documentation of the flags a release supports, so this table may run ahead of it. A mode flag takes no operand, so `fac --check app` and `fac app --check` are the same by construction. `--list`, `--check`, `--inputs`, and `--outputs` contradict one another, so any two together fail. With every configuration in one graph, `fac '*.debug' '*.release'` builds two in one parallel batch, and `fac build/` builds every one. `--out` moves the whole output directory, for a CI job that wants its own.
 
-On a POSIX terminal, Facere sets the scroll region to every row but the last and draws `[position/total] label` there with save-cursor and restore-cursor, so commands keep writing straight to the terminal and see it unwrapped. The position counts every rule and task reached, executed or not, against the number reachable from the targets. SIGWINCH redraws the row, and SIGTERM and SIGHUP erase it before the signal takes its default action. A command that takes over the whole screen, or a multiplexer that drops lines scrolled out of a partial region from its scrollback, can spoil the row. Windows has no row until its console is switched to VT processing.
+On a POSIX terminal, Facere sets the scroll region to every row but the last and draws `[position/total] label` there with save-cursor and restore-cursor, so commands keep writing straight to the terminal and see it unwrapped. The position counts every rule and task reached, executed or not, against the number reachable from the targets. SIGWINCH redraws the row, and it is erased however the invocation ends, a graceful stop and SIGHUP included, before the closing line. A command that takes over the whole screen, or a multiplexer that drops lines scrolled out of a partial region from its scrollback, can spoil the row. Windows has no row until its console is switched to VT processing.
 
 ## Exit statuses
 
@@ -46,7 +46,7 @@ A caller may parse:
 - the documented keys of `--json` from `--list` and `--check`
 - diagnostics, as `<location>: <severity>: <text>`, where the location is `path:line:column` or `fac` and the severity is `error`, `warning`, or `note`
 - the `fac: Entering directory` and `fac: Leaving directory` lines, and watch mode's `fac: change in` line
-- the closing line's first word, `Finished`, `Failed`, `Stopped`, or `Interrupted`, which every invocation that parsed its arguments ends on
+- the closing line's first word, `Finished`, `Failed`, `Stopped`, or `Interrupted`, which every invocation that parsed its arguments ends on, `Failed` for each status from `1` to `4`
 
 Everything else may change in any release: the text of any message, the rest of the closing line, the status row, `--list` and `--check` as text, `-v`, and all of `--timings`, JSON included, since its phases are Facere's internals.
 
