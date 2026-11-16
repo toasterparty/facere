@@ -1,0 +1,10 @@
+# A failed step stops every step not yet running, those it does not order included.
+
+step compile in=main.c out=main.o
+step link in=main.o out=app
+step docs in=readme out=manual
+
+request link docs
+need main.c for compile -> c1
+run compile no_trace -> failed
+done

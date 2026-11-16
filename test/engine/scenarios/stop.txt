@@ -1,0 +1,14 @@
+# After stop, a running step still finishes and is traced, and no other step is checked or run.
+
+step compile_a in=a.c out=a.o
+step compile_b in=b.c out=b.o
+
+request compile_a compile_b
+need a.c for compile_a -> a1
+run compile_a no_trace
+stop
+idle
+finish compile_a ok
+need a.o for compile_a -> ao1
+built compile_a in=a.c:a1 out=a.o:ao1
+done

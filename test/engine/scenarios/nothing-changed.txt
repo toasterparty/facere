@@ -1,0 +1,12 @@
+# A step whose trace matches the digest of every input and output is current, and nothing runs.
+
+step compile in=main.c out=main.o
+step link in=main.o out=app
+trace compile in=main.c:c1 out=main.o:o1
+trace link in=main.o:o1 out=app:a1
+
+request link
+need main.c for compile -> c1
+need main.o for compile -> o1
+need app for link -> a1
+done

@@ -376,6 +376,22 @@ def test_recorded_report_another_rule_starts_to_output_fails_naming_both(
     assert "rule 'configure' (include/config.h) outputs include/config.h" in result.err
 
 
+@pytest.mark.project("report_now_downstream")
+def test_recorded_report_a_rule_downstream_now_outputs_reruns_the_recording_rule_first(
+    root: Path, fac: Fac
+) -> None:
+    fac()
+    assert (root / "build" / "gen.h").read_text() == "from:spec"
+    edit(root / "fac.py", "READS_HEADER = True", "READS_HEADER = False")
+    edit(root / "fac.py", 'ORDERED_AFTER = [fac.out("gen.h")]', "ORDERED_AFTER = []")
+    edit(root / "fac.py", 'HEADER_SOURCE = "spec.txt"', 'HEADER_SOURCE = fac.out("main.o")')
+
+    assert fac().err == "Finished in <elapsed>. Executed 2 rules.\n"
+
+    assert (root / "build" / "gen.h").read_text() == "from:main alone"
+    assert fac().err == "Finished in <elapsed>. No work to do. 2 outputs up to date.\n"
+
+
 @pytest.mark.project("new_output")
 def test_new_output_named_as_a_reported_file_makes_the_rule_stale(root: Path, fac: Fac) -> None:
     fac()

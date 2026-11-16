@@ -1,0 +1,10 @@
+# A step whose input has nothing there fails without running, and nothing after the failure runs.
+
+step compile in=main.c out=main.o
+step link in=main.o out=app
+step docs in=readme out=manual
+
+request link docs
+need main.c for compile -> -
+failed compile input main.c
+done

@@ -1,0 +1,10 @@
+# A step that succeeds without writing an output fails, and leaves no trace.
+
+step compile in=main.c out=main.o,main.d
+
+request compile
+need main.c for compile -> c1
+run compile no_trace -> ok
+need main.o,main.d for compile -> o1,-
+failed compile output main.d
+done

@@ -1,0 +1,11 @@
+# A step whose own digest differs from its trace's runs, without a look at its outputs.
+
+step compile digest=v2 in=main.c out=main.o
+trace compile digest=v1 in=main.c:c1 out=main.o:o1
+
+request compile
+need main.c for compile -> c1
+run compile step_changed -> ok
+need main.o for compile -> o1
+built compile digest=v2 in=main.c:c1 out=main.o:o1
+done

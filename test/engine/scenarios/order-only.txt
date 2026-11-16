@@ -1,0 +1,15 @@
+# An order-only key orders its step after the key's step, and its digest never makes the step stale.
+
+step compile in=main.c order=gen.h out=main.o
+step generate in=spec out=gen.h
+trace compile in=main.c:c1 out=main.o:o1
+trace generate in=spec:s1 out=gen.h:g1
+
+request compile
+need spec for generate -> s2
+run generate input_changed spec -> ok
+need gen.h for generate -> g2
+built generate in=spec:s2 out=gen.h:g2
+need main.c for compile -> c1
+need main.o for compile -> o1
+done

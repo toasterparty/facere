@@ -1,0 +1,13 @@
+# A key several steps read is observed once in a session.
+
+step compile_a in=a.c,common.h out=a.o
+step compile_b in=b.c,common.h out=b.o
+trace compile_a in=a.c:a1,common.h:h1 out=a.o:ao1
+trace compile_b in=b.c:b1,common.h:h1 out=b.o:bo1
+
+request compile_a compile_b
+need a.c,common.h for compile_a -> a1,h1
+need a.o for compile_a -> ao1
+need b.c for compile_b -> b1
+need b.o for compile_b -> bo1
+done

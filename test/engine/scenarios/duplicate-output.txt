@@ -1,0 +1,6 @@
+# A graph reports each key that several steps output, with those steps.
+
+step a out=x
+step b out=y,x
+step c out=x
+duplicate x a b c

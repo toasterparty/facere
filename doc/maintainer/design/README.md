@@ -7,6 +7,7 @@ How Facere meets its [requirements](../requirements.md), and why. Much of it is 
 - [Command line](./command-line.md) - before adding or changing a flag
 - [Collection](./collection.md) - before changing how `fac.py` files are found, loaded, or validated
 - [Fingerprints and checks](./fingerprints.md) - before changing what makes a rule stale, added inputs, or the checks on undeclared paths and writes
+- [The dependency engine](./engine.md) - before changing how staleness is decided, the order rules run in, what a rule's record holds, or `_engine.py` and its scenarios
 - [Stores and virtual outputs](./stores.md) - before changing how rules output or input anything but a file, or how a store is read, written, or checked
 - [Execution](./execution.md) - before changing how commands run, their environment, scheduling, failure, or Facere's output
 - [State and lock](./state.md) - before changing what Facere records between invocations, or how concurrent invocations wait

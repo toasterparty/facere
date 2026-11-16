@@ -1,0 +1,7 @@
+# A graph reports one dependency cycle, as each step with the key it reads that the next one outputs.
+
+step a in=c.out out=a.out
+step b in=a.out out=b.out
+step c order=b.out out=c.out
+step d in=a.out out=d.out
+cycle a:c.out c:b.out b:a.out

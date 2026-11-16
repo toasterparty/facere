@@ -1,0 +1,16 @@
+# A changed input runs its step, and the step after it runs too once the output's digest changes.
+
+step compile in=main.c out=main.o
+step link in=main.o out=app
+trace compile in=main.c:c1 out=main.o:o1
+trace link in=main.o:o1 out=app:a1
+
+request link
+need main.c for compile -> c2
+run compile input_changed main.c -> ok
+need main.o for compile -> o2
+built compile in=main.c:c2 out=main.o:o2
+run link input_changed main.o -> ok
+need app for link -> a2
+built link in=main.o:o2 out=app:a2
+done

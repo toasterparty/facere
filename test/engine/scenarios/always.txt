@@ -1,0 +1,13 @@
+# A step declared always runs whatever its trace holds, and the step after it stays current while its output's digest does.
+
+step stamp always out=stamp.txt
+step embed in=stamp.txt out=app
+trace stamp out=stamp.txt:s1
+trace embed in=stamp.txt:s1 out=app:a1
+
+request embed
+run stamp always -> ok
+need stamp.txt for stamp -> s1
+built stamp out=stamp.txt:s1
+need app for embed -> a1
+done

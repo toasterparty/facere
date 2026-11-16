@@ -10,11 +10,12 @@ from collections.abc import Generator
 from typing import Any, NamedTuple
 
 from facere._cache import Entry, HashChanges
+from facere._engine import Trace
 
-_SCHEMA_VERSION = 5
+_SCHEMA_VERSION = 6
 _TABLES = ("records", "listing", "declared", "moved", "hashes")
 _SCHEMA = """
-CREATE TABLE IF NOT EXISTS records (outputs TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, output_hashes TEXT NOT NULL, added_inputs TEXT NOT NULL, added_names TEXT NOT NULL) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS records (outputs TEXT PRIMARY KEY, digest TEXT NOT NULL, inputs TEXT NOT NULL, output_hashes TEXT NOT NULL, added_inputs TEXT NOT NULL, added_names TEXT NOT NULL) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS listing (id INTEGER PRIMARY KEY CHECK (id = 0), paths TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS declared (id INTEGER PRIMARY KEY CHECK (id = 0), outputs TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS moved (outputs TEXT PRIMARY KEY, paths TEXT NOT NULL) WITHOUT ROWID;
@@ -24,11 +25,9 @@ _SEPARATOR = "\0"
 
 
 class Record(NamedTuple):
-    """A rule's last success. `added_inputs` pairs each input its recipe reported with that input's hash, and `added_names` holds the path key of the file name of each one reported, those outside the root included."""
+    """A rule's last success. `trace` pairs each path its rule read and wrote with that path's hash, the inputs its recipe reported as those it found, and `added_names` holds the path key of the file name of each input reported, those outside the root included."""
 
-    fingerprint: str
-    output_hashes: tuple[str, ...]
-    added_inputs: tuple[tuple[str, str], ...]
+    trace: Trace
     added_names: tuple[str, ...]
 
 
@@ -69,13 +68,16 @@ def save(path: str, key: tuple[str, ...], record: Record, changes: HashChanges) 
     """Record the success of the rule outputting `key`, forgetting what save_moved kept of it, and save the hash cache's `changes`."""
     with _open(path) as connection:
         connection.execute("DELETE FROM moved WHERE outputs = ?", (_SEPARATOR.join(key),))
+        trace = record.trace
+        output_hashes = dict(trace.outputs)
         connection.execute(
-            "INSERT OR REPLACE INTO records VALUES (?, ?, ?, ?, ?)",
+            "INSERT OR REPLACE INTO records VALUES (?, ?, ?, ?, ?, ?)",
             (
                 _SEPARATOR.join(key),
-                record.fingerprint,
-                _SEPARATOR.join(record.output_hashes),
-                _SEPARATOR.join(item for pair in record.added_inputs for item in pair),
+                trace.digest,
+                _join_pairs(trace.inputs),
+                _SEPARATOR.join(output_hashes[output] for output in key),
+                _join_pairs(trace.found),
                 _SEPARATOR.join(record.added_names),
             ),
         )
@@ -123,13 +125,19 @@ def save_declared(path: str, outputs: frozenset[str]) -> None:
 
 
 def _read(connection: sqlite3.Connection) -> State:
-    records = {
-        _split(outputs): Record(fingerprint, _split(hashes), _pair(_split(added)), _split(names))
-        for outputs, fingerprint, hashes, added, names in _fetch(
-            connection,
-            "SELECT outputs, fingerprint, output_hashes, added_inputs, added_names FROM records",
+    records = {}
+    for outputs, digest, inputs, hashes, added, names in _fetch(
+        connection,
+        "SELECT outputs, digest, inputs, output_hashes, added_inputs, added_names FROM records",
+    ):
+        key = _split(outputs)
+        trace = Trace(
+            digest,
+            _pair(_split(inputs)),
+            tuple(zip(key, _split(hashes), strict=True)),
+            _pair(_split(added)),
         )
-    }
+        records[key] = Record(trace, _split(names))
     moved = {
         _split(outputs): _split(paths)
         for outputs, paths in _fetch(connection, "SELECT outputs, paths FROM moved")
@@ -181,6 +189,10 @@ def _split(text: str) -> tuple[str, ...]:
 
 def _pair(items: tuple[str, ...]) -> tuple[tuple[str, str], ...]:
     return tuple(zip(items[::2], items[1::2], strict=True))
+
+
+def _join_pairs(pairs: tuple[tuple[str, str], ...]) -> str:
+    return _SEPARATOR.join(item for pair in pairs for item in pair)
 
 
 @contextlib.contextmanager

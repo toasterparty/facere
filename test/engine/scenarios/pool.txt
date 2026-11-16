@@ -1,0 +1,22 @@
+# A pool of one runs its steps one at a time, while a step outside it runs beside them.
+
+pool linker 1
+step link_a pool=linker out=a
+step link_b pool=linker out=b
+step docs out=manual
+
+request link_a link_b docs
+run link_a no_trace
+run docs no_trace
+idle
+finish link_a ok
+need a for link_a -> a1
+built link_a out=a:a1
+run link_b no_trace -> ok
+need b for link_b -> b1
+built link_b out=b:b1
+idle
+finish docs ok
+need manual for docs -> m1
+built docs out=manual:m1
+done

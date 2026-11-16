@@ -1,0 +1,12 @@
+# An output whose digest differs from the trace's, or that is gone, runs its step again.
+
+step compile in=main.c out=main.o,main.d
+trace compile in=main.c:c1 out=main.o:o1,main.d:d1
+
+request compile
+need main.c for compile -> c1
+need main.o,main.d for compile -> o1,-
+run compile output_changed main.d -> ok
+need main.o,main.d for compile -> o1,d1
+built compile in=main.c:c1 out=main.o:o1,main.d:d1
+done

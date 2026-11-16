@@ -1,0 +1,16 @@
+# With keep_going, a failed step skips only the steps downstream of it.
+
+keep_going
+step compile in=main.c out=main.o
+step link in=main.o out=app
+step package in=app out=app.tar
+step docs in=readme out=manual
+
+request package docs
+need main.c for compile -> c1
+run compile no_trace -> failed
+need readme for docs -> r1
+run docs no_trace -> ok
+need manual for docs -> m1
+built docs in=readme:r1 out=manual:m1
+done

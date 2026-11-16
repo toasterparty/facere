@@ -1,0 +1,15 @@
+# With no trace, every step upstream of the target runs, each after the steps that write its inputs, and no other step does.
+
+step compile in=main.c out=main.o
+step link in=main.o out=app
+step docs in=readme out=manual
+
+request link
+need main.c for compile -> c1
+run compile no_trace -> ok
+need main.o for compile -> o1
+built compile in=main.c:c1 out=main.o:o1
+run link no_trace -> ok
+need app for link -> a1
+built link in=main.o:o1 out=app:a1
+done

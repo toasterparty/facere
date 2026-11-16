@@ -1,0 +1,16 @@
+# A step is ordered after the step that now outputs a key its trace found, though it declares no such input and no target reaches that step.
+
+step compile in=main.c out=main.o
+step generate in=spec out=gen.h
+trace compile in=main.c:c1 out=main.o:o1 found=gen.h:g1
+
+request compile
+need spec for generate -> s1
+run generate no_trace -> ok
+need gen.h for generate -> g2
+built generate in=spec:s1 out=gen.h:g2
+need main.c for compile -> c1
+run compile input_changed gen.h -> ok
+need main.o for compile -> o2
+built compile in=main.c:c1 out=main.o:o2
+done

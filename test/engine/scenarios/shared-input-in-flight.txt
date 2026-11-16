@@ -1,0 +1,20 @@
+# A key one worker is observing is not asked for again: a step that needs it waits for that answer.
+
+step compile_a in=a.c,common.h out=a.o
+step compile_b in=b.c,common.h out=b.o
+
+request compile_a compile_b
+need a.c,common.h for compile_a
+need b.c for compile_b -> b1
+idle
+give a.c:a1,common.h:h1
+run compile_a no_trace
+run compile_b no_trace
+finish compile_a ok
+need a.o for compile_a -> ao1
+built compile_a in=a.c:a1,common.h:h1 out=a.o:ao1
+idle
+finish compile_b ok
+need b.o for compile_b -> bo1
+built compile_b in=b.c:b1,common.h:h1 out=b.o:bo1
+done

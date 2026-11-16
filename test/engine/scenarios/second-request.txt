@@ -1,0 +1,18 @@
+# A later request in one session checks only the steps no earlier request settled.
+
+step compile in=main.c out=main.o
+step link in=main.o out=app
+step test in=app out=report
+trace compile in=main.c:c1 out=main.o:o1
+trace link in=main.o:o1 out=app:a1
+
+request link
+need main.c for compile -> c1
+need main.o for compile -> o1
+need app for link -> a1
+done
+request test link
+run test no_trace -> ok
+need report for test -> r1
+built test in=app:a1 out=report:r1
+done

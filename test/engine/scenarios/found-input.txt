@@ -1,0 +1,12 @@
+# An input a step found as it ran joins its trace, and a change to it, or its absence, runs the step again.
+
+step compile in=main.c out=main.o
+trace compile in=main.c:c1 out=main.o:o1 found=a.h:h1,b.h:h2
+
+request compile
+need main.c for compile -> c1
+need a.h,b.h,main.o for compile -> h1,-,o1
+run compile input_changed b.h -> ok found=a.h
+need main.o for compile -> o1
+built compile in=main.c:c1 out=main.o:o1 found=a.h:h1
+done

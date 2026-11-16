@@ -1,0 +1,10 @@
+# A found input the session has no digest for is observed once its step finishes.
+
+step compile in=main.c out=main.o
+
+request compile
+need main.c for compile -> c1
+run compile no_trace -> ok found=a.h
+need main.o,a.h for compile -> o1,h1
+built compile in=main.c:c1 out=main.o:o1 found=a.h:h1
+done

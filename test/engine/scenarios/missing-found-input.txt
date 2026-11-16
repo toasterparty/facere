@@ -1,0 +1,10 @@
+# A step that reports finding an input with nothing there fails.
+
+step compile in=main.c out=main.o
+
+request compile
+need main.c for compile -> c1
+run compile no_trace -> ok found=gone.h
+need main.o,gone.h for compile -> o1,-
+failed compile found gone.h
+done

@@ -1,32 +1,44 @@
-"""Building targets: deciding which rules are stale, and executing recipes one at a time in dependency order."""
+"""Building targets: answering the dependency engine, which decides which rules are stale and in what order, by hashing files and executing recipes one at a time."""
 
 import contextlib
 import enum
-import hashlib
 import os
 import posixpath
 import shlex
 import subprocess
 import sys
 import threading
+import time
 import traceback
 from collections.abc import Callable, Iterable
+from typing import NamedTuple
 
 from facere import _state
 from facere._cache import HashCache, Hashed, Snapshot, iter_listed_files
-from facere._collect import Definition, Project, iter_upstream
+from facere._collect import Definition, Project
 from facere._command import write_output
 from facere._context import (
     STATE_FILE_NAME,
     Context,
     Recipe,
     calc_path_key,
-    is_within,
     iter_self_and_parents,
     normalize,
 )
 from facere._diagnostics import Diagnostic, FacereError, Note, print_error
-from facere._hash import feed, iter_strings
+from facere._engine import (
+    Built,
+    Engine,
+    Failed,
+    Missing,
+    NeedDigests,
+    Pause,
+    Reason,
+    Run,
+    Status,
+    Trace,
+)
+from facere._hash import iter_strings
 from facere._summary import Summary
 from facere._undeclared import ensure_audit_hook
 
@@ -64,8 +76,8 @@ def resolve_targets(project: Project, root: str, targets: list[str]) -> list[Def
     unknown: list[str] = []
     for target in targets:
         if "/" in target or "\\" in target:
-            rule = project.producers.get(normalize(target.replace("\\", "/"), root))
-            found = [rule] if rule else []
+            step = project.graph.producers.get(normalize(target.replace("\\", "/"), root))
+            found = [] if step is None else [project.definitions[step]]
         else:
             found = project.by_name.get(target, [])
         resolved.extend(found)
@@ -132,22 +144,18 @@ def build(
     except OSError as error:
         raise FacereError(Diagnostic(None, f"{error}")) from error
     ensure_audit_hook()
-    total, planned = _plan(project.upstream, targets)
     builder = _Builder(
         context,
         project,
         records,
         state.moved,
-        HashCache(state.hashes),
+        HashCache(state.hashes, time.time_ns()),
         state_path,
         summary,
         progress_cb,
-        total,
-        planned,
     )
     try:
-        for target in targets:
-            builder.build(target, task_args)
+        builder.build(targets, task_args)
         builder.validate_built_intact()
     finally:
         builder.save_listing()
@@ -197,23 +205,19 @@ def _remove_shadowed(
     listing = frozenset(iter_listed_files(context.out_dir))
     if listing == saved_listing and not new_outputs:
         return records
-    new_paths = (listing - saved_listing) | new_outputs
-    records = _forget_shadowed(state_path, records, new_paths)
+    shadowed = _find_shadowed(records, (listing - saved_listing) | new_outputs)
+    _state.remove(state_path, shadowed)
     if listing != saved_listing:
         _state.save_listing(state_path, listing)
-    return records
-
-
-def _forget_shadowed(
-    state_path: str, records: dict[tuple[str, ...], _state.Record], new_paths: Iterable[str]
-) -> dict[tuple[str, ...], _state.Record]:
-    """Forget each record naming the file name of one of `new_paths`, and return the records left."""
-    new_names = {calc_path_key(posixpath.basename(path)) for path in new_paths}
-    shadowed = [
-        key for key, record in records.items() if not new_names.isdisjoint(record.added_names)
-    ]
-    _state.remove(state_path, shadowed)
     return {key: record for key, record in records.items() if key not in shadowed}
+
+
+def _find_shadowed(
+    records: dict[tuple[str, ...], _state.Record], new_paths: Iterable[str]
+) -> list[tuple[str, ...]]:
+    """Return the key of each record naming the file name of one of `new_paths`."""
+    new_names = {calc_path_key(posixpath.basename(path)) for path in new_paths}
+    return [key for key, record in records.items() if not new_names.isdisjoint(record.added_names)]
 
 
 def _to_bytes(data: bytes | str | None) -> bytes:
@@ -231,47 +235,19 @@ def _format_exception(error: BaseException) -> str:
     return "".join(report.format())
 
 
-def _plan(
-    upstream: dict[str, tuple[Definition, ...]], targets: list[Definition]
-) -> tuple[int, set[Definition]]:
-    """Return how many rules and tasks building `targets` reaches, as _Builder.build counts them, and the rules among them."""
-    checked: set[Definition] = set()
-    planned: set[Definition] = set()
-    total = 0
-    for target in targets:
-        order = _order(upstream, target, checked)
-        total += len(order) + target.is_task
-        checked.update(order)
-        planned.update(order)
-        if target.is_task:
-            checked.clear()
-    return total, planned
+class _Session(NamedTuple):
+    """What one engine builds: the steps of a run of rules among the targets, then the task that follows them, if any."""
 
-
-def _order(
-    upstream: dict[str, tuple[Definition, ...]], target: Definition, checked: set[Definition]
-) -> list[Definition]:
-    """Return the rules `target` needs that aren't in `checked`, each after the rules that output its inputs or paths inside them."""
-    if target in checked:
-        return []
-    order = []
-    seen = {*checked, target}
-    stack = [(target, iter_upstream(target, upstream))]
-    while stack:
-        definition, edges = stack[-1]
-        _, rule = next(edges, (None, None))
-        if rule is None:
-            stack.pop()
-            if not definition.is_task:
-                order.append(definition)
-            continue
-        if rule not in seen:
-            seen.add(rule)
-            stack.append((rule, iter_upstream(rule, upstream)))
-    return order
+    rules: list[int]
+    task: Definition | None
 
 
 class _Builder:
+    """The host of the dependency engine for one invocation, in which a key is a path as normalize returns it.
+
+    A session is one engine: it lasts until a task executes, since a task may change any file, so what follows it is checked afresh, as a second invocation would.
+    """
+
     def __init__(
         self,
         context: Context,
@@ -282,8 +258,6 @@ class _Builder:
         state_path: str,
         summary: Summary,
         progress_cb: Callable[[str], None],
-        total: int,
-        planned: set[Definition],
     ) -> None:
         self.context = context
         self.project = project
@@ -291,12 +265,21 @@ class _Builder:
         self.moved = moved
         self.cache = cache
         self.state_path = state_path
-        self.checked: set[Definition] = set()
         self.summary = summary
         self.progress_cb = progress_cb
-        self.total = total
-        self.planned = planned
-        self.position = 0
+        self.steps = {definition: step for step, definition in enumerate(project.definitions)}
+        self.producers = project.graph.producers
+        self.steps_by_key = {
+            _state.calc_key(definition.outputs): step
+            for definition, step in self.steps.items()
+            if not definition.is_task
+        }
+        # Each rule that executed and awaits its Built, with its recipe and the inputs that moved.
+        self.finishing: dict[int, tuple[Recipe, tuple[str, ...]]] = {}
+        self.total = 0
+        # The rules and tasks reached so far, and how many of the session's verdicts that counts.
+        self.reached = 0
+        self.counted = 0
         self.has_executed = False
         self.snapshot: Snapshot | None = None
         # Each output this invocation built, with its rule and the hash it left.
@@ -304,7 +287,14 @@ class _Builder:
         # By output, the count of executions when last found intact, so none is rechecked until another recipe runs.
         self.executions = 0
         self.intact_at: dict[str, int] = {}
-        self.producers_by_path: dict[str, Definition | None] = {}
+        # By a path key's prefix up to its last slash, the rule outputting that directory or one holding it.
+        self.holders: dict[str, Definition | None] = {}
+        # The reported paths that _find_holder found no rule for.
+        self.unheld: set[str] = set()
+        self.engine: Engine
+        # What the session's engine was told of each path, with the stamp that vouches for it.
+        self.observed: dict[str, Hashed | None]
+        self._open_session()
 
     def save_listing(self) -> None:
         """Save the tree as this invocation leaves it, so a file its recipes wrote never counts as new, even when one failed. Losing the listing costs only rebuilds."""
@@ -320,18 +310,24 @@ class _Builder:
         with contextlib.suppress(OSError):
             _state.save_hashes(self.state_path, self.cache.take_changes(is_final=True))
 
-    def build(self, target: Definition, task_args: tuple[str, ...] | None) -> None:
-        for rule in _order(self.project.upstream, target, self.checked):
-            try:
-                self._ensure_up_to_date(rule)
-            except OSError as error:
-                raise RecipeFailure(rule, reason=f"{error}") from error
-        if target.is_task:
-            self.position += 1
-            self._announce(target)
-            self._execute(target, task_args)
+    def build(self, targets: list[Definition], task_args: tuple[str, ...] | None) -> None:
+        """Build `targets` in order: each run of rules among them together, and each task once the rules before it and the rules it inputs are current."""
+        sessions = self._split_sessions(targets)
+        planned = [len(self.engine.find_closure(self._find_steps(session))) for session in sessions]
+        self.total = sum(planned) + sum(session.task is not None for session in sessions)
+        for number, session in enumerate(sessions):
+            if number:
+                self._open_session()
+                closure = self.engine.find_closure(self._find_steps(session))
+                self.total += len(closure) - planned[number]
+            self._build_steps(session.rules)
+            if session.task is None:
+                continue
+            self._build_steps(self.project.graph.upstream[self.steps[session.task]])
+            self.reached += 1
+            self._announce(session.task, self.reached)
+            self._execute(session.task, task_args)
             self.summary.tasks_run += 1
-            self.checked.clear()
 
     def validate_built_intact(self) -> None:
         """Raise RecipeFailure naming the first output this invocation built whose content changed after its rule finished, which only an undeclared write explains. One that vanished passes, since the next invocation rebuilds it."""
@@ -350,80 +346,176 @@ class _Builder:
         reason = f"its output {output} changed after it finished"
         raise RecipeFailure(rule, reason=reason, notes=notes)
 
-    def _ensure_up_to_date(self, rule: Definition) -> None:
-        self.checked.add(rule)
-        self.position += 1
-        self._validate_inputs_intact(rule)
-        fingerprint, before = self._calc_fingerprint(rule)
+    def _split_sessions(self, targets: list[Definition]) -> list[_Session]:
+        sessions = []
+        rules: list[int] = []
+        for target in targets:
+            if target.is_task:
+                sessions.append(_Session(rules, target))
+                rules = []
+            else:
+                rules.append(self.steps[target])
+        if rules:
+            sessions.append(_Session(rules, None))
+        return sessions
+
+    def _find_steps(self, session: _Session) -> list[int]:
+        """Return every step `session` asks its engine for."""
+        if session.task is None:
+            return session.rules
+        return [*session.rules, *self.project.graph.upstream[self.steps[session.task]]]
+
+    def _open_session(self) -> None:
+        """Start an engine that has checked nothing, holding the trace of every record."""
+        self.engine = Engine(self.project.graph)
+        self.observed = {}
+        self.counted = 0
+        unheld = self.unheld
+        for key, record in self.records.items():
+            follows = [
+                holder
+                for path, _ in record.trace.found
+                if path not in unheld and (holder := self._find_holder(path)) is not None
+            ]
+            self.engine.load_trace(self.steps_by_key[key], record.trace, follows)
+
+    def _find_holder(self, path: str) -> str | None:
+        """Return an output of the rule that outputs `path`, a directory holding it, or a path differing from it only in case, which a rule that read `path` must follow."""
+        producer = self._find_producer(path)
+        if producer is None:
+            self.unheld.add(path)
+            return None
+        return producer.outputs[0]
+
+    def _build_steps(self, steps: Iterable[int]) -> None:
+        """Bring `steps` up to date by answering the engine's events until it has none, raising RecipeFailure on the first failure."""
+        self.engine.request(steps)
+        try:
+            while (event := self.engine.poll()) is not Pause.DONE:
+                assert not isinstance(event, Pause), "one worker never waits on another"
+                try:
+                    self._answer(event)
+                except OSError as error:
+                    rule = self.project.definitions[event.step]
+                    raise RecipeFailure(rule, reason=f"{error}") from error
+        finally:
+            self._count_checked()
+
+    def _count_checked(self) -> None:
+        """Count the rules checked since the last count, which holds even when a failure or an interrupt ends the build."""
+        checked = list(self.engine.verdicts.items())[self.counted :]
+        self.counted += len(checked)
+        self.reached += len(checked)
+        self.summary.outputs_current += sum(
+            len(self.project.definitions[step].outputs)
+            for step, verdict in checked
+            if verdict.reason is Reason.CURRENT
+        )
+
+    def _answer(self, event: NeedDigests | Run | Built | Failed) -> None:
+        if isinstance(event, NeedDigests):
+            self.engine.give_digests({path: self._observe(path) for path in event.keys})
+        elif isinstance(event, Run):
+            self._run(event.step)
+        elif isinstance(event, Built):
+            self._record(event.step, event.trace)
+        else:
+            raise self._build_missing_failure(event)
+
+    def _observe(self, path: str) -> str | None:
+        """Return the hash of what is at `path` for the engine: of an output stat-checked afresh, and of any other path as the session first saw it."""
+        step = self.producers.get(path)
+        if step is None:
+            hashed = self._fetch_once(path)
+            return None if hashed is None else hashed.digest
+        new_files: list[str] = []
+        hashed = self.observed[path] = self.cache.fetch(path, is_fresh=True, new_files=new_files)
+        if new_files:
+            self._forget_shadowed(new_files)
+        self.intact_at[path] = self.executions
+        if hashed is None:
+            return None
+        if step in self.finishing:
+            self.built[path] = (self.project.definitions[step], hashed.digest)
+        return hashed.digest
+
+    def _fetch_once(self, path: str) -> Hashed | None:
+        """Return what the session first saw at `path`, which is what the engine holds of it."""
+        if path not in self.observed:
+            self.observed[path] = self.cache.fetch(path)
+        return self.observed[path]
+
+    def _forget_shadowed(self, new_files: list[str]) -> None:
+        """Forget at once each record a file new in a directory output shadows."""
+        shadowed = _find_shadowed(self.records, new_files)
+        _state.remove(self.state_path, shadowed)
+        for key in shadowed:
+            del self.records[key]
+            self.engine.forget_trace(self.steps_by_key[key])
+
+    def _run(self, step: int) -> None:
+        """Execute the recipe of the stale rule at `step`, and tell the engine how it ended and what it reported."""
+        rule = self.project.definitions[step]
+        self._validate_inputs_intact(step)
         key = _state.calc_key(rule.outputs)
         record = self.records.get(key)
+        before = {path: self._fetch_once(path) for path in rule.inputs}
         if record is not None:
-            self._ensure_recorded_reports_built(rule, record)
-            added = {path: self.cache.fetch(path) for path, _ in record.added_inputs}
-            before.update(added)
-            if (
-                not rule.is_always
-                and record.fingerprint == fingerprint
-                and record.output_hashes == self._fetch_output_hashes(key)
-                and all(_digest(added[path]) == content for path, content in record.added_inputs)
-            ):
-                self.summary.outputs_current += len(key)
-                return
             _state.remove(self.state_path, [key])
+            before.update((path, self._fetch_once(path)) for path, _ in record.trace.found)
         for output in rule.outputs:
             os.makedirs(os.path.dirname(output) or ".", exist_ok=True)
-        self._announce(rule)
+        self._announce(rule, self.reached + len(self.engine.verdicts) - self.counted)
         if self.snapshot is None:
             self.snapshot = Snapshot(self.cache, self.context.out_dir)
         recipe = self._execute(rule, None)
-        added_inputs = self._hash_added_inputs(rule, recipe, before)
-        output_hashes = self._fetch_output_hashes(key)
-        missing = [
-            output for output, content in zip(key, output_hashes, strict=True) if not content
-        ]
-        if missing:
-            raise RecipeFailure(
-                rule,
-                reason=f"its recipe succeeded without writing {', '.join(missing)}",
-            )
-        for output, content in zip(key, output_hashes, strict=True):
-            self.built[output] = (rule, content)
-        self.summary.rules_run += 1
+        reported = sorted(recipe.reported)
+        for path in reported:
+            self._validate_ordered(step, path)
         moved = self._find_moved_inputs(recipe, before)
-        if moved:
+        self.finishing[step] = (recipe, moved)
+        self.engine.finish(step, Status.UNSETTLED if moved else Status.OK, reported)
+
+    def _record(self, step: int, trace: Trace | None) -> None:
+        """Save the `trace` of the rule at `step`, which executed and wrote every output, or where it has none, the inputs that moved."""
+        rule = self.project.definitions[step]
+        recipe, moved = self.finishing.pop(step)
+        self.summary.rules_run += 1
+        key = _state.calc_key(rule.outputs)
+        if trace is None:
             self._leave_unrecorded(rule, key, moved)
             return
-        record = self.records[key] = _state.Record(
-            fingerprint, output_hashes, added_inputs, tuple(sorted(recipe.reported_names))
-        )
+        record = self.records[key] = _state.Record(trace, tuple(sorted(recipe.reported_names)))
         _state.save(self.state_path, key, record, self.cache.take_changes())
         self.moved.pop(key, None)
 
-    def _fetch_output_hashes(self, key: tuple[str, ...]) -> tuple[str, ...]:
-        """Return the hash of each output in `key`, or an empty string for one missing, stat-checked afresh, and forget at once each record a file new in a directory output shadows."""
-        new_files: list[str] = []
-        hashes = tuple(
-            _digest(self.cache.fetch(output, is_fresh=True, new_files=new_files)) for output in key
-        )
-        if new_files:
-            self.records = _forget_shadowed(self.state_path, self.records, new_files)
-        for output in key:
-            self.intact_at[output] = self.executions
-        return hashes
+    def _build_missing_failure(self, event: Failed) -> RecipeFailure:
+        rule = self.project.definitions[event.step]
+        if event.missing is Missing.INPUT:
+            return RecipeFailure(rule, reason=f"its input {event.key} is missing")
+        if event.missing is Missing.FOUND:
+            reason = f"its recipe reported reading {event.key}, which it then removed"
+            return RecipeFailure(rule, reason=reason)
+        missing = [
+            output for output in _state.calc_key(rule.outputs) if self.observed[output] is None
+        ]
+        reason = f"its recipe succeeded without writing {', '.join(missing)}"
+        return RecipeFailure(rule, reason=reason)
 
-    def _validate_inputs_intact(self, rule: Definition) -> None:
-        """Fail `rule` without executing it where an output this invocation built, which it inputs or orders after, changed or vanished since its rule finished."""
-        for path, producer in iter_upstream(rule, self.project.upstream):
-            for output in producer.outputs:
-                if not _is_related(output, path):
-                    continue
-                damage = self._find_damage(output)
-                if damage is not None:
-                    raise RecipeFailure(
-                        rule,
-                        reason=f"its input {output} {damage} after {producer.label} finished",
-                        notes=(Note(producer.location, f"{producer.label} outputs {output}"),),
-                    )
+    def _validate_inputs_intact(self, step: int) -> None:
+        """Fail the rule at `step` without executing it where an output this invocation built, which it inputs or orders after, changed or vanished since its rule finished."""
+        graph = self.project.graph
+        for output in (*graph.steps[step].inputs, *graph.steps[step].order_only):
+            if output not in graph.producers:
+                continue
+            damage = self._find_damage(output)
+            if damage is not None:
+                producer = self.project.definitions[graph.producers[output]]
+                raise RecipeFailure(
+                    self.project.definitions[step],
+                    reason=f"its input {output} {damage} after {producer.label} finished",
+                    notes=(Note(producer.location, f"{producer.label} outputs {output}"),),
+                )
 
     def _find_damage(self, output: str) -> _Damage | None:
         """Return how the output `output` this invocation built differs from how its rule left it, or None where it doesn't, or where no recipe executed since it was last found intact."""
@@ -436,6 +528,7 @@ class _Builder:
         if current.digest != built[1]:
             return _Damage.CHANGED
         self.intact_at[output] = self.executions
+        self.observed[output] = current
         return None
 
     def _find_moved_inputs(
@@ -443,7 +536,7 @@ class _Builder:
     ) -> tuple[str, ...]:
         """Return the inputs that changed while the recipe executed, even where the content changed back, so recording the rule would claim it current for files its tool never read.
 
-        `before` holds what the rule's fingerprint and record checked of each declared input and each added input in the rule's record. A file first reported has none, since its tool read it before the recipe could report it, so it compares with the snapshot, or where a rule outputs it, with how this invocation last found it, unless the recipe wrote it in Python itself.
+        `before` holds what the engine was told of each declared input and each found input in the rule's record. A file first reported has none, since its tool read it before the recipe could report it, so it compares with the snapshot, or where a rule outputs it, with how this invocation last found it, unless the recipe wrote it in Python itself.
         """
         moved = {
             path
@@ -474,37 +567,13 @@ class _Builder:
         self.moved[key] = moved
         _state.save_moved(self.state_path, key, moved, self.cache.take_changes())
 
-    def _ensure_recorded_reports_built(self, rule: Definition, record: _state.Record) -> None:
-        """Bring up to date first each rule that now outputs a file `rule` last reported, as when a source became generated, so its record is checked against the file that rule writes."""
-        for path, _ in record.added_inputs:
-            producer = self._find_producer(path)
-            if producer is None or producer is rule:
-                continue
-            for upstream_rule in _order(self.project.upstream, producer, self.checked):
-                if upstream_rule not in self.planned:
-                    self.planned.add(upstream_rule)
-                    self.total += 1
-                self._ensure_up_to_date(upstream_rule)
-
-    def _hash_added_inputs(
-        self, rule: Definition, recipe: Recipe, before: dict[str, Hashed | None]
-    ) -> tuple[tuple[str, str], ...]:
-        """Return what `rule`'s recipe reported, each path with its hash from before the recipe where one exists, so a change during the recipe makes the rule stale."""
-        added = []
-        for path in sorted(recipe.reported):
-            self._validate_ordered(rule, path)
-            content = _digest(before.get(path) or self.cache.fetch(path))
-            if not content:
-                reason = f"its recipe reported reading {path}, which it then removed"
-                raise RecipeFailure(rule, reason=reason)
-            added.append((path, content))
-        return tuple(added)
-
-    def _validate_ordered(self, rule: Definition, path: str) -> None:
+    def _validate_ordered(self, step: int, path: str) -> None:
+        """Fail the rule at `step`, whose recipe reported reading `path`, unless it declares an input that orders it after the rule outputting `path`."""
+        rule = self.project.definitions[step]
         producer = self._find_producer(path)
         if producer is None or producer is rule:
             return
-        if any(producer in self.project.upstream[input_] for input_ in rule.prerequisites):
+        if self.steps[producer] in self.project.graph.upstream[step]:
             return
         raise RecipeFailure(
             rule,
@@ -514,34 +583,24 @@ class _Builder:
 
     def _find_producer(self, path: str) -> Definition | None:
         """Return the rule that outputs `path`, or a directory holding it."""
-        if path not in self.producers_by_path:
-            self.producers_by_path[path] = next(
+        producers_by_key = self.project.producers_by_key
+        key = calc_path_key(path)
+        if key in producers_by_key:
+            return producers_by_key[key]
+        prefix = key[: key.rfind("/") + 1]
+        if prefix not in self.holders:
+            self.holders[prefix] = next(
                 (
-                    self.project.producers_by_key[ancestor]
-                    for ancestor in iter_self_and_parents(calc_path_key(path))
-                    if ancestor in self.project.producers_by_key
+                    producers_by_key[ancestor]
+                    for ancestor in iter_self_and_parents(posixpath.dirname(key))
+                    if ancestor in producers_by_key
                 ),
                 None,
             )
-        return self.producers_by_path[path]
+        return self.holders[prefix]
 
-    def _calc_fingerprint(self, rule: Definition) -> tuple[str, dict[str, Hashed | None]]:
-        """Return the fingerprint of `rule`, and what it hashed of each input."""
-        digest = hashlib.sha256(self.project.code_digests[rule])
-        hashed_inputs: dict[str, Hashed | None] = {}
-        for path in rule.inputs:
-            hashed = hashed_inputs[path] = self.cache.fetch(path)
-            if hashed is None:
-                raise RecipeFailure(
-                    rule,
-                    reason=f"its input {path} is missing",
-                )
-            feed(digest, b"path", path.encode("utf-8", "surrogateescape"))
-            feed(digest, b"content", hashed.digest.encode())
-        return digest.hexdigest(), hashed_inputs
-
-    def _announce(self, definition: Definition) -> None:
-        self.progress_cb(f"[{self.position}/{self.total}] {definition.label}")
+    def _announce(self, definition: Definition, position: int) -> None:
+        self.progress_cb(f"[{position}/{self.total}] {definition.label}")
 
     def _build_recipe(self, definition: Definition) -> Recipe:
         root = self.context.root
@@ -585,15 +644,3 @@ class _Builder:
             )
             raise RecipeFailure(definition, reason=reason, notes=notes)
         return recipe
-
-
-def _digest(hashed: Hashed | None) -> str:
-    """Return the hash in `hashed`, or an empty string, which no hash is, where nothing was there."""
-    return "" if hashed is None else hashed.digest
-
-
-def _is_related(output: str, path: str) -> bool:
-    """Say whether reading `path` reads some of `output`: they are one path, or one holds the other."""
-    output_key = calc_path_key(output)
-    path_key = calc_path_key(path)
-    return is_within(path_key, output_key) or is_within(output_key, path_key)

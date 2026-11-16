@@ -1,0 +1,13 @@
+# A trace loaded with keys to follow orders its step after their steps, without reading them.
+
+step compile in=main.c out=main.o
+step unpack in=sdk.tar out=sdk
+trace compile in=main.c:c1 out=main.o:o1 found=sdk/sdk.h:h1 follows=sdk
+trace unpack in=sdk.tar:t1 out=sdk:d1
+
+request compile
+need sdk.tar for unpack -> t1
+need sdk for unpack -> d1
+need main.c for compile -> c1
+need sdk/sdk.h,main.o for compile -> h1,o1
+done

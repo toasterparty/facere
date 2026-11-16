@@ -23,7 +23,7 @@ posix_only = pytest.mark.skipif(sys.platform == "win32", reason="needs symlinks"
 def later_clock(monkeypatch: pytest.MonkeyPatch) -> None:
     """Start every invocation 10 s after now, so every file the test wrote has settled."""
     clock = SimpleNamespace(time_ns=lambda: time.time_ns() + SETTLE_NS)
-    monkeypatch.setattr("facere._cache.time", clock)
+    monkeypatch.setattr("facere._build.time", clock)
 
 
 @pytest.fixture

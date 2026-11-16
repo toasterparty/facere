@@ -1,0 +1,16 @@
+# A trace is refused where a key it found is now output by a step downstream of its own, so its step runs again before that one, which reads what it wrote.
+
+step compile in=main.c out=main.o
+step generate in=main.o out=gen.h
+trace compile in=main.c:c1 out=main.o:o1 found=gen.h:g1 refused
+trace generate in=spec:s1 out=gen.h:g1
+
+request compile generate
+need main.c for compile -> c1
+run compile no_trace -> ok
+need main.o for compile -> o2
+built compile in=main.c:c1 out=main.o:o2
+run generate input_changed main.o -> ok
+need gen.h for generate -> g2
+built generate in=main.o:o2 out=gen.h:g2
+done

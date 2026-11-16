@@ -1,0 +1,16 @@
+# A step that finishes unsettled leaves no trace, and the steps after it read what it wrote.
+
+step format in=main.c out=main.fmt
+step count in=main.fmt out=count.txt
+trace format in=main.c:c1 out=main.fmt:f1
+trace count in=main.fmt:f1 out=count.txt:n1
+
+request count
+need main.c for format -> c2
+run format input_changed main.c -> unsettled
+need main.fmt for format -> f2
+built format unrecorded
+run count input_changed main.fmt -> ok
+need count.txt for count -> n2
+built count in=main.fmt:f2 out=count.txt:n2
+done

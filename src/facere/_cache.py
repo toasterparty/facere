@@ -5,7 +5,6 @@ import os
 import posixpath
 import stat
 import sys
-import time
 from collections.abc import Iterator
 from typing import NamedTuple
 
@@ -52,12 +51,12 @@ class HashChanges(NamedTuple):
 class HashCache:
     """The hashes of files and directory trees, from `entries` where a stat vouches for one, and the paths fetched during this invocation.
 
-    An entry is trusted where its stamp matches a stat of the file, it isn't racy, and its file system's timestamps prove something. A file fetched once in an invocation keeps its result until fetched again with `is_fresh`, so the invocation sees the files as they stood when it first looked.
+    An entry is trusted where its stamp matches a stat of the file, it isn't racy, and its file system's timestamps prove something. A file fetched once in an invocation keeps its result until fetched again with `is_fresh`, so the invocation sees the files as they stood when it first looked. `start_ns` is the clock's reading as the invocation started, which decides what is racy.
     """
 
-    def __init__(self, entries: dict[str, Entry]) -> None:
+    def __init__(self, entries: dict[str, Entry], start_ns: int) -> None:
         self._entries = entries
-        self._start_ns = time.time_ns()
+        self._start_ns = start_ns
         self._file_systems = FileSystems()
         self._fetched: dict[str, Hashed] = {}
         self._walked: set[str] = set()

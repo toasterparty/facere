@@ -1,0 +1,14 @@
+# A step that runs again to the same output digest leaves the step after it current.
+
+step compile in=main.c out=main.o
+step link in=main.o out=app
+trace compile in=main.c:c1 out=main.o:o1
+trace link in=main.o:o1 out=app:a1
+
+request link
+need main.c for compile -> c2
+run compile input_changed main.c -> ok
+need main.o for compile -> o1
+built compile in=main.c:c2 out=main.o:o1
+need app for link -> a1
+done
