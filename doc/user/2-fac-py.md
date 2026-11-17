@@ -40,7 +40,7 @@ def app(objects: list[fac.Input], program: fac.Output):
     fac.run(CC, objects, "-o", program)
 ```
 
-*(0.4)* `@fac.rule(terminal=True)` gives a rule's commands the terminal, as a task's have, for a rule that needs a person, such as signing with a PIN. Such a rule executes while no other rule's output is shown, and fails without a terminal, so CI never waits on it. It still executes only when stale.
+*(0.4)* `@fac.rule(terminal=True)` gives a rule's commands the terminal, as a task's have, for a rule that needs a person, such as signing with a PIN. Such a rule executes while no other rule's output is shown, and fails without a terminal, so CI never waits on it. It still executes only when stale. *(planned)* The option goes: a command passes `console=fac.Console.LIVE` instead, and holds the terminal only while it runs.
 
 *(planned)* `@fac.rule(clear=True)` deletes every output before the recipe executes, for a tool that keeps what an earlier execution left, such as `ar r`, `zip`, or `uv build --out-dir`.
 
@@ -73,7 +73,7 @@ In a rule, a command reads an empty standard input and has no terminal to prompt
 | `stdin=`, `stdout=`, `stderr=` | Name a file to read standard input from or write a stream to. A file both `stdout=` and `stderr=` name gets both streams |
 | `env=` | Set environment variables over the inherited ones and those `fac.env` sets. `None` unsets a variable |
 | `cwd=` | Run in another directory, relative to the root. *(0.4)* Its output is framed by `fac: Entering directory` and `fac: Leaving directory` lines, as make prints them, so an editor resolves the relative paths in a tool's diagnostics |
-| `quiet=True` | Hide the command's output when it succeeds. *(0.4)* In a task, the command runs as in a rule instead, with its output kept and an empty standard input |
+| `quiet=True` | Hide the command's output when it succeeds. *(0.4)* In a task, the command runs as in a rule instead, with its output kept and an empty standard input. *(planned)* `console=` takes its place: `fac.Console.LIVE` prints as it runs and may prompt, `AFTER` prints once the rule finishes, and `ON_FAILURE` prints only if the failure fails the recipe. Rules default to `AFTER`, tasks to `LIVE`, and `fac.console(mode)` in a `fac.py` sets the default for the rules that file defines |
 | `timeout=` | Kill the command after that many seconds, failing the recipe |
 
 *(0.2)* `fac.env(LC_ALL="C")`, called while `fac.py` loads, sets a variable for every command, or unsets it with `None`. Calls may repeat a variable's value, but one that changes it fails, naming both calls. Unlike a variable inherited from your shell, it joins every rule's fingerprint, so changing it re-executes them.
@@ -104,6 +104,7 @@ Facere compares content, never timestamps. A rule executes when any of these cha
 - *(0.4)* the content of a file its recipe last reported through `fac.add_inputs`, wherever it lies, or a new file under the root, or a new output, with the name of one it reported, since a tool searching a path may find that first
 - its recipe's code, or that of a function or class in your project the recipe reaches by name, such as a helper in `fac.py` or a shared module *(0.2)*, along with *(0.4)* the function a decorator wraps, the classes a class inherits from, and what a class's body reads, such as a constant it binds to an attribute
 - a value or module constant the recipe reads, directly or through such a function, *(0.4)* including the defaults such a function's parameters take. *(0.4)* A value counts by its content wherever `pickle` can take it apart, a dataclass, enum member, date, or compiled pattern included, and one it cannot, such as an open file or a lock, fails collection. *(0.4)* A shared module the recipe uses other than by reading its attributes, as when passing it to a helper, counts by every function, class, and constant it holds
+- *(planned)* the number `fac.epoch(n)` sets in the root `fac.py`. Only the recipe's own code then counts, not the helpers, classes, and shared modules it calls: after editing one in a way that changes what rules build, raise the epoch, which executes every rule once on every machine. `fac` warns once when it sees such an edit
 - a variable `fac.env` sets *(0.2)*
 - one of its outputs, deleted or edited by hand, and *(planned)* a virtual output changed in or missing from its store
 

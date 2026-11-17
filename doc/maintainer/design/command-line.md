@@ -6,7 +6,7 @@
 | `-C DIR` | Run as if started in `DIR`, which becomes the root, framing the invocation's output with `fac: Entering directory` and `fac: Leaving directory` lines |
 | `-j N`, `--jobs N` | Parallel jobs, or `auto`, the default, for all usable CPUs |
 | `-k`, `--keep-going` | Continue past failures |
-| `-q`, `--quiet` | Hide the output of every successful command a rule runs |
+| `-q`, `--quiet` | Run every command a rule runs that is not `LIVE` as `fac.Console.ON_FAILURE`, hiding its output when it succeeds. A project wanting that by default sets it in its `fac.py` instead |
 | `-v`, `--verbose` | Print each command as it runs, and for each rule that executes, name why: `code`, `values`, `inputs`, `added-inputs`, `outputs`, `always`, or `first-run`, one word each since `--json` reports them as values, with what changed, such as `cflags` |
 | `--check [TARGET...]` | Validate collection, confirm that every source exists, and print each stale rule with its reason, then each rule that may execute once a stale rule upstream of it does, naming those stale rules. Executes no recipe, and exits non-zero only on an error |
 | `--list [TARGET...]` | Rules and tasks with their docstrings and defaults, or what each target resolves to. Collection validates the whole tree first, so `fac --list` checks a fresh clone without executing a recipe. A task taking `fac.Args` shows as `NAME -- ARGS`, with its docstring saying what they mean |

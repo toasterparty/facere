@@ -11,12 +11,13 @@ The project's [requirements](./requirements.md) are derived from these guiding p
 - Facere can be adopted incrementally. A project can hand it one part of its build at a time.
 - Facere is observable. A user can always learn what Facere will do and why without reading its source.
 - Facere's interface is intuitive and minimal.
+- A project's everyday commands are `fac <targets>`. A project can configure, in its `fac.py`, whatever its day-to-day builds need, so they take few or no flags, no second command, and no tool beside Facere. A project whose everyday builds need those is a sign of friction Facere exists to remove.
 - Facere's failures state the facts: what was attempted, on what, and what happened. They prescribe no fix to the project, since the user owns its substance. A remedy belongs in a message only where Facere itself knows it:
     - the failure is the absence of an action only the user can perform, so the message names it, such as upgrading Facere
     - Facere owns the rule the `fac.py` broke, so the message names what in Facere's interface satisfies it, such as the parameter to declare
     - a name is a typo, so the message names its nearest valid match
 - Facere is plain Python. Builds are configured by Python code rather than environment variables, settings files, or a data format invented by Facere.
-- Facere is dependable. Its decisions are deterministic, reproducible, and idempotent, and it never reports success while leaving an output stale. Where a cheaper check could miss a change, Facere takes the one that cannot, and a project that trusts the cheaper one opts into it.
+- Facere is dependable. Its decisions are deterministic, reproducible, and idempotent, and it never reports success while leaving stale an output whose change it observes. Where a cheaper check could miss such a change, Facere takes the one that cannot, and a project that trusts the cheaper one opts into it. What Facere observes is the recipe itself, its values, and its declared inputs. The code a recipe calls, such as its helpers or a build tool it wraps, is the user's, so the user discloses a change to how it builds, as any change to an undeclared program is disclosed.
 - Facere is efficient, building exactly what is needed and nothing redundantly.
 - Facere is quiet. A successful build shows what the user's own tools report, and Facere's own report fits in a glance.
 - From 1.0, Facere is backwards compatible forever, except for behavior its maintainers judge to be a bug.

@@ -269,7 +269,7 @@ Delete a page and its old HTML stays in `build/pages`, still served, until `fac 
 | --- | --- |
 | `-C path/to/project` | Run as if started in that directory, from anywhere |
 | `--out build-debug` | Keep outputs and state in that directory instead of `build/`, leaving `build/` alone |
-| `-q` | Hide the output of every successful command a rule runs |
+| `-q` | Hide the output of every successful command a rule runs. *(planned)* Except one running live, which no flag can hide |
 | `-j 4` *(0.4)* | Execute at most 4 rules at once, where the default is one per CPU |
 | `-k` *(0.4)* | After a failure, still build everything that does not depend on what failed |
 | `-v` *(0.2)* | Print each command, as one string, before it runs |
