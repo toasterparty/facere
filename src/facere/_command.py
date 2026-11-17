@@ -17,7 +17,7 @@ from typing import IO, TYPE_CHECKING
 
 from facere._context import Context, Recipe, get_context
 from facere._diagnostics import format_entering, format_leaving
-from facere._output import write_data
+from facere._output import Chunk, write_data
 from facere._undeclared import note_misuse, validate_command_args, validate_program
 
 if TYPE_CHECKING:
@@ -69,10 +69,14 @@ class Commands:
         """
         with self._lock:
             self._are_tasks_stopped = True
-            running = [item for item in self._running.items() if item[1][1]]
+            running = [
+                (process, in_session)
+                for process, (in_session, is_task) in self._running.items()
+                if is_task
+            ]
         if sys.platform == "win32":
             return
-        for process, (in_session, _) in running:
+        for process, in_session in running:
             with contextlib.suppress(ProcessLookupError, PermissionError):
                 if in_session:
                     os.killpg(process.pid, signal.SIGTERM)
@@ -97,21 +101,19 @@ def run(
     In a rule, the command reads an empty stdin unless `stdin` names a file, has no terminal to prompt on, and its output is kept and printed whole once the rule finishes, unless `quiet` is true, which hides it. On failure the output travels in the raised error, which Facere prints if it fails the recipe. In a task, and in a rule declared with `terminal=True`, the command shares Facere's standard streams and its terminal instead, unless `quiet` is true, which runs it as in any other rule. `timeout` kills the command after that many seconds and raises subprocess.TimeoutExpired. Call it on the recipe's own thread, or in a task from any thread.
     """
     context, recipe = _get_recipe("fac.run")
-    is_live = recipe.has_terminal and not quiet
-    is_shown = not (quiet or context.is_quiet)
     _run(
         "fac.run",
         context,
         recipe,
         args,
-        cwd,
-        env,
-        stdin,
-        stdout,
-        stderr,
-        timeout,
-        is_live,
-        is_shown,
+        cwd=cwd,
+        env=env,
+        stdin=stdin,
+        stdout=stdout,
+        stderr=stderr,
+        timeout=timeout,
+        is_live=recipe.has_terminal and not quiet,
+        is_shown=not (quiet or context.is_quiet),
     )
 
 
@@ -129,7 +131,18 @@ def capture(
     """
     context, recipe = _get_recipe("fac.capture")
     out = _run(
-        "fac.capture", context, recipe, args, cwd, env, stdin, None, stderr, timeout, False, False
+        "fac.capture",
+        context,
+        recipe,
+        args,
+        cwd=cwd,
+        env=env,
+        stdin=stdin,
+        stdout=None,
+        stderr=stderr,
+        timeout=timeout,
+        is_live=False,
+        is_shown=False,
     )
     return out.decode("utf-8", "surrogateescape")
 
@@ -150,6 +163,7 @@ def _run(
     context: Context,
     recipe: Recipe,
     args: _Args,
+    *,
     cwd: str | None,
     env: Mapping[str, str | None] | None,
     stdin: str | None,
@@ -232,7 +246,7 @@ def _locate(
     return error
 
 
-def _show(recipe: Recipe, chunks: list[tuple[bool, bytes | str]], cwd: str | None) -> None:
+def _show(recipe: Recipe, chunks: list[Chunk], cwd: str | None) -> None:
     if cwd is not None:
         chunks = [(True, f"{format_entering(cwd)}\n"), *chunks, (True, f"{format_leaving(cwd)}\n")]
     if not recipe.has_terminal:

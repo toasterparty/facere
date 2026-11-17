@@ -106,7 +106,8 @@ class HashCache:
             hashed = Hashed(_calc_stamp(path, info)[0], "O")
         except FileNotFoundError:
             if look is not Look.CHECK:
-                self._forget(path)
+                with self._lock:
+                    self._forget(path)
             return None
         with self._lock:
             if look is Look.FIRST:
@@ -218,10 +219,7 @@ class HashCache:
         return Hashed(_calc_link_stamp(child), "O")
 
     def _forget(self, path: str) -> None:
-        with self._lock:
-            self._forget_locked(path)
-
-    def _forget_locked(self, path: str) -> None:
+        """Drop what the session saw of `path` and its entry. Call it with the lock held."""
         self._seen.pop(path, None)
         if self._entries.pop(path, None) is not None:
             self._saved.pop(path, None)
@@ -241,7 +239,7 @@ class HashCache:
         gone = [path for path in candidates if not os.path.lexists(path)]
         with self._lock:
             for path in (*unseen, *gone):
-                self._forget_locked(path)
+                self._forget(path)
 
 
 class Snapshot:

@@ -15,7 +15,7 @@ from facere._diagnostics import Diagnostic, FacereError
 _PID_FILE_NAME = "lock.pid"
 _RETRY_S = 0.05
 _KEY_CHARS = 32
-LOCK_DIR = "/tmp"  # noqa: S108 - shared by every user and never read from TMPDIR, by design
+_LOCK_DIR = "/tmp"  # noqa: S108 - shared by every user and never read from TMPDIR, by design
 
 
 class LockTimeoutError(Exception):
@@ -48,11 +48,15 @@ class OutputLock:
         assert self._handle is None
         deadline_s = None if timeout_s is None else time.monotonic() + timeout_s
         has_waited = False
+        checked_holder = None
         while (handle := _try_take(self._key)) is None:
             holder = self._read_holder()
-            if holder is not None and (holder == os.getpid() or holder in _iter_ancestors()):
-                message = f"the invocation with PID {holder}, which started this one, holds the output directory {self._out_dir}, so waiting for it would never end"
-                raise FacereError(Diagnostic(None, message))
+            # Each holder is checked once, since without /proc walking the ancestors runs ps for each.
+            if holder is not None and holder != checked_holder:
+                if holder == os.getpid() or holder in _iter_ancestors():
+                    message = f"the invocation with PID {holder}, which started this one, holds the output directory {self._out_dir}, so waiting for it would never end"
+                    raise FacereError(Diagnostic(None, message))
+                checked_holder = holder
             remaining_s = _RETRY_S if deadline_s is None else deadline_s - time.monotonic()
             if remaining_s <= 0:
                 waited = f"after {timeout_s:g} second{'' if timeout_s == 1 else 's'}"
@@ -223,7 +227,7 @@ else:
         os.close(handle)
 
     def _calc_lock_path(key: str) -> str:
-        return os.path.join(LOCK_DIR, f"facere-{key}.lock")
+        return os.path.join(_LOCK_DIR, f"facere-{key}.lock")
 
     def _open_lock_file(path: str) -> int:
         flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC

@@ -117,6 +117,25 @@ def test_graceful_stop_passes_the_signal_to_the_command_a_task_is_running(root: 
 
 
 @_POSIX_ONLY
+@pytest.mark.project("stop")
+def test_graceful_stop_passes_the_signal_to_the_session_of_a_command_a_task_captures(
+    root: Path,
+) -> None:
+    process = start_fac(root, "serve_captured")
+    command_pid = int(wait_for(root / "build" / "pid"))
+
+    process.send_signal(signal.SIGTERM)
+    _, stderr = process.communicate(timeout=30)
+
+    assert process.returncode == 143, stderr
+    assert mask_elapsed(stderr) == (
+        "fac.py:43:2: note: stopped task 'serve_captured'\nStopped after <elapsed>.\n"
+    )
+    assert (root / "build" / "terminated").exists()
+    assert not _is_running(command_pid)
+
+
+@_POSIX_ONLY
 @pytest.mark.project("two")
 def test_interrupt_kills_every_running_command_and_names_one_rule_counting_the_rest(
     root: Path,

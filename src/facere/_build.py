@@ -64,7 +64,7 @@ class _Damage(enum.StrEnum):
     VANISHED = enum.auto()
 
 
-class RecipeFailure(Exception):
+class _RecipeFailure(Exception):
     """A rule or task failed. `output` holds what its recipe wrote before it did."""
 
     def __init__(
@@ -164,7 +164,7 @@ def build(invocation: Invocation, project: Project, targets: list[str]) -> None:
     context = invocation.context
     pending = _plan(project, context.root, targets)
     resolved = [found for target in pending for found in _resolve(project, context.root, target)]
-    validate_task_args(resolved, invocation.task_args)
+    _validate_task_args(resolved, invocation.task_args)
     ensure_audit_hook()
     while True:
         rules, task, pending = _take_batch(project, context.root, pending)
@@ -178,7 +178,7 @@ def build(invocation: Invocation, project: Project, targets: list[str]) -> None:
         builder.validate_built_intact()
 
 
-def validate_task_args(resolved: list[Definition], task_args: tuple[str, ...] | None) -> None:
+def _validate_task_args(resolved: list[Definition], task_args: tuple[str, ...] | None) -> None:
     """Raise unless `task_args`, the arguments after `--`, are None or empty, or a task among the `resolved` targets takes fac.Args to receive them."""
     if not bool(task_args):
         return
@@ -202,7 +202,7 @@ def validate_task_args(resolved: list[Definition], task_args: tuple[str, ...] | 
     )
 
 
-def format_failure(failure: RecipeFailure, start_dir: str) -> list[Chunk]:
+def _format_failure(failure: _RecipeFailure, start_dir: str) -> list[Chunk]:
     """Return what a failure prints: what its recipe wrote, the failing command or exception with the command's captured stderr and stdout, then the line naming the rule or task."""
     import subprocess
 
@@ -377,9 +377,10 @@ class _Finished:
 class _GiveRequest:
     """A task's request that the main thread give the output directory's lock, and the main thread's answer."""
 
+    __slots__ = ("answered", "is_requested", "refusal")
+
     def __init__(self) -> None:
         self.is_requested = False
-        self.is_answered = False
         self.answered = threading.Event()
         self.refusal: str | None = None
 
@@ -397,17 +398,19 @@ class _Builder:
         self.context = context = invocation.context
         self.project = project
         self.state_path = posixpath.join(context.state_dir, STATE_FILE_NAME)
-        state = _state.load(self.state_path)
-        declared = {
-            _state.calc_key(definition.outputs)
-            for definition in project.definitions
+        self.steps = {definition: step for step, definition in enumerate(project.definitions)}
+        self.steps_by_key = {
+            _state.calc_key(definition.outputs): step
+            for definition, step in self.steps.items()
             if not definition.is_task
         }
+        state = _state.load(self.state_path)
         self.output_keys = frozenset(project.producers_by_key)
         self.saved_declared = state.declared
         new_outputs = (
             self.output_keys - state.declared if state.declared is not None else frozenset()
         )
+        declared = self.steps_by_key.keys()
         try:
             stale_keys = [key for key in {*state.records, *state.moved} if key not in declared]
             _state.remove(self.state_path, stale_keys)
@@ -419,13 +422,7 @@ class _Builder:
             raise FacereError(Diagnostic(None, f"{error}")) from error
         self.moved = state.moved
         self.cache = HashCache(state.hashes, time.time_ns())
-        self.steps = {definition: step for step, definition in enumerate(project.definitions)}
         self.producers = project.graph.producers
-        self.steps_by_key = {
-            _state.calc_key(definition.outputs): step
-            for definition, step in self.steps.items()
-            if not definition.is_task
-        }
         self.crew = Crew(invocation.calc_jobs)
         self._mutex = threading.Lock()
         self._wake = threading.Condition(self._mutex)
@@ -433,8 +430,7 @@ class _Builder:
         self._state_lock = threading.Lock()
         self._snapshot_lock = threading.Lock()
         self._terminal_lock = threading.Lock()
-        self.snapshot: Snapshot | None = None
-        # Each rule or task whose recipe is executing.
+        self._snapshot: Snapshot | None = None
         self.running: dict[int, Definition] = {}
         # Each rule that executed and awaits its Built.
         self.finishing: dict[int, _Finished] = {}
@@ -632,7 +628,7 @@ class _Builder:
                     self._answer_failed(event)
             except OSError as error:
                 rule = self.project.definitions[event.step]
-                self._abort(event.step, RecipeFailure(rule, reason=f"{error}"))
+                self._abort(event.step, _RecipeFailure(rule, reason=f"{error}"))
 
     def _notify(self) -> None:
         """Wake the workers waiting for an event, after an answer. Call it with the mutex held."""
@@ -743,11 +739,11 @@ class _Builder:
         """Execute the recipe of the stale rule at `step`, and tell the engine how it ended and what it reported."""
         try:
             recipe, moved = self._execute_rule(step, start)
-        except RecipeFailure as failure:
+        except _RecipeFailure as failure:
             self._fail(failure, step)
             return
         except OSError as error:
-            self._fail(RecipeFailure(start.rule, reason=f"{error}"), step)
+            self._fail(_RecipeFailure(start.rule, reason=f"{error}"), step)
             return
         except _EndedError:
             with self._mutex:
@@ -790,7 +786,7 @@ class _Builder:
         """Execute the recipe of `rule`, which needs a person, alone at the terminal, while every other rule's output waits."""
         if not self.invocation.has_terminal:
             reason = "it is declared with terminal=True, and Facere's standard input and standard error are no terminal"
-            raise RecipeFailure(rule, reason=reason)
+            raise _RecipeFailure(rule, reason=reason)
         output = self.invocation.output
         with self._terminal_lock:
             output.take_terminal()
@@ -802,9 +798,9 @@ class _Builder:
     def _ensure_snapshot(self) -> Snapshot:
         """Return the snapshot, taken before the session's first recipe starts, since every worker asks for it first."""
         with self._snapshot_lock:
-            if self.snapshot is None:
-                self.snapshot = Snapshot(self.cache, self.context.out_dir)
-            return self.snapshot
+            if self._snapshot is None:
+                self._snapshot = Snapshot(self.cache, self.context.out_dir)
+            return self._snapshot
 
     def _record(self, step: int, trace: Trace | None) -> None:
         """Save the `trace` of the rule at `step`, which executed and wrote every output, or where it must stay stale, the inputs that moved."""
@@ -846,20 +842,20 @@ class _Builder:
             self.unsettled.append((step, Diagnostic(rule.location, message)))
         self.moved[key] = moved
 
-    def _build_missing_failure(self, event: Failed) -> RecipeFailure:
+    def _build_missing_failure(self, event: Failed) -> _RecipeFailure:
         rule = self.project.definitions[event.step]
         if event.missing is Missing.INPUT:
-            return RecipeFailure(rule, reason=f"its input {event.key} is missing")
+            return _RecipeFailure(rule, reason=f"its input {event.key} is missing")
         if event.missing is Missing.FOUND:
             reason = f"its recipe reported reading {event.key}, which it then removed"
-            return RecipeFailure(rule, reason=reason)
+            return _RecipeFailure(rule, reason=reason)
         missing = [
             output for output in _state.calc_key(rule.outputs) if self.cache.fetch(output) is None
         ]
         reason = f"its recipe succeeded without writing {', '.join(missing or [event.key])}"
-        return RecipeFailure(rule, reason=reason)
+        return _RecipeFailure(rule, reason=reason)
 
-    def _fail(self, failure: RecipeFailure, running_step: int | None = None) -> None:
+    def _fail(self, failure: _RecipeFailure, running_step: int | None = None) -> None:
         """Print `failure` and count it, telling the engine where the rule at `running_step` was executing."""
         if not self._is_interrupted:
             self._report(failure)
@@ -870,7 +866,7 @@ class _Builder:
             self.engine.finish(running_step, Status.FAILED)
             self._notify()
 
-    def _abort(self, step: int, failure: RecipeFailure) -> None:
+    def _abort(self, step: int, failure: _RecipeFailure) -> None:
         """Print `failure`, which left the engine an event about `step` that no worker can answer, and end the session once the rules executing finish."""
         self._report(failure)
         with self._mutex:
@@ -879,11 +875,11 @@ class _Builder:
             self.engine.stop()
             self._notify()
 
-    def _report(self, failure: RecipeFailure) -> None:
+    def _report(self, failure: _RecipeFailure) -> None:
         with self._mutex:
             self.failed += 1
             self.invocation.summary.failed += 1
-        self.invocation.output.write(format_failure(failure, self.invocation.start_dir))
+        self.invocation.output.write(_format_failure(failure, self.invocation.start_dir))
 
     def _validate_inputs_intact(self, start: _Start) -> None:
         """Fail the rule without executing it where an output this batch built, which it inputs or is ordered after, changed or vanished since its rule finished.
@@ -893,7 +889,7 @@ class _Builder:
         for output, producer, digest in start.inputs_built:
             damage = self._find_damage(output, digest)
             if damage is not None:
-                raise RecipeFailure(
+                raise _RecipeFailure(
                     start.rule,
                     reason=f"its input {output} {damage} after {producer.label} finished",
                     notes=(Note(producer.location, f"{producer.label} outputs {output}"),),
@@ -906,7 +902,7 @@ class _Builder:
             return _Damage.VANISHED
         return _Damage.CHANGED if current.digest != digest else None
 
-    def _find_damaged(self) -> RecipeFailure | None:
+    def _find_damaged(self) -> _RecipeFailure | None:
         """Return the failure of the first output this invocation built whose content changed after its rule finished, noting the others."""
         damaged = [
             (output, rule)
@@ -921,7 +917,7 @@ class _Builder:
             for other_output, other in others
         )
         reason = f"its output {output} changed after it finished"
-        return RecipeFailure(rule, reason=reason, notes=notes)
+        return _RecipeFailure(rule, reason=reason, notes=notes)
 
     def _find_moved_inputs(
         self,
@@ -957,7 +953,7 @@ class _Builder:
             return
         if self.steps[producer] in self.project.graph.upstream[step]:
             return
-        raise RecipeFailure(
+        raise _RecipeFailure(
             rule,
             reason=f"its recipe reported reading {path}, though no fac.Input or fac.OrderOnly parameter orders it after the rule that outputs it",
             notes=(Note(producer.location, f"{producer.label} outputs {path}"),),
@@ -1004,7 +1000,7 @@ class _Builder:
         )
 
     def _execute(self, definition: Definition, task_args: tuple[str, ...] | None = None) -> Recipe:
-        """Call the recipe of `definition` on this thread, raising RecipeFailure where it fails, and _EndedError where an interrupt or a stop ended it."""
+        """Call the recipe of `definition` on this thread, raising _RecipeFailure where it fails, and _EndedError where an interrupt or a stop ended it."""
         args, kwargs = definition.calc_call(task_args)
         recipe = self._build_recipe(definition)
         try:
@@ -1015,9 +1011,9 @@ class _Builder:
             if isinstance(error, KeyboardInterrupt) and is_ended:
                 raise _EndedError from None
             if recipe.undeclared is None and recipe.misuse is None:
-                raise RecipeFailure(definition, error=error, output=recipe.output) from error
+                raise _RecipeFailure(definition, error=error, output=recipe.output) from error
         if recipe.misuse is not None:
-            raise RecipeFailure(definition, reason=recipe.misuse, output=recipe.output)
+            raise _RecipeFailure(definition, reason=recipe.misuse, output=recipe.output)
         if recipe.undeclared is not None:
             path, reason = recipe.undeclared
             with self._mutex:
@@ -1025,7 +1021,7 @@ class _Builder:
             notes = (
                 (Note(producer.location, f"{producer.label} outputs {path}"),) if producer else ()
             )
-            raise RecipeFailure(definition, reason=reason, notes=notes, output=recipe.output)
+            raise _RecipeFailure(definition, reason=reason, notes=notes, output=recipe.output)
         return recipe
 
     def _run_task(self, task: Definition) -> None:
@@ -1037,13 +1033,13 @@ class _Builder:
         self._announce(task, invocation.reached)
         self.has_executed = True
         give = _GiveRequest()
-        failures: list[RecipeFailure | _EndedError] = []
+        failures: list[_RecipeFailure | _EndedError] = []
         kill_at_s: float | None = None
 
         def work() -> None:
             try:
                 self._execute(task, invocation.task_args)
-            except (RecipeFailure, _EndedError) as failure:
+            except (_RecipeFailure, _EndedError) as failure:
                 failures.append(failure)
 
         def request_give() -> None:
@@ -1056,7 +1052,7 @@ class _Builder:
 
         def on_wake() -> bool:
             nonlocal kill_at_s
-            if give.is_requested and not give.is_answered:
+            if give.is_requested and not give.answered.is_set():
                 self._give_lock(give)
             if not invocation.signals.is_stop_requested:
                 return True
@@ -1105,5 +1101,4 @@ class _Builder:
             give.refusal = (
                 f"fac.give_lock keeps the lock, since {rule.label} failed: {damaged.reason}"
             )
-        give.is_answered = True
         give.answered.set()

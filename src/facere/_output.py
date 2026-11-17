@@ -34,10 +34,6 @@ class Output:
             else:
                 self._write(chunks)
 
-    def print(self, *lines: str) -> None:
-        """Write `lines`, each a line of Facere's own, to stderr."""
-        self.write([(True, "".join(f"{line}\n" for line in lines))])
-
     def show_status(self, text: str) -> None:
         """Show `text` on the status row, unless the terminal is held."""
         with self._lock:

@@ -64,13 +64,20 @@ class Crew:
         """Start a thread calling `work`, which must raise nothing, or return False where as many as may run already do. Any thread may call it."""
         with self._lock:
             working = self._started - self._ended
-            if working and self._jobs is None:
-                self._jobs = self._calc_jobs()
-            if working and self._jobs is not None and working >= self._jobs:
-                return False
+            if working:
+                if self._jobs is None:
+                    self._jobs = self._calc_jobs()
+                if working >= self._jobs:
+                    return False
             self._started += 1
-        # A daemon, so an interrupt ends the process though a recipe's own Python runs on.
-        threading.Thread(target=self._run, args=(work,), daemon=True).start()
+        try:
+            # A daemon, so an interrupt ends the process though a recipe's own Python runs on.
+            threading.Thread(target=self._run, args=(work,), daemon=True).start()
+        except BaseException:
+            # A thread counted that never ran would keep the wait from ever ending.
+            with self._lock:
+                self._started -= 1
+            raise
         return True
 
     def wake(self) -> None:

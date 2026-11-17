@@ -30,3 +30,17 @@ def after(source: fac.Input = fac.out("slow.txt"), target: fac.Output = fac.out(
 def serve():
     fac.run(sys.executable, "-c", SLEEP, fac.out("pid"))
     print("the command ended")
+
+
+# Creates its second argument on SIGTERM, which tells that signal from the kill after the grace.
+TRAP_SLEEP = (
+    "import signal, sys; "
+    "signal.signal(signal.SIGTERM, lambda *_: (open(sys.argv[2], 'w').close(), sys.exit())); "
+    + SLEEP
+)
+
+
+@fac.task
+def serve_captured():
+    fac.capture(sys.executable, "-c", TRAP_SLEEP, fac.out("pid"), fac.out("terminated"))
+    print("the command ended")
