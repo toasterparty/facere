@@ -31,7 +31,7 @@ The host polls the engine and answers each event. The engine never calls the hos
 
 A finish is `OK`, `FAILED`, or `UNSETTLED`, which succeeded but leaves no trace, as Facere reports for a rule whose input [changed during its recipe](./fingerprints.md#changes-during-a-recipe). `found` holds the inputs the step discovered while running, which join its trace.
 
-`decide(step, trace, digests)` is the whole staleness decision as a pure function, returning a verdict or the keys it still needs. It reads a step's inputs first, and its found inputs and outputs only once the trace matches those, so a step already known stale costs no stat of its outputs. Keys are asked for a step at a time, not one by one, since each event costs a host with several workers a turn at its mutex. The reasons, in the order checked, are `INPUT_MISSING`, `ALWAYS`, `NO_TRACE`, `STEP_CHANGED`, `INPUT_CHANGED` and `OUTPUT_CHANGED` with the key, and `CURRENT`. `--check` and the `-v` reasons are to print these verdicts, the ones a build acts on, so neither can disagree with it.
+`decide(step, trace, digests)` is the whole staleness decision as a pure function, returning a verdict or the keys it still needs. It reads a step's inputs first, and its found inputs and outputs only once the trace matches those, so a step already known stale costs no stat of its outputs. Keys are asked for a step at a time, not one by one, since each event costs a host with several workers a turn at its mutex. A host may answer one `NeedDigests` in several `give_digests` calls, so it can hash a step's keys in parallel. The reasons, in the order checked, are `INPUT_MISSING`, `ALWAYS`, `NO_TRACE`, `STEP_CHANGED`, `INPUT_CHANGED` and `OUTPUT_CHANGED` with the key, and `CURRENT`. `--check` and the `-v` reasons are to print these verdicts, the ones a build acts on, so neither can disagree with it.
 
 An `Engine` is one session. It observes each key once and keeps the digest, so a session is correct for the keys as they stood when it first looked, and it asks again only for a step's outputs once that step ran. A later `request` in the same session checks only what no earlier one settled. Facere starts a new session after each task, with the project collected again, since a task may change any file.
 
@@ -63,7 +63,7 @@ Facere's side of the engine is `_build.py`, with the graph built in `_collect.py
 
 ## Scenarios
 
-`test/engine/scenarios/` holds one transcript per behavior: a graph, its saved traces, and the host calls with the events `poll` must return between them. The files hold only names, keys, and digests, in a line format `test/engine/scenario.py` documents, so a second implementation replays them unchanged. A change to the engine's behavior changes a scenario in the same commit, and a new behavior adds one.
+`test/engine/scenarios/` holds one transcript per behavior: a graph, its saved traces, and the host calls with the events `poll` must return between them. The files hold only names, keys, and digests, in a line format `test/engine/scenario.py` documents, so a second implementation replays them unchanged. The scenarios, not the types, are what implementations share: Python's keys and digests are strings, while one in C would intern keys to integers and take fixed-width digests. A change to the engine's behavior changes a scenario in the same commit, and a new behavior adds one.
 
 ## Beyond Facere
 

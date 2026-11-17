@@ -6,10 +6,6 @@
 | 1.0 | Both phases, CI on Linux and Windows, both no-op benchmarks within their 300 ms budget, and shipped docs that describe exactly what 1.0 does and mark nothing planned. The docs pass when, judged by hand, an agent given only the installed package writes a correct `fac.py`. The compatibility promise starts here, and never ends: there is no 2.0 |
 | After 1.0 | [`facere.c`](./design/extensions/c.md), MSVC in it, the fuller `--check` below, a `dyndep`-like mechanism for dependencies known only after a scan, typed task options, stores beyond the design, and a compiled hot path once a profile names one |
 
-## Next
-
-Watch mode, milestone 3 below, before any other.
-
 ## Phase 1 milestones
 
 A proposal, ordered to rough in the whole path first. Each ends with its tests passing on Linux and Windows. Milestones 1, correctness, and 2, scheduling, are done.
