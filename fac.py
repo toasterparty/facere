@@ -78,7 +78,12 @@ def _run_sdist_tests(pytest_args: list[str]) -> None:
 
 
 def _uv(*args: str, env: dict[str, str] | None = None) -> None:
-    fac.run("uv", *args, env=env)
+    """Run uv with Python's bytecode and Hypothesis's example database under `build/`, so no `__pycache__/` or `.hypothesis/` lands in the tree."""
+    scratch = {
+        "PYTHONPYCACHEPREFIX": os.path.abspath("build/pycache"),
+        "HYPOTHESIS_STORAGE_DIRECTORY": os.path.abspath("build/test/.hypothesis"),
+    }
+    fac.run("uv", *args, env={**scratch, **(env or {})})
 
 
 def _uv_run(*args: str, env: dict[str, str] | None = None) -> None:
