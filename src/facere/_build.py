@@ -453,8 +453,6 @@ class _Builder:
         self.ended: list[tuple[int, Diagnostic]] = []
         # By a path key's prefix up to its last slash, the rule outputting that directory or one holding it.
         self.holders: dict[str, Definition | None] = {}
-        # The reported paths that _find_holder found no rule for.
-        self.unheld: set[str] = set()
         self._is_interrupted = False
         self._is_aborted = False
         self._crash: BaseException | None = None
@@ -464,14 +462,7 @@ class _Builder:
         self.engine = Engine(
             project.graph, keep_going=invocation.keep_going, pool_sizes=project.pool_sizes
         )
-        unheld = self.unheld
-        for key, record in self.records.items():
-            follows = [
-                holder
-                for path, _ in record.trace.found
-                if path not in unheld and (holder := self._find_holder(path)) is not None
-            ]
-            self.engine.load_trace(self.steps_by_key[key], record.trace, follows)
+        self._load_traces()
 
     def build(
         self, rules: list[Definition], task: Definition | None, pending: list[_Target]
@@ -514,6 +505,19 @@ class _Builder:
         failure = self._find_damaged()
         if failure is not None:
             self._report(failure)
+
+    def _load_traces(self) -> None:
+        """Give the engine each record's trace, ordering its rule after the rule that outputs each path it found, a directory holding one, or a path differing from one only in case."""
+        unheld: set[str] = set()
+        for key, record in self.records.items():
+            follows = []
+            for path, _ in record.trace.found:
+                producer = None if path in unheld else self._find_producer(path)
+                if producer is None:
+                    unheld.add(path)
+                else:
+                    follows.append(producer.outputs[0])
+            self.engine.load_trace(self.steps_by_key[key], record.trace, follows)
 
     def _interrupt(self) -> None:
         """Kill every running command, leave every executing rule unrecorded, and note each recipe this ended."""
@@ -559,14 +563,6 @@ class _Builder:
             step in self.succeeded or (step in verdicts and verdicts[step].reason is Reason.CURRENT)
             for step in upstream
         )
-
-    def _find_holder(self, path: str) -> str | None:
-        """Return an output of the rule that outputs `path`, a directory holding it, or a path differing from it only in case, which a rule that read `path` must follow."""
-        producer = self._find_producer(path)
-        if producer is None:
-            self.unheld.add(path)
-            return None
-        return producer.outputs[0]
 
     def _build_steps(self, steps: Iterable[int]) -> None:
         """Bring `steps` up to date by answering the engine's events until it has none."""

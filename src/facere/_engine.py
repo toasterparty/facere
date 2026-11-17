@@ -18,7 +18,7 @@ Every call returns at once and none calls the host, so a host with several worke
 import enum
 import heapq
 from collections import deque
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from typing import NamedTuple
 
 __all__ = [
@@ -177,47 +177,49 @@ class Graph:
                     duplicates.setdefault(key, [first]).append(index)
         self.producers: Mapping[Key, int] = producers
         self.duplicates: Mapping[Key, Sequence[int]] = duplicates
-        self.upstream = tuple(
+        edges = tuple(
             tuple(
-                dict.fromkeys(
-                    producers[key] for key in (*step.inputs, *step.order_only) if key in producers
-                )
+                (key, producers[key])
+                for key in (*step.inputs, *step.order_only)
+                if key in producers
             )
             for step in self.steps
         )
-        self.cycle = self._find_cycle()
+        self.upstream = tuple(
+            tuple(dict.fromkeys(producer for _, producer in step_edges)) for step_edges in edges
+        )
+        self.cycle = _find_cycle(edges)
 
-    def _find_cycle(self) -> tuple[tuple[int, Key], ...] | None:
-        producers = self.producers
-        done: set[int] = set()
-        for start in range(len(self.steps)):
-            if start in done:
+
+def _find_cycle(
+    edges: Sequence[Sequence[tuple[Key, int]]],
+) -> tuple[tuple[int, Key], ...] | None:
+    """Return one dependency cycle as Graph.cycle holds it, given per step in `edges` each key that orders it, paired with the step that outputs that key."""
+    done: set[int] = set()
+    for start in range(len(edges)):
+        if start in done:
+            continue
+        path = [start]
+        keys: list[Key] = []
+        untried = [iter(edges[start])]
+        while path:
+            edge = next(untried[-1], None)
+            if edge is None:
+                done.add(path.pop())
+                untried.pop()
+                if keys:
+                    keys.pop()
                 continue
-            path = [start]
-            keys: list[Key] = []
-            edges = [self._iter_edges(start)]
-            while path:
-                key = next(edges[-1], None)
-                if key is None:
-                    done.add(path.pop())
-                    edges.pop()
-                    if keys:
-                        keys.pop()
-                    continue
-                producer = producers[key]
-                if producer in done:
-                    continue
-                if producer in path:
-                    first = path.index(producer)
-                    return tuple(zip(path[first:], [*keys, key][first:], strict=True))
-                path.append(producer)
-                keys.append(key)
-                edges.append(self._iter_edges(producer))
-        return None
-
-    def _iter_edges(self, index: int) -> Iterator[Key]:
-        step = self.steps[index]
-        return (key for key in (*step.inputs, *step.order_only) if key in self.producers)
+            key, producer = edge
+            if producer in done:
+                continue
+            if producer in path:
+                first = path.index(producer)
+                return tuple(zip(path[first:], [*keys, key][first:], strict=True))
+            path.append(producer)
+            keys.append(key)
+            untried.append(iter(edges[producer]))
+    return None
 
 
 def _decide_by_inputs(
@@ -243,16 +245,16 @@ def _decide_by_inputs(
 
 
 def _decide_from(
-    pending: tuple[tuple[Key, str], ...] | None,
+    found_left: tuple[tuple[Key, str], ...] | None,
     step: Step,
     trace: Trace | None,
     digests: Mapping[Key, str | None],
 ) -> tuple[Verdict | list[Key], tuple[tuple[Key, str], ...] | None]:
     """Decide as `decide` does, and return with the result where to resume once the keys it names have digests.
 
-    `pending` is None to decide from the start. Otherwise the inputs matched the trace in an earlier call, and it holds the found inputs that call left without a digest, the only ones still to compare.
+    `found_left` is None to decide from the start. Otherwise the inputs matched the trace in an earlier call, and it holds the found inputs that call left without a digest, the only ones still to compare.
     """
-    if pending is None:
+    if found_left is None:
         unknown = [key for key in step.inputs if key not in digests]
         if unknown:
             return unknown, None
@@ -261,19 +263,19 @@ def _decide_from(
             return verdict, None
     if trace is None:
         return Verdict(Reason.NO_TRACE), None
-    unsettled = []
-    for pair in trace.found if pending is None else pending:
+    left = []
+    for pair in trace.found if found_left is None else found_left:
         key, digest = pair
         current = digests.get(key, _UNKNOWN)
         if current == digest:
             continue
         if current is not _UNKNOWN:
             return Verdict(Reason.INPUT_CHANGED, key), None
-        unsettled.append(pair)
-    unknown = [key for key, _ in unsettled]
+        left.append(pair)
+    unknown = [key for key, _ in left]
     unknown.extend(key for key in step.outputs if key not in digests)
     if unknown:
-        return unknown, tuple(unsettled)
+        return unknown, tuple(left)
     recorded = dict(trace.outputs)
     for key in step.outputs:
         if digests[key] != recorded.get(key):
@@ -294,7 +296,7 @@ def decide(
 class Engine:
     """One session over a `graph`, which must hold no duplicate output and no cycle: digests are observed once and kept, and each step is checked and run at most once.
 
-    With `keep_going`, a failure skips only the steps downstream of it, and otherwise it stops every step not yet running. `pool_sizes` gives how many steps of each pool may run at once. `total` counts the steps requested so far, with all upstream of them, and `verdicts` holds each one checked so far, in the order decided.
+    With `keep_going`, a failure skips only the steps downstream of it, and otherwise it stops every step not yet running. `pool_sizes` gives how many steps of each pool may run at once. `verdicts` holds each step checked so far, in the order decided.
     """
 
     def __init__(
@@ -322,14 +324,12 @@ class Engine:
         self._stale: list[int] = []
         self._events: deque[Event] = deque()
         self._waiters: dict[Key, list[int]] = {}
-        self._pending: dict[int, int] = {}
-        # By step whose inputs matched its trace, the found inputs its check still waits on.
-        self._unsettled: dict[int, tuple[tuple[Key, str], ...]] = {}
-        self._inputs: dict[int, tuple[tuple[Key, str], ...]] = {}
+        self._awaited_counts: dict[int, int] = {}
+        self._found_left: dict[int, tuple[tuple[Key, str], ...]] = {}
         self._finishing: dict[int, tuple[Status, tuple[Key, ...]]] = {}
         self._running = 0
+        self._has_requested = False
         self._has_stopped = False
-        self.total = 0
         self.verdicts: dict[int, Verdict] = {}
 
     def load_trace(self, step: int, trace: Trace, follows: Iterable[Key] | None = None) -> bool:
@@ -337,7 +337,7 @@ class Engine:
 
         The step is ordered after the steps that now output one of `follows`, as it is after those of its declared inputs. `follows` defaults to the keys the trace found, and a host gives its own where reading a found key also reads another key, as a file read from inside a directory that a step outputs. A trace that would order its step after a step downstream of it is refused, since only running the step again shows what it reads now.
         """
-        assert not self.total
+        assert not self._has_requested
         producers = self._graph.producers
         if follows is None:
             follows = [key for key, _ in trace.found]
@@ -369,6 +369,7 @@ class Engine:
 
     def request(self, targets: Iterable[int]) -> None:
         """Ask for `targets` to be made current, with every step upstream of them. A step an earlier request settled stays as it is."""
+        self._has_requested = True
         states = self._states
         stack = list(targets)
         while stack:
@@ -376,7 +377,6 @@ class Engine:
             if states[step] is not _State.UNWANTED:
                 continue
             states[step] = _State.WAITING
-            self.total += 1
             blockers = 0
             for upstream in self._upstream[step]:
                 state = states[upstream]
@@ -408,14 +408,14 @@ class Engine:
 
     def give_digests(self, digests: Mapping[Key, str | None]) -> None:
         """Answer a NeedDigests with the digest of each of its keys, or None where nothing is there to read."""
-        pending = self._pending
+        counts = self._awaited_counts
         for key, digest in digests.items():
             self._digests[key] = digest
             for step in self._waiters.pop(key):
-                pending[step] -= 1
-                if pending[step]:
+                counts[step] -= 1
+                if counts[step]:
                     continue
-                del pending[step]
+                del counts[step]
                 if self._states[step] is _State.CHECKING:
                     self._check(step)
                 else:
@@ -498,18 +498,18 @@ class Engine:
         if asked:
             self._events.append(NeedDigests(step, tuple(asked)))
         if count:
-            self._pending[step] = count
+            self._awaited_counts[step] = count
         return count
 
     def _check(self, index: int) -> None:
         step = self._steps[index]
-        verdict, pending = _decide_from(
-            self._unsettled.pop(index, None), step, self._traces.get(index), self._digests
+        verdict, found_left = _decide_from(
+            self._found_left.pop(index, None), step, self._traces.get(index), self._digests
         )
         if isinstance(verdict, list):
             self._states[index] = _State.CHECKING
-            if pending is not None:
-                self._unsettled[index] = pending
+            if found_left is not None:
+                self._found_left[index] = found_left
             asked = self._ask(index, verdict)
             assert asked
             return
@@ -520,7 +520,6 @@ class Engine:
             assert verdict.key is not None
             self._fail(index, Failed(index, Missing.INPUT, verdict.key))
         else:
-            self._inputs[index] = self._pair_digests(step.inputs)
             self._states[index] = _State.STALE
             heapq.heappush(self._stale, index)
 
@@ -529,7 +528,6 @@ class Engine:
         step = self._steps[index]
         digests = self._digests
         status, found = self._finishing.pop(index)
-        inputs = self._inputs.pop(index)
         for missing, keys in ((Missing.FOUND, found), (Missing.OUTPUT, step.outputs)):
             for key in keys:
                 if digests[key] is None:
@@ -538,7 +536,10 @@ class Engine:
         trace = None
         if status is Status.OK:
             trace = Trace(
-                step.digest, inputs, self._pair_digests(step.outputs), self._pair_digests(found)
+                step.digest,
+                self._pair_digests(step.inputs),
+                self._pair_digests(step.outputs),
+                self._pair_digests(found),
             )
         self._events.append(Built(index, trace))
         self._settle(index, _State.BUILT)

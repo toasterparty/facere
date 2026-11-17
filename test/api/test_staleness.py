@@ -722,6 +722,21 @@ def test_input_inside_a_directory_output_builds_the_rule_outputting_the_director
     assert (root / "build" / "main.o").read_text() == "one"
 
 
+@pytest.mark.project("inside_directory")
+def test_input_inside_a_directory_output_that_its_rule_left_out_fails_the_reader(
+    root: Path, fac: Fac
+) -> None:
+    edit(root / "fac.py", 'f"{folder}/gen.h"', 'f"{folder}/other.h"')
+
+    result = fac()
+
+    assert result.status == 1
+    assert result.err.splitlines() == [
+        "fac.py:8:2: error: rule 'compile' (build/main.o) failed: its input build/gen/gen.h is missing",
+        "Failed after <elapsed>. Executed 1 rule.",
+    ]
+
+
 @pytest.mark.project("always")
 def test_rule_marked_always_executes_whenever_reached_and_its_reader_only_on_a_change(
     fac: Fac,

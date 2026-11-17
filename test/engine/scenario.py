@@ -101,7 +101,7 @@ def replay(path: Path) -> None:
             actual = format_event(event, names)
             assert actual == expected, f"{path.name}:{number}: the engine returned `{actual}`"
             if answer:
-                _answer(engine, names, event, answer.split())
+                _answer(engine, event, answer.split())
         else:
             assert not answer, f"{path.name}:{number}: only an event takes an answer"
             _call(engine, names, tokens)
@@ -170,7 +170,7 @@ def _parse_digest(text: str) -> str | None:
     return None if text == "-" else text
 
 
-def _answer(engine: Engine, names: list[str], event: Event, answer: list[str]) -> None:
+def _answer(engine: Engine, event: Event, answer: list[str]) -> None:
     if isinstance(event, NeedDigests):
         (digests,) = answer
         answers = map(_parse_digest, digests.split(","))

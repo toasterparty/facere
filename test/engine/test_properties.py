@@ -184,12 +184,6 @@ def test_every_project_of_three_steps_runs_exactly_its_stale_steps_and_ends_as_a
     check_every_project(3)
 
 
-class Worker(NamedTuple):
-    """A simulated worker thread: the event it polled and has yet to answer, if any."""
-
-    held: list[NeedDigests | Run]
-
-
 def build_interleaved(
     project: Project, targets: list[int], pool_sizes: dict[str, int], rng: random.Random
 ) -> list[int]:
@@ -199,16 +193,17 @@ def build_interleaved(
     for index, trace in project.traces.items():
         engine.load_trace(index, trace)
     engine.request(targets)
-    workers = [Worker([]) for _ in range(4)]
+    # Per simulated worker thread, the event it polled and has yet to answer.
+    held: list[NeedDigests | Run | None] = [None] * 4
     done: set[int] = set()
     ran: list[int] = []
     built: set[int] = set()
     asked: set[str] = set()
-    while len(done) < len(workers):
-        number = rng.choice([number for number in range(len(workers)) if number not in done])
-        held = workers[number].held
-        if held:
-            event = held.pop()
+    while len(done) < len(held):
+        number = rng.choice([number for number in range(len(held)) if number not in done])
+        event = held[number]
+        if event is not None:
+            held[number] = None
             if isinstance(event, NeedDigests):
                 asked.difference_update(event.keys)
                 engine.give_digests({key: project.contents.get(key) for key in event.keys})
@@ -218,14 +213,14 @@ def build_interleaved(
             continue
         event = engine.poll()
         if event is Pause.DONE:
-            assert not any(worker.held for worker in workers), "done while an event is out"
+            assert held == [None] * len(held), "done while an event is out"
             done.add(number)
         elif event is Pause.IDLE:
-            assert any(worker.held for worker in workers), "idle with nothing to wait for"
+            assert held != [None] * len(held), "idle with nothing to wait for"
         elif isinstance(event, NeedDigests):
             assert asked.isdisjoint(event.keys), f"one of {event.keys} asked for twice at once"
             asked.update(event.keys)
-            held.append(event)
+            held[number] = event
         elif isinstance(event, Run):
             assert event.step not in ran, f"step {event.step} ran twice"
             current = {
@@ -234,17 +229,16 @@ def build_interleaved(
                 if verdict.reason is Reason.CURRENT
             }
             assert (built | current).issuperset(graph.upstream[event.step]), "ran before upstream"
-            running = [worker.held[0] for worker in workers if worker.held]
             pool = project.steps[event.step].pool
             in_pool = [
-                held
-                for held in running
-                if isinstance(held, Run) and graph.steps[held.step].pool == pool
+                running
+                for running in held
+                if isinstance(running, Run) and graph.steps[running.step].pool == pool
             ]
             assert pool is None or len(in_pool) < pool_sizes[pool], f"pool {pool} overfilled"
             ran.append(event.step)
             project.traces.pop(event.step, None)
-            held.append(event)
+            held[number] = event
         else:
             assert isinstance(event, Built) and event.trace is not None, event
             project.traces[event.step] = event.trace

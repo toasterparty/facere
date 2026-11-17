@@ -1,0 +1,9 @@
+# A step that outputs nothing settles as it finishes, with no digest to ask for.
+
+step check in=main.c
+
+request check
+need main.c for check -> c1
+run check no_trace -> ok
+built check in=main.c:c1
+done

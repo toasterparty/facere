@@ -17,7 +17,7 @@ def test_engine_imports_only_the_standard_library() -> None:
 
     assert sorted(ast.unparse(node) for node in imports) == [
         "from collections import deque",
-        "from collections.abc import Iterable, Iterator, Mapping, Sequence",
+        "from collections.abc import Iterable, Mapping, Sequence",
         "from typing import NamedTuple",
         "import enum",
         "import heapq",

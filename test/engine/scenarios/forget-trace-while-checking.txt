@@ -1,0 +1,14 @@
+# A step whose trace is forgotten while its found inputs are asked for runs once they arrive.
+
+step compile in=main.c out=main.o
+trace compile in=main.c:c1 out=main.o:o1 found=a.h:h1
+
+request compile
+need main.c for compile -> c1
+need a.h,main.o for compile
+forget compile
+give a.h:h1,main.o:o1
+run compile no_trace -> ok
+need main.o for compile -> o2
+built compile in=main.c:c1 out=main.o:o2
+done
