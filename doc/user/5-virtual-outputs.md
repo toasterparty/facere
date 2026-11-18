@@ -2,7 +2,7 @@
 
 *(planned)* An output need not be a file of its own. Where many small results belong together, such as the rows of one table or the pages of a CMS, Facere will track each one separately however they are stored, so a change to one executes only its own rules. A project with one file per output needs none of this.
 
-A store keeps many outputs in one place of your choosing, such as one file or an HTTP REST API, while Facere still tracks each one separately. Each output it holds is a virtual output, named `fac.Virtual(store, key)` and reaching its key as `.key`, which a rule declares with `fac.VirtualOutput` to write it or `fac.VirtualInput` to read it. In the recipe, `fac.write(virtual_output, value)` sets a virtual output, and a recipe must set every virtual output it declares, while `fac.read(virtual_input)` returns a virtual output the rule inputs. Facere writes to the store once recipes succeed, in one `update` per batch however many virtual outputs changed, and re-executes only the rules whose virtual outputs changed. Two rules cannot output one virtual output. Keys and values are values Facere can hash, such as strings, numbers, and tuples.
+A store keeps many outputs in one place of your choosing, such as one file or an HTTP REST API, while Facere still tracks each one separately. Each output it holds is a virtual output, named `fac.Virtual(key, store=store)` and reaching its key as `.key`, which a rule declares with `fac.Output[fac.Virtual]` to write it or `fac.Input[fac.Virtual]` to read it. In the recipe, `fac.write(virtual_output, value)` sets a virtual output, and a recipe must set every virtual output it declares, while `fac.read(virtual_input)` returns a virtual output the rule inputs. Facere writes to the store once recipes succeed, in one `update` per batch however many virtual outputs changed, and re-executes only the rules whose virtual outputs changed. Two rules cannot output one virtual output. Keys and values are values Facere can hash, such as strings, numbers, and tuples.
 
 For a store kept in one file, subclass `fac.FileStore`, constructed with the file's path, and give the file's format as two methods:
 
@@ -21,12 +21,12 @@ class Rows(fac.FileStore):
 
 ROWS = Rows(fac.out("rows.txt"))
 GREETING_RULES = [
-    {"output": fac.Virtual(ROWS, row), "name": name} for row, name in enumerate(NAMES)
+    {"output": fac.Virtual(row, store=ROWS), "name": name} for row, name in enumerate(NAMES)
 ]
 
 
 @fac.rule(each=GREETING_RULES)
-def greeting(output: fac.VirtualOutput, name: str):
+def greeting(output: fac.Output[fac.Virtual], name: str):
     fac.write(output, f"hello, {name}")
 ```
 
@@ -60,5 +60,27 @@ class Pages:
 ```
 
 Facere calls a store's methods one at a time, with the root as the working directory, and only for targets that need its virtual outputs, so building only local files never reaches the network. It takes the stamp once per build before writing and reads only when the stamp changed, then reads back what it wrote to check that each virtual output arrived as written. Any other store that raises fails the build. A change to a store's code re-executes every rule writing to it, and a store with other attributes, such as another URL, is another store, so every rule writing to it re-executes. A method that changes an attribute fails the invocation. A `FileStore` is identified by its path alone.
+
+## Virtual sources
+
+An input that is neither a file nor another rule's virtual output, such as an S3 object, a remote page, or a program's version, is a virtual source: `fac.Virtual(key, fingerprint=signature)`, where `signature(key)` returns a value that changes whenever the thing does, such as an ETag or a version string. Return what changes, never whether it changed: two changes in a row would both return `True`, and the second would execute nothing.
+
+```python
+def etag(url):
+    with urllib.request.urlopen(urllib.request.Request(url, method="HEAD")) as response:
+        return response.headers["ETag"]
+
+
+PRICES = fac.Virtual("https://example.com/prices.csv", fingerprint=etag)
+PRICES_COPY = fac.out("prices.csv")
+
+
+@fac.rule
+def download(source: fac.Input[fac.Virtual] = PRICES, output: fac.Output = PRICES_COPY):
+    with urllib.request.urlopen(source.key) as response:
+        fac.write_text(output, response.read().decode())
+```
+
+Facere calls each virtual source's signature at most once per build, only for targets that need it, so many rules inputting one virtual source cost one call. Calls run at the same time as each other and as recipes, so a signature function must be safe to call from several threads. Its result joins the fingerprint of every rule inputting the virtual source, beside everything else, and a signature that raises fails those rules. A `fac.Input` naming a URI, such as `s3://sales/2026.csv`, fails, pointing here.
 
 [<- Multiple `fac.py` files](./4-multiple-fac-py.md) | [Debugging and tracing ->](./6-debugging.md)

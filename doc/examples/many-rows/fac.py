@@ -32,13 +32,13 @@ class Rows(fac.FileStore):
 
 ROWS = Rows(fac.out("rows.txt"))
 ROW_RULES = [
-    {"output": fac.Virtual(ROWS, row), "revision": revision}
+    {"output": fac.Virtual(row, store=ROWS), "revision": revision}
     for row, revision in enumerate(read_revisions(TABLE))
 ]
 
 
 @fac.rule(each=ROW_RULES, default=True)
-def row(output: fac.VirtualOutput, revision: int):
+def row(output: fac.Output[fac.Virtual], revision: int):
     fac.write(output, f"revision {revision}")
 
 

@@ -4,7 +4,7 @@ Timestamps cannot decide what is stale. `git checkout` stamps every file it touc
 
 | Node | Declared by | Up to date when |
 |---|---|---|
-| Source | an input no rule outputs, a [store](./stores.md)'s virtual output included | always, and must exist |
+| Source | an input no rule outputs, a [virtual source](./stores.md#virtual-sources) included | always, and must exist, while a virtual source's signature joins the fingerprint of each rule inputting it |
 | Rule | `@fac.rule` | its recorded fingerprint matches, its [added inputs](#added-inputs) are unchanged, and its outputs are intact |
 | Rule that always executes | `@fac.rule(always=True)` | never, though rules downstream re-execute only when its outputs' content changed |
 | Task | `@fac.task` | never: it executes whenever requested |
@@ -19,7 +19,7 @@ Timestamps cannot decide what is stale. `git checkout` stamps every file it touc
 - the path and content of each input, where a file's content is its bytes and, on POSIX, its executable bit, and a link inside a directory input hashes as its target's content
 - the path of each order-only input, never its content, since a recipe may derive flags from the list
 - the path of each output by parameter, so swapping two outputs between parameters re-executes the rule
-- the store, key, and value digest of each virtual input, and the code of the store of each virtual output
+- the store, key, and value digest of each virtual input, the key and signature of each virtual source, and the code of the store of each virtual output
 
 Hashing other rules' outputs, virtual outputs included, rather than whether those rules executed, means a rule that re-executes to identical bytes leaves everything downstream untouched.
 

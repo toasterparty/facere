@@ -9,8 +9,8 @@ A rule is a function decorated with `@fac.rule`, and its signature declares what
 | `fac.Input`, `list[fac.Input]` | Inputs, the files or directories the rule reads |
 | `fac.OrderOnly`, `list[fac.OrderOnly]` | *(0.4)* Files or directories a rule's recipe may read, such as a generated header only some compiles include. They are built first, and a change to one's content makes the rule stale only once the recipe reports reading it through `fac.add_inputs`. A change to which paths the parameter holds always does |
 | `fac.Output`, `list[fac.Output]` | Outputs, the files or directories the rule writes. Every rule has at least one output, a file or a virtual output |
-| `fac.VirtualInput`, `list[fac.VirtualInput]` | *(planned)* Virtual outputs of a [store](./5-virtual-outputs.md) the rule reads |
-| `fac.VirtualOutput`, `list[fac.VirtualOutput]` | *(planned)* Virtual outputs of a store the rule writes |
+| `fac.Input[fac.Virtual]`, `list[fac.Input[fac.Virtual]]` | *(planned)* Virtual outputs of a [store](./5-virtual-outputs.md) the rule reads, and [virtual sources](./5-virtual-outputs.md#virtual-sources), such as an S3 object |
+| `fac.Output[fac.Virtual]`, `list[fac.Output[fac.Virtual]]` | *(planned)* Virtual outputs of a store the rule writes |
 | `str`, `list[str]` | A value that may look like a path, such as an entry a manifest lists, which the rule never reads as a file. *(planned)* `fac.Text` and `list[fac.Text]` take this role, and a plain `str` becomes a value like any other, so annotating for a type checker never switches off the check below |
 | `fac.Scope` | *(planned)* The [scope](./3-parameterization.md#configurations) a rule or task is defined in |
 | Anything else, or none | A value: data the rule uses that is not a file, such as a flag or a version string |

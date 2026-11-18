@@ -38,7 +38,7 @@ CMS = Pages(CMS_URL)
 SOURCES = fac.sources("pages/*.md")
 PREVIEW_RULES = [{"source": source, "rendered": fac.out(source, ".html")} for source in SOURCES]
 PAGE_RULES = [
-    {"rendered": rule["rendered"], "output": fac.Virtual(CMS, PurePosixPath(rule["source"]).stem)}
+    {"rendered": rule["rendered"], "output": fac.Virtual(PurePosixPath(rule["source"]).stem, store=CMS)}
     for rule in PREVIEW_RULES
 ]
 
@@ -58,13 +58,13 @@ def preview(source: fac.Input, rendered: fac.Output):
 
 
 @fac.rule(each=PAGE_RULES, default=True)
-def page(rendered: fac.Input, output: fac.VirtualOutput):
+def page(rendered: fac.Input, output: fac.Output[fac.Virtual]):
     fac.write(output, fac.read_text(rendered))
 
 
 @fac.rule(default=True)
 def titles(
-    pages: list[fac.VirtualInput] = [rule["output"] for rule in PAGE_RULES],
+    pages: list[fac.Input[fac.Virtual]] = [rule["output"] for rule in PAGE_RULES],
     listing: fac.Output = fac.out("titles.txt"),
 ):
     lines = []

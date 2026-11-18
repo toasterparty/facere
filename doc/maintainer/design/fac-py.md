@@ -6,15 +6,15 @@ The files are named `fac.py` because a `facere.py` would shadow the `facere` pac
 
 ## Annotations
 
-`fac.Input`, `fac.OrderOnly`, `fac.Output`, and `fac.Text` are `typing.Annotated` aliases of `str`, so a type checker sees plain strings.
+`fac.Input`, `fac.OrderOnly`, `fac.Output`, and `fac.Text` are `typing.Annotated` aliases of `str`, so a type checker sees plain strings. `fac.Input[fac.Virtual]` and `fac.Output[fac.Virtual]` hold a `fac.Virtual` instead, as [stores](./stores.md#interface) describes.
 
 | Annotation | Holds | Facere uses it to |
 |---|---|---|
 | `fac.Input`, `list[fac.Input]` | files or directories the recipe reads | execute first the rules that output each one or a path inside it, require the rest to exist, and hash their content |
 | `fac.OrderOnly`, `list[fac.OrderOnly]` | files or directories the recipe may read, such as a generated header only some compiles include | execute first the rules that output each one or a path inside it, require the rest to exist, and hash their content only once the recipe reports reading them. Their paths always join the fingerprint. A task declaring one fails collection, since a task records nothing |
 | `fac.Output`, `list[fac.Output]` | files or directories the recipe writes and Facere tracks | rebuild them when changed or deleted by hand, reject two rules outputting one path, and execute this rule before any rule or task that inputs them |
-| `fac.VirtualInput`, `list[fac.VirtualInput]` | virtual outputs of a [store](./stores.md) the recipe reads through `fac.read` | execute first the rule that writes each one, require the rest to exist, and hash their values. A task declaring one fails collection, so a task reading a store can be designed later without changing what an accepted `fac.py` means |
-| `fac.VirtualOutput`, `list[fac.VirtualOutput]` | virtual outputs of a store the recipe sets through `fac.write` | write them to their store once the recipe succeeds, rewrite them when changed or missing, and reject two rules writing one virtual output |
+| `fac.Input[fac.Virtual]`, `list[fac.Input[fac.Virtual]]` | virtual outputs of a [store](./stores.md) the recipe reads through `fac.read`, and [virtual sources](./stores.md#virtual-sources) | execute first the rule that writes each virtual output, hash their values, and call each virtual source's signature. A task declaring one fails collection, so a task reading a store can be designed later without changing what an accepted `fac.py` means |
+| `fac.Output[fac.Virtual]`, `list[fac.Output[fac.Virtual]]` | virtual outputs of a store the recipe sets through `fac.write` | write them to their store once the recipe succeeds, rewrite them when changed or missing, and reject two rules writing one virtual output |
 | `fac.Scope` | a scope from `fac.scope` | define the rule or task in that scope, as [names](./names.md#declaring-names) describes |
 | `fac.Args` | on a task, the arguments after `--` | pass them as a tuple of strings |
 | none, or any other | a value, such as a list of flags | hash it by value. On a rule, a string naming an existing file under the root, or a path a rule outputs, fails collection, naming the annotation to add, while a task's values go unchecked, since a task records nothing. A directory no rule outputs, such as a tool's cache, is a value |

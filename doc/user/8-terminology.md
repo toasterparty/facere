@@ -18,9 +18,10 @@ Each term is defined using only the terms above it, so reading top to bottom nev
 | Store *(planned)* | An object defined in a `fac.py` that holds values under keys, such as the rows of one file or the resources of an HTTP REST API, and reads and writes them through its own methods. The filesystem is the store Facere has built in. |
 | Virtual output *(planned)* | One key of a store together with its value, named by the store and the key, which a rule writes as it does a file. |
 | Virtual input *(planned)* | A virtual output as a rule that reads it declares it. |
+| Virtual source *(planned)* | An input that is neither a file nor a virtual output, such as an S3 object, which Facere knows only through a signature function the project gives. |
 | Output | A file, directory, or virtual output a rule writes and Facere tracks, declared in its signature. |
 | Fingerprint | A hash of a rule's recipe code and what the rule declares, which decides whether the rule must execute again. |
-| Input | A file, directory, or virtual output a rule reads and Facere tracks, declared in its signature or reported by its recipe. |
+| Input | A file, directory, virtual output, or virtual source a rule reads and Facere tracks, declared in its signature or reported by its recipe. |
 | Added input *(0.4)* | An input a recipe reports after its tool has run, such as a header a depfile lists. |
 | Order-only input *(0.4)* | A declared input built before its reader's recipe executes, a change to which makes the reader stale only once that recipe reports reading it. |
 | Source | An input no rule outputs, which must therefore exist. |

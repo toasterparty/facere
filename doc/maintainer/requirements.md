@@ -19,6 +19,7 @@ MUST, MUST NOT, SHOULD, SHOULD NOT, and MAY are to be interpreted as in BCP 14 (
 - A rule MUST be able to declare an input that orders the build but makes the rule stale only once its recipe reports reading it, so a generated header is built first without rebuilding every compile that might include it.
 - Rules MUST depend on one another only through their inputs and outputs, never by name.
 - A rule MUST be able to write and read virtual outputs, keyed values held in a store, a value the project defines, such as the rows of one file or the resources of an HTTP REST API, so how finely Facere tracks outputs is independent of how they are stored. A project with one file per output MUST need no store.
+- A rule MUST be able to input what Facere cannot hash, such as a remote object or a program's version, through a signature the project computes, called once per invocation however many rules share it.
 - Facere MUST accept a source, so a project can add the rule that outputs it later without editing the rules that read it.
 - Paths in a `fac.py` and in the modules it imports MUST be strings relative to the root, with `/` separators on every OS, so a path means one file wherever it is written, computed, or passed. A `fac.py` below the root MUST be able to convert a path relative to its own directory explicitly.
 - Every `fac.py` under the root, outside directories the project excludes, MUST join the root's graph, so a nested `fac.py` never means a separate project in one release and part of the graph in the next.
@@ -109,7 +110,7 @@ MUST, MUST NOT, SHOULD, SHOULD NOT, and MAY are to be interpreted as in BCP 14 (
 ## Performance
 
 - An invocation with nothing stale MUST finish in under 300 ms on Linux on an Intel N100 under the oldest CPython Facere supports, for a synthetic project of 1000 C sources, 5000 headers, and one program, and for one of 10000 rules each writing one virtual output of a single file, so it can run on every save.
-- With nothing stale, Facere MUST execute no recipe except those of rules declared to always execute, MUST write no file but its own state and lock, and MUST call no store but to take each needed store's stamp once.
+- With nothing stale, Facere MUST execute no recipe except those of rules declared to always execute, MUST write no file but its own state and lock, and MUST call no store but to take each needed store's stamp once, and no signature but each needed virtual source's once.
 - A rule that always executes MUST NOT make the rules downstream of it stale by executing. Only a change in its outputs' content does.
 - Facere MUST NOT put an absolute path in a fingerprint, except where no relative path exists, as between Windows drives, so moving a checkout together with its output directory rebuilds only what reads an absolute path itself.
 - Facere's core MUST NOT access the network. Only recipes and stores may, the recipes of shipped extensions included, and Facere MUST NOT call a store that no requested target needs.
