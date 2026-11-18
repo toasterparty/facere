@@ -10,7 +10,7 @@ Put settings and helper functions a `fac.py` shares with other modules in an ord
 from tools.settings import BASE_URL
 ```
 
-*(0.2)* Facere fingerprints a shared module's code like the `fac.py`'s own, so a change to a function or constant executes just the rules that reach it. A rule or task defined by importing another `fac.py` fails, since each one defines its own project.
+*(0.2)* A shared module's constants join the fingerprint of each rule whose recipe reads them, as the `fac.py`'s own do, so a changed constant executes just those rules. *(0.4)* Its functions and classes join none, as with helpers in the `fac.py`, so after editing one, raise [the epoch](./2-fac-py.md#when-a-rule-executes). A rule or task defined by importing another `fac.py` fails, since each one defines its own project.
 
 ## Separate projects
 

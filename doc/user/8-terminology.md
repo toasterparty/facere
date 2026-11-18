@@ -30,7 +30,7 @@ Each term is defined using only the terms above it, so reading top to bottom nev
 | Value | Data a recipe reads through a parameter or a module constant, which joins its rule's fingerprint as data, never as a file's content. |
 | Stale | Said of a rule that must execute, since the state holds no record of it, its fingerprint differs from the record, an added input differs from the record, or one of its outputs is missing or differs from the record. |
 | Up to date | Said of a rule whose fingerprint, added inputs, and output contents match the state's record. |
-| Shared module | An ordinary Python module under the root that `fac.py` files import for the code and facts they share, and whose code joins the fingerprint of every rule that reaches it. |
+| Shared module | An ordinary Python module under the root that `fac.py` files import for the code and facts they share, and whose constants join the fingerprint of each rule whose recipe reads them. |
 | Target | A name or output path given on the command line, which `fac` builds. |
 | Build | To execute the recipe of each stale rule that targets need, and of each task they reach. |
 | Batch *(0.4)* | A maximal run of consecutive targets that reach no task, which `fac` builds together, in parallel. |

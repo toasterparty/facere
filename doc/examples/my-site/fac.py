@@ -7,6 +7,9 @@ from pathlib import PurePosixPath
 
 import facere as fac
 
+# Raise this after an edit to `fill` that changes the pages: every rule then executes once, on every
+# machine that builds the project.
+fac.epoch(0)
 # A constant joins the fingerprint of each rule that reads it, so a new name executes those rules.
 SITE_NAME = "My site"
 BASE_URL = "https://example.com/"
@@ -27,9 +30,10 @@ SITEMAP = fac.out("pages/sitemap.txt")
 SITE = [rule["html"] for rule in PAGE_RULES] + [INDEX, SITEMAP]
 
 
-# A recipe reaches this by name, so editing it executes every rule that calls it.
-def fill(template, title, body):
-    text = template.replace("{site}", SITE_NAME)
+# A fingerprint holds a recipe's own code, not this function's, so editing it executes nothing, and
+# fac warns once. It takes the site's name from its callers, whose fingerprints hold SITE_NAME.
+def fill(template, site, title, body):
+    text = template.replace("{site}", site)
     return text.replace("{title}", title).replace("{body}", body)
 
 
@@ -41,7 +45,7 @@ def page(source: fac.Input, html: fac.Output, title: fac.Output, template: fac.I
     for paragraph in paragraphs[1:]:
         body += f"<p>{paragraph}</p>\n"
     fac.write_text(title, paragraphs[0])
-    fac.write_text(html, fill(fac.read_text(template), paragraphs[0], body))
+    fac.write_text(html, fill(fac.read_text(template), SITE_NAME, paragraphs[0], body))
 
 
 # Inputs the titles and not the pages, so a page's new paragraph leaves it up to date.
@@ -53,7 +57,7 @@ def index(
     for title in titles:
         link = PurePosixPath(title).stem + ".html"
         body += f'<p><a href="{link}">{fac.read_text(title)}</a></p>\n'
-    fac.write_text(html, fill(fac.read_text(template), "Home", body))
+    fac.write_text(html, fill(fac.read_text(template), SITE_NAME, "Home", body))
 
 
 # The names are values, so a page's content can't make this stale, only a page added or removed.

@@ -39,7 +39,7 @@ _LEADS = {
 class Summary:
     """What an invocation did.
 
-    `failed` counts the rules and tasks that failed. `ended` holds one note per recipe that an interrupt or a stop ended, and `unsettled` one warning per rule that an input changing during its recipe left stale twice in a row.
+    `failed` counts the rules and tasks that failed. `ended` holds one note per recipe that an interrupt or a stop ended, `unsettled` one warning per rule that an input changing during its recipe left stale twice in a row, and `edited` the absolute path of each Python file whose code no fingerprint holds changed since the last invocation.
     """
 
     tasks_run: int = 0
@@ -48,6 +48,7 @@ class Summary:
     failed: int = 0
     ended: list[Diagnostic] = field(default_factory=list)
     unsettled: list[Diagnostic] = field(default_factory=list)
+    edited: list[str] = field(default_factory=list)
 
 
 def format_summary(summary: Summary, elapsed_s: float, outcome: Outcome) -> str:

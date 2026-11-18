@@ -69,7 +69,7 @@ class Pool:
 class Recipe:
     """One executing recipe, with what the undeclared-path check and fac.add_inputs track of it.
 
-    `has_terminal` holds for a task and for a rule declared with `terminal=True`, whose commands and prints share Facere's own streams. Any other recipe's are captured in `output`, in the order written, each chunk for stderr or else stdout. Every path is keyed by calc_path_key, but `reported`, which keeps each reported path as normalize returns it, so two files differing only in case stay apart where the file system tells them apart. `tracked` holds the rule's inputs and outputs, `exempt` what its `str` parameters hold, and `output_keys` every output in the project. A recipe may open a shared module, but no command may name one, since only the recipe's reach puts one in a fingerprint. `reported_names` holds the file name of every path reported outside `tracked`, dropped ones included. `undeclared`, the first use the check rejected, fails the rule however the recipe treats the error, as does `misuse`, the first call a thread the recipe started made that only the recipe's own thread may.
+    `has_terminal` holds for a task and for a rule declared with `terminal=True`, whose commands and prints share Facere's own streams. Any other recipe's are captured in `output`, in the order written, each chunk for stderr or else stdout. Every path is keyed by calc_path_key, but `reported`, which keeps each reported path as normalize returns it, so two files differing only in case stay apart where the file system tells them apart. `tracked` holds the rule's inputs and outputs, `exempt` what its `str` parameters hold, and `output_keys` every output in the project. A recipe may open a shared module, but no command may name one, since what a command reads joins a fingerprint only as a declared input. `reported_names` holds the file name of every path reported outside `tracked`, dropped ones included. `undeclared`, the first use the check rejected, fails the rule however the recipe treats the error, as does `misuse`, the first call a thread the recipe started made that only the recipe's own thread may.
     """
 
     is_task: bool
@@ -98,7 +98,7 @@ class _Threads(threading.local):
 class Context:
     """What one invocation shares.
 
-    `is_loading` holds while a fac.py loads. `task` is the task executing, which executes alone, so any thread without a recipe of its own acts for it. `window_size` is the terminal's rows and columns where Facere's stderr is a terminal a rule's command may be given one like, else None. `give_lock_cb` gives the output directory's lock on a task's request.
+    `is_loading` holds while a fac.py loads. `epoch` is what fac.epoch set, called at `epoch_location`, else 0 and None. `task` is the task executing, which executes alone, so any thread without a recipe of its own acts for it. `window_size` is the terminal's rows and columns where Facere's stderr is a terminal a rule's command may be given one like, else None. `give_lock_cb` gives the output directory's lock on a task's request.
     """
 
     root: str
@@ -110,6 +110,8 @@ class Context:
     declarations: list[Declaration] = field(default_factory=list)
     env: dict[str, str | None] = field(default_factory=dict)
     env_locations: dict[str, Location] = field(default_factory=dict)
+    epoch: int = 0
+    epoch_location: Location | None = None
     is_loading: bool = False
     task: Recipe | None = None
     window_size: tuple[int, int] | None = None
@@ -172,6 +174,8 @@ class Context:
         self.declarations.clear()
         self.env.clear()
         self.env_locations.clear()
+        self.epoch = 0
+        self.epoch_location = None
 
 
 _current: Context | None = None

@@ -96,6 +96,7 @@ class _IncrementalBuilds(RuleBasedStateMachine):
         self.unbuilt_edits = 0
         self.builds = 0
         self.log: list[str] = []
+        self.helper_facts: dict[str, dict[str, object]] = {}
 
     @initialize(
         project=projects(),
@@ -108,6 +109,7 @@ class _IncrementalBuilds(RuleBasedStateMachine):
     ) -> None:
         """Write the project. With `keeps_mtimes`, each later edit restores its file's mtime, as `cp -p` and archive extraction do. A build follows every `edits_per_build` edits, and with `builds_one_first` it builds one output before the rest."""
         self.project = project
+        self.helper_facts = project.calc_helper_facts()
         self.keeps_mtimes = keeps_mtimes
         self.edits_per_build = edits_per_build
         self.builds_one_first = builds_one_first
@@ -297,7 +299,12 @@ class _IncrementalBuilds(RuleBasedStateMachine):
         }
 
     def _apply(self, edit: str) -> None:
-        """Write the files the project now renders to, where they differ from those on disk."""
+        """Write the files the project now renders to, where they differ from those on disk, raising the epoch first where the edit changed what a helper adds to an output, as a person editing a helper would."""
+        helper_facts = self.project.calc_helper_facts()
+        if helper_facts != self.helper_facts:
+            self.helper_facts = helper_facts
+            self.project.epoch += 1
+            edit = f"{edit}, raising the epoch to {self.project.epoch}"
         files = self.project.render()
         if files == self.files:
             return

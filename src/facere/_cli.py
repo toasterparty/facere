@@ -12,7 +12,7 @@ from collections.abc import Generator
 
 from facere import _build, _bytecode, _collect
 from facere._command import Commands
-from facere._context import Context, activate, normalize
+from facere._context import Context, Location, activate, normalize
 from facere._diagnostics import (
     Diagnostic,
     FacereError,
@@ -49,6 +49,9 @@ Every invocation that parsed its arguments ends on a line starting with
 Finished, Failed, Stopped, or Interrupted.
 """
 _AUTO = "auto"
+_EDITED_OUTSIDE_RECIPES = (
+    "code outside recipes changed, which executes no rule until fac.epoch rises"
+)
 
 
 def main(args: list[str]) -> int:
@@ -161,6 +164,11 @@ def _invoke(options: argparse.Namespace, task_args: tuple[str, ...] | None) -> i
         print(format_entering(root), file=sys.stderr)
     with watch_signals() as signals:
         outcome = _try_run(options, task_args, root, start_dir, summary, signals)
+    if summary.edited:
+        edits = [
+            Diagnostic(Location(path, 1, 1), _EDITED_OUTSIDE_RECIPES) for path in summary.edited
+        ]
+        print_warning(_merge(edits, ", as in {} more file{}"), start_dir)
     if summary.unsettled:
         print_warning(_merge(summary.unsettled, ", as for {} more rule{}"), start_dir)
     if summary.ended:

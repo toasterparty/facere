@@ -30,7 +30,7 @@ def test_generated_code_rebuilds_exactly_what_read_it(tmp_path: Path) -> None:
 
     generator = root / "tools" / "messages.py"
     edit(generator, "import tomllib\n", "import tomllib  # reads specs\n")
-    assert closing_line(root) == "Finished in <elapsed>. No work to do. 11 outputs up to date."
+    assert closing_line(root) == "Finished in <elapsed>. Executed 2 rules. 7 outputs up to date."
 
     edit(generator, "members", "fields_text")
     assert closing_line(root) == "Finished in <elapsed>. Executed 2 rules. 7 outputs up to date."
@@ -62,6 +62,7 @@ def test_compile_reading_a_generated_header_needs_it_ordered(tmp_path: Path) -> 
 
 def test_generator_run_as_a_command_must_be_declared(tmp_path: Path) -> None:
     root = _prepare(tmp_path)
+    edit(root / "fac.py", ", generator: fac.Input = GENERATOR", "")
     edit(
         root / "fac.py",
         "messages.generate(spec, header, source)",

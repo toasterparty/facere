@@ -291,6 +291,17 @@ def _take_batch(
     return rules, None, []
 
 
+def _find_edited(root: str, code: _state.Code, saved: _state.Code | None) -> list[str]:
+    """Return the absolute path of each Python file whose code no fingerprint holds changed since `saved`, unless the epoch changed too, which executes every rule."""
+    if saved is None or saved.epoch != code.epoch:
+        return []
+    return [
+        os.path.join(root, path)
+        for path, digest in code.digests.items()
+        if saved.digests.get(path, digest) != digest
+    ]
+
+
 def _remove_shadowed(
     context: Context,
     state_path: str,
@@ -405,6 +416,13 @@ class _Builder:
             if not definition.is_task
         }
         state = _state.load(self.state_path)
+        self.code = _state.Code(project.epoch, project.unfingerprinted)
+        self.saved_code = state.code
+        invocation.summary.edited.extend(
+            path
+            for path in _find_edited(context.root, self.code, state.code)
+            if path not in invocation.summary.edited
+        )
         self.output_keys = frozenset(project.producers_by_key)
         self.saved_declared = state.declared
         new_outputs = (
@@ -484,7 +502,7 @@ class _Builder:
         return self._can_go_on()
 
     def commit(self) -> None:
-        """Save what the batch learned beyond its records, while the invocation holds the lock: the tree as it leaves it, so a file its recipes wrote never counts as new, the hash cache, and the outputs declared. Losing any of them costs only rebuilds and reads."""
+        """Save what the batch learned beyond its records, while the invocation holds the lock: the tree as it leaves it, so a file its recipes wrote never counts as new, the hash cache, the outputs declared, and the code no fingerprint holds, so an edit to it warns once. Losing any of them costs only rebuilds and reads, or a warning."""
         if not self.invocation.lock.is_held:
             return
         with self._state_lock, contextlib.suppress(OSError):
@@ -495,6 +513,9 @@ class _Builder:
             if self.output_keys != self.saved_declared:
                 _state.save_declared(self.state_path, self.output_keys)
                 self.saved_declared = self.output_keys
+            if self.code != self.saved_code:
+                _state.save_code(self.state_path, self.code)
+                self.saved_code = self.code
 
     def validate_built_intact(self) -> None:
         """Fail the first output this invocation built whose content changed after its rule finished, which only an undeclared write explains. One that vanished passes, since the next invocation rebuilds it."""

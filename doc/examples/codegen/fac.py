@@ -4,9 +4,7 @@ import os
 import shutil
 import sys
 
-# A plain module that knows nothing of Facere. Its code and constants join the fingerprint of each
-# rule that reaches them, so a comment there executes nothing, a changed generated text executes
-# every `message`, and a refactor with the same output stops there.
+# A plain module that knows nothing of Facere.
 from tools import messages
 
 import facere as fac
@@ -18,6 +16,7 @@ CC = ["uvx", "--from", f"ziglang=={ZIG_VERSION}", "python-zig", "cc"]
 CFLAGS = ["-O2", "-Wall", "-I.", "-I" + fac.out("gen")]
 # A new spec executes its `message`, the compile of its source, and the link.
 SPECS = fac.sources("messages/*.toml")
+GENERATOR = "tools/messages.py"
 KEYWORD_TABLE = "src/keywords.gperf"
 KEYWORDS = fac.out("gen/keywords.c")
 PROGRAM = fac.out("server.exe" if sys.platform == "win32" else "server")
@@ -35,10 +34,13 @@ OBJECT_FILE_RULES = [{"source": source, "obj": fac.out(source, ".o")} for source
 OBJECTS = [rule["obj"] for rule in OBJECT_FILE_RULES]
 
 
-# Called as a function, so the generator's code joins the fingerprint. Run as a command, the rule
-# fails until the script is a declared input, and the script would need a command-line entry.
+# A fingerprint holds the recipe's own code, not the generator's it calls, so the generator is an
+# input: any edit to it executes every `message`, and only a changed generated text goes further.
+# Called as a function, the generator needs no command-line entry.
 @fac.rule(each=MESSAGE_RULES)
-def message(spec: fac.Input, header: fac.Output, source: fac.Output):
+def message(
+    spec: fac.Input, header: fac.Output, source: fac.Output, generator: fac.Input = GENERATOR
+):
     messages.generate(spec, header, source)
 
 

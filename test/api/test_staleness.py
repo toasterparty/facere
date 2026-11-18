@@ -134,52 +134,64 @@ def test_changed_closure_variable_reruns_the_rule(root: Path, fac: Fac) -> None:
 
 
 @pytest.mark.project("helpers")
-def test_changed_helper_the_recipe_calls_reruns_the_rule(root: Path, fac: Fac) -> None:
+def test_changed_helper_the_recipe_calls_executes_nothing_and_warns(root: Path, fac: Fac) -> None:
     fac()
     edit(root / "fac.py", "text.strip()", "text.strip().lower()")
 
     result = fac()
 
-    assert result.err == "Finished in <elapsed>. Executed 1 rule.\n"
+    assert result.err.splitlines() == [
+        "fac.py:1:1: warning: code outside recipes changed, which executes no rule until fac.epoch rises",
+        "Finished in <elapsed>. No work to do. 1 output up to date.",
+    ]
+    assert (root / "build" / "a.txt").read_text() == "*HI!*"
 
 
 @pytest.mark.project("helpers")
-def test_changed_function_a_helper_calls_reruns_the_rule(root: Path, fac: Fac) -> None:
-    fac()
-    edit(root / "fac.py", 'text + "!"', 'text + "?"')
-
-    result = fac()
-
-    assert result.err == "Finished in <elapsed>. Executed 1 rule.\n"
-    assert (root / "build" / "a.txt").read_text() == "*HI?*"
-
-
-@pytest.mark.project("helpers")
-def test_changed_method_of_a_class_the_recipe_uses_reruns_the_rule(root: Path, fac: Fac) -> None:
+def test_edit_outside_recipes_warns_only_once(root: Path, fac: Fac) -> None:
     fac()
     edit(root / "fac.py", "text.upper()", "text.title()")
+    fac()
 
-    result = fac()
-
-    assert result.err == "Finished in <elapsed>. Executed 1 rule.\n"
-    assert (root / "build" / "a.txt").read_text() == "*Hi!*"
+    assert fac().err == "Finished in <elapsed>. No work to do. 1 output up to date.\n"
 
 
 @pytest.mark.project("helpers")
-def test_changed_shared_module_function_the_recipe_calls_reruns_the_rule(
+def test_edits_outside_recipes_in_two_files_share_one_warning(root: Path, fac: Fac) -> None:
+    fac()
+    edit(root / "fac.py", "text.upper()", "text.title()")
+    edit(root / "textutil.py", "mark + text + mark", "mark + text")
+
+    assert fac().err.splitlines() == [
+        "fac.py:1:1: warning: code outside recipes changed, which executes no rule until fac.epoch rises, as in 1 more file",
+        "Finished in <elapsed>. No work to do. 1 output up to date.",
+    ]
+
+
+@pytest.mark.project("helpers")
+def test_epoch_raised_with_an_edit_outside_recipes_executes_every_rule_without_a_warning(
     root: Path, fac: Fac
 ) -> None:
     fac()
-    edit(root / "textutil.py", "MARK + text + MARK", "MARK + text")
+    edit(root / "textutil.py", "mark + text + mark", "mark + text")
+    edit(root / "fac.py", "fac.epoch(0)", "fac.epoch(1)")
 
-    result = fac()
-
-    assert result.err == "Finished in <elapsed>. Executed 1 rule.\n"
+    assert fac().err == "Finished in <elapsed>. Executed 1 rule.\n"
     assert (root / "build" / "a.txt").read_text() == "*HI!"
 
 
 @pytest.mark.project("helpers")
-def test_changed_shared_module_constant_a_helper_reads_reruns_the_rule(
+def test_changed_constant_only_a_helper_reads_executes_nothing_and_warns_nothing(
+    root: Path, fac: Fac
+) -> None:
+    fac()
+    edit(root / "fac.py", 'END = "!"', 'END = "?"')
+
+    assert fac().err == "Finished in <elapsed>. No work to do. 1 output up to date.\n"
+
+
+@pytest.mark.project("helpers")
+def test_changed_shared_module_constant_the_recipe_reads_reruns_the_rule(
     root: Path, fac: Fac
 ) -> None:
     fac()
@@ -224,12 +236,11 @@ def test_shared_module_edit_keeping_size_and_mtime_runs_the_new_code_when_python
 
 
 @pytest.mark.project("helpers")
-def test_changed_shared_module_code_the_recipe_never_reaches_reruns_nothing(
+def test_comments_docstrings_and_unread_constants_outside_recipes_change_nothing(
     root: Path, fac: Fac
 ) -> None:
     fac()
     edit(root / "textutil.py", "UNREAD = 1", "UNREAD = 2")
-    edit(root / "textutil.py", "return text\n", "return text * 2\n")
     edit(
         root / "fac.py",
         "def exclaim(text):",
@@ -241,29 +252,10 @@ def test_changed_shared_module_code_the_recipe_never_reaches_reruns_nothing(
     assert result.err == "Finished in <elapsed>. No work to do. 1 output up to date.\n"
 
 
-@pytest.mark.project("module_value")
-def test_changed_shared_module_a_helper_receives_as_an_argument_reruns_the_rule(
+@pytest.mark.project("namespace_package")
+def test_changed_constant_of_a_module_in_a_package_without_init_reruns_the_rule(
     root: Path, fac: Fac
 ) -> None:
-    fac()
-    edit(root / "textutil.py", 'MARK = "!"', 'MARK = "?"')
-
-    assert fac().err == "Finished in <elapsed>. Executed 2 rules.\n"
-    assert (root / "build" / "a.txt").read_text() == "HI?"
-    assert (root / "build" / "b.txt").read_text() == "HO?"
-
-
-@pytest.mark.project("held_module")
-def test_changed_shared_module_a_constant_holds_reruns_the_rule(root: Path, fac: Fac) -> None:
-    fac()
-    edit(root / "textutil.py", 'MARK = "!"', 'MARK = "?"')
-
-    assert fac().err == "Finished in <elapsed>. Executed 1 rule.\n"
-    assert (root / "build" / "a.txt").read_text() == "HI?"
-
-
-@pytest.mark.project("namespace_package")
-def test_changed_module_in_a_package_without_init_reruns_the_rule(root: Path, fac: Fac) -> None:
     fac()
     edit(root / "tools" / "textutil.py", '"!"', '"?"')
 
@@ -526,35 +518,6 @@ def test_rules_that_stay_stale_together_share_one_warning(fac: Fac) -> None:
     ]
 
 
-@pytest.mark.project("helper_default")
-def test_changed_constant_a_helper_takes_as_a_default_reruns_the_rule(root: Path, fac: Fac) -> None:
-    fac()
-    edit(root / "fac.py", 'MARK = "!"', 'MARK = "?"')
-
-    assert fac().err == "Finished in <elapsed>. Executed 1 rule.\n"
-    assert (root / "build" / "a.txt").read_text() == "hi?"
-
-
-@pytest.mark.project("wrapped_helper")
-def test_changed_helper_behind_a_standard_library_decorator_reruns_the_rule(
-    root: Path, fac: Fac
-) -> None:
-    fac()
-    edit(root / "fac.py", 'file.write("hi")', 'file.write("ho")')
-
-    assert fac().err == "Finished in <elapsed>. Executed 1 rule.\n"
-    assert (root / "build" / "a.txt").read_text() == "ho!"
-
-
-@pytest.mark.project("base_class")
-def test_changed_method_a_class_inherits_reruns_the_rule(root: Path, fac: Fac) -> None:
-    fac()
-    edit(root / "fac.py", "text.upper()", "text.title()")
-
-    assert fac().err == "Finished in <elapsed>. Executed 1 rule.\n"
-    assert (root / "build" / "a.txt").read_text() == "Hi"
-
-
 @pytest.mark.project("scalar_values")
 def test_changed_float_constant_reruns_the_rule(root: Path, fac: Fac) -> None:
     fac()
@@ -573,15 +536,6 @@ def test_changed_bytes_constant_reruns_the_rule(root: Path, fac: Fac) -> None:
     assert (root / "build" / "a.txt").read_text() == "1.5?"
 
 
-@pytest.mark.project("function_value")
-def test_changed_function_a_parameter_receives_reruns_the_rule(root: Path, fac: Fac) -> None:
-    fac()
-    edit(root / "fac.py", '"!"', '"?"')
-
-    assert fac().err == "Finished in <elapsed>. Executed 1 rule.\n"
-    assert (root / "build" / "a.txt").read_text() == "hi?"
-
-
 @pytest.mark.project("bound_method")
 def test_changed_object_a_builtin_method_is_bound_to_reruns_the_rule(root: Path, fac: Fac) -> None:
     fac()
@@ -589,44 +543,6 @@ def test_changed_object_a_builtin_method_is_bound_to_reruns_the_rule(root: Path,
 
     assert fac().err == "Finished in <elapsed>. Executed 1 rule.\n"
     assert (root / "build" / "a.txt").read_text() == "Bye, you!"
-
-
-@pytest.mark.project("nested_class")
-def test_changed_constant_a_nested_class_reads_reruns_the_rule(root: Path, fac: Fac) -> None:
-    fac()
-    edit(root / "fac.py", 'MARK = "!"', 'MARK = "?"')
-
-    assert fac().err == "Finished in <elapsed>. Executed 1 rule.\n"
-    assert (root / "build" / "a.txt").read_text() == "HI?"
-
-
-@pytest.mark.project("class_body")
-def test_changed_constant_a_class_body_binds_reruns_the_rule(root: Path, fac: Fac) -> None:
-    fac()
-    edit(root / "fac.py", 'MARK = "!"', 'MARK = "?"')
-
-    assert fac().err == "Finished in <elapsed>. Executed 1 rule.\n"
-    assert (root / "build" / "a.txt").read_text() == "HI?"
-
-
-@pytest.mark.project("class_body")
-def test_changed_function_a_class_body_binds_as_a_method_reruns_the_rule(
-    root: Path, fac: Fac
-) -> None:
-    fac()
-    edit(root / "fac.py", "text.upper()", "text.title()")
-
-    assert fac().err == "Finished in <elapsed>. Executed 1 rule.\n"
-    assert (root / "build" / "a.txt").read_text() == "Hi!"
-
-
-@pytest.mark.project("held_value")
-def test_changed_method_of_a_class_a_value_holds_reruns_the_rule(root: Path, fac: Fac) -> None:
-    fac()
-    edit(root / "fac.py", "text.upper()", "text.title()")
-
-    assert fac().err == "Finished in <elapsed>. Executed 2 rules.\n"
-    assert (root / "build" / "a.txt").read_text() == "Hi!#*+?~"
 
 
 @pytest.mark.project("held_value")
@@ -661,7 +577,7 @@ def test_sentinel_and_compiled_pattern_defaults_rerun_nothing_unchanged(fac: Fac
 
 
 @pytest.mark.project("pattern_default")
-def test_changed_pattern_a_helper_compiles_as_a_default_reruns_the_rule(
+def test_changed_pattern_a_recipe_compiles_as_a_default_reruns_the_rule(
     root: Path, fac: Fac
 ) -> None:
     fac()
@@ -687,6 +603,28 @@ def test_changed_lambda_helper_reruns_the_rule(root: Path, fac: Fac) -> None:
 
     assert fac().err == "Finished in <elapsed>. Executed 1 rule.\n"
     assert (root / "build" / "a.txt").read_text() == "HI?"
+
+
+@pytest.mark.project("wrapped_recipe")
+def test_changed_function_a_decorator_wraps_into_a_recipe_reruns_the_rule(
+    root: Path, fac: Fac
+) -> None:
+    fac()
+    edit(root / "fac.py", '"hi" + MARK', '"ho" + MARK')
+
+    assert fac().err == "Finished in <elapsed>. Executed 1 rule.\n"
+    assert (root / "build" / "a.txt").read_text() == "ho!"
+
+
+@pytest.mark.project("wrapped_recipe")
+def test_changed_constant_the_function_a_decorator_wraps_reads_reruns_the_rule(
+    root: Path, fac: Fac
+) -> None:
+    fac()
+    edit(root / "fac.py", 'MARK = "!"', 'MARK = "?"')
+
+    assert fac().err == "Finished in <elapsed>. Executed 1 rule.\n"
+    assert (root / "build" / "a.txt").read_text() == "hi?"
 
 
 @posix_only

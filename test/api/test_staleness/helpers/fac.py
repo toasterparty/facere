@@ -2,13 +2,16 @@ import textutil
 
 import facere as fac
 
+fac.epoch(0)
+END = "!"
+
 
 def tidy(text):
     return exclaim(text.strip())
 
 
 def exclaim(text):
-    return text + "!"
+    return text + END
 
 
 class Style:
@@ -21,4 +24,4 @@ def shout(source: fac.Input = "a.txt", target: fac.Output = fac.out("a.txt")):
     with open(source, encoding="utf-8") as file:
         text = file.read()
     with open(target, "w", encoding="utf-8") as file:
-        file.write(textutil.wrap(Style().apply(tidy(text))))
+        file.write(textutil.wrap(Style().apply(tidy(text)), textutil.MARK))

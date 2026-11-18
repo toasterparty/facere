@@ -1,4 +1,4 @@
-"""The rest of the fac.py interface and fac.main: exports, decorators, fac.out, minimum_version, flags, and isolation between calls."""
+"""The rest of the fac.py interface and fac.main: exports, decorators, fac.out, minimum_version, epoch, flags, and isolation between calls."""
 
 import os
 import sys
@@ -20,6 +20,7 @@ def test_all_exports_exactly_the_fac_py_interface() -> None:
         "add_inputs",
         "capture",
         "env",
+        "epoch",
         "give_lock",
         "main",
         "minimum_version",
@@ -163,6 +164,27 @@ def test_minimum_version_that_is_not_dotted_numbers_fails_loading(fac: Fac) -> N
         "ValueError: fac.minimum_version takes a version such as \"0.1\", not '1.x'"
         in result.err.splitlines()
     )
+    assert result.err.splitlines()[-2] == "fac.py:3:1: error: loading fac.py raised ValueError"
+
+
+@pytest.mark.project("epoch_conflict")
+def test_epoch_set_twice_to_different_numbers_fails_naming_both_calls(fac: Fac) -> None:
+    result = fac()
+
+    assert result.status == 2
+    assert result.err.splitlines() == [
+        "fac.py:5:1: error: fac.epoch sets 2, though another call set 1",
+        "fac.py:3:1: note: fac.epoch sets the epoch here",
+        "Failed after <elapsed>.",
+    ]
+
+
+@pytest.mark.project("epoch_invalid")
+def test_epoch_below_zero_fails_loading(fac: Fac) -> None:
+    result = fac()
+
+    assert result.status == 2
+    assert "ValueError: fac.epoch takes a whole number from 0, not -1" in result.err.splitlines()
     assert result.err.splitlines()[-2] == "fac.py:3:1: error: loading fac.py raised ValueError"
 
 

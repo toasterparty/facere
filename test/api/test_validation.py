@@ -224,17 +224,6 @@ def test_value_holding_itself_fails_collection(fac: Fac) -> None:
     ]
 
 
-@pytest.mark.project("unhashable_default")
-def test_helper_default_facere_cannot_hash_fails_naming_the_helper(fac: Fac) -> None:
-    result = fac()
-
-    assert result.status == 2
-    assert result.err.splitlines() == [
-        "fac.py:10:2: error: function shout reads default lock through exclaim, of type _thread.lock, which Facere can't hash, since pickle can't take it apart: cannot pickle '_thread.lock' object",
-        "Failed after <elapsed>.",
-    ]
-
-
 @pytest.mark.project("pure_path")
 def test_pathlib_path_value_fails_naming_string_paths(fac: Fac) -> None:
     result = fac("page")
@@ -257,13 +246,13 @@ def test_rule_whose_source_facere_cannot_read_fails(fac: Fac) -> None:
     )
 
 
-@pytest.mark.project("unreadable_helper")
-def test_rule_reaching_a_helper_whose_source_facere_cannot_read_fails(root: Path, fac: Fac) -> None:
+@pytest.mark.project("unreadable_lambda")
+def test_rule_reading_a_lambda_whose_source_facere_cannot_read_fails(root: Path, fac: Fac) -> None:
     result = fac("page")
 
     assert result.status == 2
     assert result.err.splitlines() == [
-        f"fac.py:11:2: error: function page reaches shout, which has no source Facere can read, which a rule's fingerprint needs: [Errno 2] No such file or directory: {str(root / 'gone.py')!r}",
+        f"fac.py:11:2: error: function page reads a lambda, whose module has no source Facere can read, which a rule's fingerprint needs: [Errno 2] No such file or directory: {str(root / 'gone.py')!r}",
         "Failed after <elapsed>.",
     ]
 
@@ -301,15 +290,12 @@ def test_global_naming_a_file_under_the_root_fails(fac: Fac) -> None:
     ]
 
 
-@pytest.mark.project("helper_global_path")
-def test_global_a_helper_reads_naming_a_file_under_the_root_fails(fac: Fac) -> None:
-    result = fac("page")
+@pytest.mark.project("task_path_value")
+def test_task_value_naming_a_file_under_the_root_passes(fac: Fac) -> None:
+    result = fac("show")
 
-    assert result.status == 2
-    assert result.err.splitlines() == [
-        "fac.py:11:2: error: function page reads global NOTES through read_notes, which names the path notes.txt",
-        "Failed after <elapsed>.",
-    ]
+    assert result.status == 0, result.err
+    assert result.out == "notes.txt notes.txt\n"
 
 
 @pytest.mark.project("scratch_path")

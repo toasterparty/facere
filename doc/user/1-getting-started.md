@@ -110,8 +110,8 @@ SOURCES = fac.sources("pages/*.txt")
 PAGE_RULES = [{"source": source, "html": fac.out(source, ".html")} for source in SOURCES]
 
 
-def fill(template, title, body):
-    text = template.replace("{site}", SITE_NAME)
+def fill(template, site, title, body):
+    text = template.replace("{site}", site)
     return text.replace("{title}", title).replace("{body}", body)
 
 
@@ -121,10 +121,10 @@ def page(source: fac.Input, html: fac.Output, template: fac.Input = TEMPLATE):
     body = ""
     for paragraph in paragraphs[1:]:
         body += f"<p>{paragraph}</p>\n"
-    fac.write_text(html, fill(fac.read_text(template), paragraphs[0], body))
+    fac.write_text(html, fill(fac.read_text(template), SITE_NAME, paragraphs[0], body))
 ```
 
-Every page inputs the template, so editing it executes them all. Facere compares more than input files: a constant a recipe reads joins the rule's fingerprint, the hash that decides whether it is stale, meaning it must execute again, even when the recipe reaches it through a function such as `fill`. So a new `SITE_NAME` executes every page with no file changed:
+Every page inputs the template, so editing it executes them all. Facere compares more than input files: a constant a recipe reads joins the rule's fingerprint, the hash that decides whether it is stale, meaning it must execute again. So a new `SITE_NAME` executes every page with no file changed:
 
 ```
 $ fac
@@ -132,6 +132,15 @@ Finished in 18ms. Executed 2 rules.
 $ sed -i 's/My site/Bonjour/' fac.py
 $ fac
 Finished in 19ms. Executed 2 rules.
+```
+
+The fingerprint holds the recipe's own code, but not the code of `fill` or any other function it calls, which is why `page` passes `SITE_NAME` to `fill` rather than `fill` reading it. After an edit to `fill`, `fac` warns once and executes nothing. *(0.4)* Where the edit changes what rules build, add `fac.epoch(1)` near the top of `fac.py`, or raise the number it already passes, and every rule executes once, on every machine that builds the project:
+
+```
+$ sed -i 's/text.replace(/text.strip().replace(/' fac.py
+$ fac
+fac.py:1:1: warning: code outside recipes changed, which executes no rule until fac.epoch rises
+Finished in 17ms. No work to do. 2 outputs up to date.
 ```
 
 Facere compares a value only if `fac.py` reads it as it loads. [Hidden inputs](./7-best-practices.md#hidden-inputs) lists what Facere cannot see.
@@ -156,8 +165,8 @@ TITLES = [rule["title"] for rule in PAGE_RULES]
 INDEX = fac.out("pages/index.html")
 
 
-def fill(template, title, body):
-    text = template.replace("{site}", SITE_NAME)
+def fill(template, site, title, body):
+    text = template.replace("{site}", site)
     return text.replace("{title}", title).replace("{body}", body)
 
 
@@ -168,7 +177,7 @@ def page(source: fac.Input, html: fac.Output, title: fac.Output, template: fac.I
     for paragraph in paragraphs[1:]:
         body += f"<p>{paragraph}</p>\n"
     fac.write_text(title, paragraphs[0])
-    fac.write_text(html, fill(fac.read_text(template), paragraphs[0], body))
+    fac.write_text(html, fill(fac.read_text(template), SITE_NAME, paragraphs[0], body))
 
 
 @fac.rule
@@ -179,7 +188,7 @@ def index(
     for title in titles:
         link = PurePosixPath(title).stem + ".html"
         body += f'<p><a href="{link}">{fac.read_text(title)}</a></p>\n'
-    fac.write_text(html, fill(fac.read_text(template), "Home", body))
+    fac.write_text(html, fill(fac.read_text(template), SITE_NAME, "Home", body))
 ```
 
 A rule may output several files, and `list[fac.Input]` marks a list of files read. `index` reads the files `page` writes, so Facere executes `page` first, whatever order the functions are in.
@@ -300,6 +309,9 @@ from pathlib import PurePosixPath
 
 import facere as fac
 
+# Raise this after an edit to `fill` that changes the pages: every rule then executes once, on every
+# machine that builds the project.
+fac.epoch(0)
 # A constant joins the fingerprint of each rule that reads it, so a new name executes those rules.
 SITE_NAME = "My site"
 BASE_URL = "https://example.com/"
@@ -320,9 +332,10 @@ SITEMAP = fac.out("pages/sitemap.txt")
 SITE = [rule["html"] for rule in PAGE_RULES] + [INDEX, SITEMAP]
 
 
-# A recipe reaches this by name, so editing it executes every rule that calls it.
-def fill(template, title, body):
-    text = template.replace("{site}", SITE_NAME)
+# A fingerprint holds a recipe's own code, not this function's, so editing it executes nothing, and
+# fac warns once. It takes the site's name from its callers, whose fingerprints hold SITE_NAME.
+def fill(template, site, title, body):
+    text = template.replace("{site}", site)
     return text.replace("{title}", title).replace("{body}", body)
 
 
@@ -334,7 +347,7 @@ def page(source: fac.Input, html: fac.Output, title: fac.Output, template: fac.I
     for paragraph in paragraphs[1:]:
         body += f"<p>{paragraph}</p>\n"
     fac.write_text(title, paragraphs[0])
-    fac.write_text(html, fill(fac.read_text(template), paragraphs[0], body))
+    fac.write_text(html, fill(fac.read_text(template), SITE_NAME, paragraphs[0], body))
 
 
 # Inputs the titles and not the pages, so a page's new paragraph leaves it up to date.
@@ -346,7 +359,7 @@ def index(
     for title in titles:
         link = PurePosixPath(title).stem + ".html"
         body += f'<p><a href="{link}">{fac.read_text(title)}</a></p>\n'
-    fac.write_text(html, fill(fac.read_text(template), "Home", body))
+    fac.write_text(html, fill(fac.read_text(template), SITE_NAME, "Home", body))
 
 
 # The names are values, so a page's content can't make this stale, only a page added or removed.

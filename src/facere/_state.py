@@ -1,4 +1,4 @@
-"""The state: a record of each rule's last success, or of the inputs that changed during its last execution, and the hash cache, kept in a SQLite database in the output directory.
+"""The state: a record of each rule's last success, or of the inputs that changed during its last execution, the hash cache, and the code no fingerprint holds, kept in a SQLite database in the output directory.
 
 The database is open only while it is read or written, so a task may delete the output directory on any OS. A database Facere can't read counts as empty, which costs only rebuilds, while one it can't write raises OSError. Writes skip fsync: a write lost to a crash costs a rebuild, since the next invocation re-verifies every output.
 """
@@ -12,14 +12,15 @@ from typing import Any, NamedTuple
 from facere._cache import Entry, HashChanges
 from facere._engine import Trace
 
-_SCHEMA_VERSION = 6
-_TABLES = ("records", "listing", "declared", "moved", "hashes")
+_SCHEMA_VERSION = 7
+_TABLES = ("records", "listing", "declared", "moved", "hashes", "code")
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS records (outputs TEXT PRIMARY KEY, digest TEXT NOT NULL, inputs TEXT NOT NULL, output_hashes TEXT NOT NULL, added_inputs TEXT NOT NULL, added_names TEXT NOT NULL) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS listing (id INTEGER PRIMARY KEY CHECK (id = 0), paths TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS declared (id INTEGER PRIMARY KEY CHECK (id = 0), outputs TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS moved (outputs TEXT PRIMARY KEY, paths TEXT NOT NULL) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS hashes (path TEXT PRIMARY KEY, stamp TEXT NOT NULL, digest TEXT NOT NULL, is_racy INTEGER NOT NULL) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS code (id INTEGER PRIMARY KEY CHECK (id = 0), epoch INTEGER NOT NULL, digests TEXT NOT NULL);
 """
 _SEPARATOR = "\0"
 
@@ -31,14 +32,22 @@ class Record(NamedTuple):
     added_names: tuple[str, ...]
 
 
+class Code(NamedTuple):
+    """The project's epoch, and a digest of the code no fingerprint holds in each of its Python files, by path."""
+
+    epoch: int
+    digests: dict[str, str]
+
+
 class State(NamedTuple):
-    """Everything load reads. `moved` holds, for each rule left unrecorded by its last execution, the inputs that changed during it. `declared` holds the output keys save_declared last saved, or None where it saved none, and `listing` the files save_listing last saved, read only where a record holds a file name a new file could shadow."""
+    """Everything load reads. `moved` holds, for each rule left unrecorded by its last execution, the inputs that changed during it. `declared` holds the output keys save_declared last saved, or None where it saved none, and `listing` the files save_listing last saved, read only where a record holds a file name a new file could shadow. `code` is what save_code last saved, or None."""
 
     records: dict[tuple[str, ...], Record]
     moved: dict[tuple[str, ...], tuple[str, ...]]
     declared: frozenset[str] | None
     listing: frozenset[str]
     hashes: dict[str, Entry]
+    code: Code | None
 
 
 def calc_key(outputs: tuple[str, ...]) -> tuple[str, ...]:
@@ -52,7 +61,7 @@ def has_added_names(records: dict[tuple[str, ...], Record]) -> bool:
 
 def load(path: str) -> State:
     """Return the state, or an empty one where it is missing, unreadable, or of another schema."""
-    empty = State({}, {}, None, frozenset(), {})
+    empty = State({}, {}, None, frozenset(), {}, None)
     if not os.path.exists(path):
         return empty
     try:
@@ -124,6 +133,17 @@ def save_declared(path: str, outputs: frozenset[str]) -> None:
     _save_paths(path, "INSERT OR REPLACE INTO declared VALUES (0, ?)", outputs)
 
 
+def save_code(path: str, code: Code) -> None:
+    """Replace the saved code, unless the state is gone."""
+    if not os.path.exists(path):
+        return
+    with _open(path) as connection:
+        connection.execute(
+            "INSERT OR REPLACE INTO code VALUES (0, ?, ?)",
+            (code.epoch, _join_pairs(tuple(sorted(code.digests.items())))),
+        )
+
+
 def _read(connection: sqlite3.Connection) -> State:
     records = {}
     for outputs, digest, inputs, hashes, added, names in _fetch(
@@ -151,7 +171,9 @@ def _read(connection: sqlite3.Connection) -> State:
             connection, "SELECT path, stamp, digest, is_racy FROM hashes"
         )
     }
-    return State(records, moved, declared, listing or frozenset(), hashes)
+    code_rows = _fetch(connection, "SELECT epoch, digests FROM code")
+    code = Code(code_rows[0][0], dict(_pair(_split(code_rows[0][1])))) if code_rows else None
+    return State(records, moved, declared, listing or frozenset(), hashes, code)
 
 
 def _read_paths(connection: sqlite3.Connection, query: str) -> frozenset[str] | None:

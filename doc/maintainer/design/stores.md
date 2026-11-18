@@ -37,7 +37,7 @@ A virtual output that is missing, or whose digest differs from the record, makes
 
 A `FileStore` whose file is missing has no virtual outputs, and `read` is not called. One whose `read` raises before Facere writes to it counts as holding no virtual outputs, so a file torn by an interrupted `write` costs rebuilds, never a stale record. Any other store whose `stamp` or `read` raises fails the invocation with status 1, naming the store, the method, and the exception: a server that cannot answer leaves staleness undecided, and Facere never reports success while an output may be stale.
 
-A rule's fingerprint takes the store of each virtual output it writes as code, the class's methods and what they reach by name, as for a recipe. A change to how a store writes therefore re-executes every rule writing to it, where it would otherwise leave every virtual output in its old format with every record matching. A store does not hash its class's whole module, as other values do, so editing a task in the same `fac.py` re-executes none of them.
+A rule's fingerprint takes the store of each virtual output it writes as code, the syntax trees of the class's methods, though not the code they call, as for a recipe. A change to how a store writes therefore re-executes every rule writing to it, where it would otherwise leave every virtual output in its old format with every record matching. A store does not hash its class's whole module, as a lambda does, so editing a task in the same `fac.py` re-executes none of them.
 
 ## Writing
 

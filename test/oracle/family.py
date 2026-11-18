@@ -1,6 +1,6 @@
 """A family of small generated Facere projects: the files one renders to, and what each of its rules depends on.
 
-Four rule functions chain. `generate` writes one header per row. `compile` expands the headers each source includes, searching directories in order as a compiler does and reporting what it finds. It orders after the generated headers, and in some projects never names that parameter, searching their directory instead, so their paths stay out of its fingerprint. `link` joins the objects with a directory of notes into two outputs, and `stamp` runs a tool over the first. Their recipes reach helper functions spread over fac.py and two shared modules, each function returning its text with a tag that shows everything its fingerprint should hold, so a stale output differs from a fresh one in its bytes.
+Four rule functions chain. `generate` writes one header per row. `compile` expands the headers each source includes, searching directories in order as a compiler does and reporting what it finds. It orders after the generated headers, and in some projects never names that parameter, searching their directory instead, so their paths stay out of its fingerprint. `link` joins the objects with a directory of notes into two outputs, and `stamp` runs a tool over the first. Their recipes call helper functions spread over fac.py and two shared modules, each function returning its text with a tag that shows everything its output depends on, so a stale output differs from a fresh one in its bytes. A fingerprint holds only a recipe's own code, so the oracle raises the project's epoch wherever an edit changes what a helper adds.
 """
 
 from __future__ import annotations
@@ -131,7 +131,7 @@ with open(sys.argv[2], "wb") as file:
 
 
 class Form(enum.Enum):
-    """How a helper is defined, one member per way a fingerprint reaches code."""
+    """How a helper is defined, one member per way a recipe can reach code, which collection must accept."""
 
     PLAIN = enum.auto()
     # Behind a decorator the project defines, whose closure holds the function.
@@ -205,7 +205,7 @@ class Code:
 class Project:
     """One member of the family, which the oracle's edits change in place.
 
-    `headers` maps each header a person wrote, as a path relative to the root in one of the HEADER_DIRECTORIES, to its text, and `generated` each header name `generate` writes to its row's value. `executables` holds the rendered paths whose executable bit is set, and `names_order_only` says whether `compile` names its parameter listing the generated headers.
+    `headers` maps each header a person wrote, as a path relative to the root in one of the HEADER_DIRECTORIES, to its text, and `generated` each header name `generate` writes to its row's value. `executables` holds the rendered paths whose executable bit is set, `names_order_only` says whether `compile` names its parameter listing the generated headers, and `epoch` is what the root's fac.py passes `fac.epoch`.
     """
 
     helpers: dict[str, Code]
@@ -225,6 +225,7 @@ class Project:
     tool_salt: object = 0
     executables: set[str] = field(default_factory=set)
     names_order_only: bool = True
+    epoch: int = 0
 
     def render(self) -> dict[str, File]:
         """Return the project's files by path relative to the root, with `/`."""
@@ -241,6 +242,7 @@ class Project:
         """Return each rule by the id its recipe prints after `ran`, less the output directory."""
         files = self.render()
         env = repr(self.env)
+        shared = {"env": env, "epoch": self.epoch}
         generated = {f"gen/{name}": value for name, value in sorted(self.generated.items())}
         objects = tuple(f"src/{name}.o" for name in sorted(self.sources))
         rows = {
@@ -248,7 +250,7 @@ class Project:
                 target=path,
                 outputs=(path,),
                 needs=frozenset(),
-                facts={**self._calc_code_facts("generate"), "env": env, "value": repr(value)},
+                facts={**self._calc_code_facts("generate"), **shared, "value": repr(value)},
                 built=(),
                 include_names=frozenset(),
             )
@@ -268,7 +270,7 @@ class Project:
                 facts={
                     **self._calc_code_facts("compile"),
                     **{f"file {path}": files[path] for path in read},
-                    "env": env,
+                    **shared,
                     "value": repr(source.value),
                     "flag": repr(self.flag),
                     "order-only": tuple(generated) if self.names_order_only else None,
@@ -284,7 +286,7 @@ class Project:
             facts={
                 **self._calc_code_facts("link"),
                 **{f"file notes/{name}": files[f"notes/{name}"] for name in self.notes},
-                "env": env,
+                **shared,
                 "level": repr(self.level),
                 "inputs": objects,
                 "outputs": (first, second),
@@ -296,7 +298,7 @@ class Project:
             target="stamp.txt",
             outputs=("stamp.txt",),
             needs=frozenset(rows),
-            facts={"file tool.py": files["tool.py"], "env": env},
+            facts={"file tool.py": files["tool.py"], **shared},
             built=("app.txt",),
             include_names=frozenset(),
         )
@@ -387,10 +389,29 @@ class Project:
         else:
             del self.headers[path]
 
+    def calc_helper_facts(self) -> dict[str, dict[str, object]]:
+        """Return, by recipe, what the helpers it reaches add to its output, which no fingerprint holds: each one's syntax, and each constant one reads or binds."""
+        return {
+            recipe: self._calc_reach_facts(
+                [self.helpers[key] for key in self.recipes[recipe].calls]
+            )
+            for recipe in RECIPES
+        }
+
     def _calc_code_facts(self, recipe: str) -> dict[str, object]:
-        """Return what the code `recipe` reaches adds to a fingerprint: each function's syntax, and each constant one reads."""
+        """Return what the code of `recipe` adds to a fingerprint: its syntax, which names each helper it calls, and each constant it reads."""
+        code = self.recipes[recipe]
+        callees = tuple(self.helpers[key].name for key in code.calls)
+        return {
+            f"code {code.key}": (code.name, code.salt, code.noise, callees),
+            **{
+                f"constant {module}.{name}": repr(self.constants[module, name])
+                for module, name in code.reads
+            },
+        }
+
+    def _calc_reach_facts(self, pending: list[Code]) -> dict[str, object]:
         facts: dict[str, object] = {}
-        pending = [self.recipes[recipe]]
         while pending:
             code = pending.pop()
             shown = repr(code.bound) if code.form in (Form.CLOSURE, Form.METHOD) else None
@@ -409,6 +430,7 @@ class Project:
         lines += [_PRELUDES[module], _TRACED]
         lines += [f"{name} = {self.constants[module, name]!r}" for name in CONSTANTS]
         if module == "fac":
+            lines.append(f"fac.epoch({self.epoch})")
             if self.env:
                 lines.append(f"fac.env(**{self.env!r})")
             lines.append(_FAC_HELPERS)

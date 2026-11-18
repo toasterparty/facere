@@ -227,6 +227,28 @@ def env(**variables: str | None) -> None:
         context.env_locations.setdefault(name, location)
 
 
+def epoch(number: int) -> None:
+    """Join `number`, a whole number from 0, to every rule's fingerprint, so raising it executes every rule once, on every machine that builds the commit.
+
+    Call it while the root's fac.py loads, as in `fac.epoch(1)`, and raise it after editing code a recipe calls, such as a helper, a class, or a shared module, which no fingerprint holds. Without a call the epoch is 0. Calls may repeat the number but never change it.
+    """
+    context = _get_loading_context("fac.epoch")
+    if isinstance(number, bool) or not isinstance(number, int) or number < 0:
+        raise ValueError(f"fac.epoch takes a whole number from 0, not {number!r}")
+    location, _ = find_caller_locations(context.fac_py)
+    earlier = context.epoch_location
+    if earlier is not None and context.epoch != number:
+        raise FacereError(
+            Diagnostic(
+                location,
+                f"fac.epoch sets {number}, though another call set {context.epoch}",
+                (Note(earlier, "fac.epoch sets the epoch here"),),
+            )
+        )
+    context.epoch = number
+    context.epoch_location = earlier or location
+
+
 def sources(*patterns: str) -> list[str]:
     """Return the files under the root that match any of `patterns`, sorted, as paths relative to the root with `/`.
 

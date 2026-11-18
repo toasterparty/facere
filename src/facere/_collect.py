@@ -27,32 +27,29 @@ from facere._context import (
     calc_path_key,
     is_under_root,
     is_within,
+    is_within_any,
     iter_self_and_parents,
     normalize,
 )
 from facere._diagnostics import Diagnostic, FacereError, Note
 from facere._engine import Graph, Step
 from facere._hash import (
-    Code,
     UnhashableValueError,
-    calc_class_text,
     calc_code_text,
+    calc_unfingerprinted_digest,
     feed,
     feed_value,
-    find_class_reads,
     find_closure_values,
-    find_default_values,
-    find_methods,
-    find_module_values,
     find_named_parameters,
     find_read_globals,
     iter_strings,
+    parse,
 )
 from facere._version import VERSION
 
 MODULE_NAME = "__fac__"
 _RESERVED_OPTIONS = ("each", "name", "default", "pool", "terminal", "always", "clear")
-_FINGERPRINT_FORMAT = b"facere fingerprint 7"
+_FINGERPRINT_FORMAT = b"facere fingerprint 8"
 _UNREADABLE_SOURCE = (OSError, LookupError, SyntaxError, ValueError)
 _PATH_ANNOTATIONS = {
     Kind.INPUT: "fac.Input",
@@ -143,7 +140,7 @@ class Definition:
 
 @dataclass(frozen=True, slots=True)
 class Project:
-    """A root's rules and tasks. `graph` holds one step per definition, in order, whose keys are paths as normalize returns them, `pool_sizes` how many steps of each pool the graph names may run at once, and `producers_by_key` maps the path key of each output to its rule."""
+    """A root's rules and tasks. `graph` holds one step per definition, in order, whose keys are paths as normalize returns them, `pool_sizes` how many steps of each pool the graph names may run at once, and `producers_by_key` maps the path key of each output to its rule. `unfingerprinted` maps each of the project's Python files that loading imported, as normalize returns it, to a digest of its code that no fingerprint holds, and `epoch` is what fac.epoch set."""
 
     definitions: tuple[Definition, ...]
     by_name: dict[str, list[Definition]]
@@ -151,6 +148,8 @@ class Project:
     pool_sizes: dict[str, int]
     producers_by_key: dict[str, Definition]
     shared_modules: frozenset[str]
+    unfingerprinted: dict[str, str]
+    epoch: int
 
 
 def collect(context: Context) -> Project:
@@ -161,7 +160,8 @@ def collect(context: Context) -> Project:
     finally:
         context.is_loading = False
     errors: list[Diagnostic] = []
-    _validate_imports(context, imported, errors)
+    trees: dict[str, ast.Module] = {}
+    _validate_imports(context, imported, trees, errors)
     definitions = tuple(_define_all(context, errors))
     _validate_outputs(context, definitions, errors)
     producers = {output: definition for definition in definitions for output in definition.outputs}
@@ -172,7 +172,7 @@ def collect(context: Context) -> Project:
     outputs_by_key = {calc_path_key(output): output for output in producers}
     producers_by_key = {key: producers[output] for key, output in outputs_by_key.items()}
     related = _map_related_outputs(definitions, outputs_by_key)
-    code_digests = _hash_values(context, definitions, producers_by_key.keys(), errors)
+    code_digests = _hash_values(context, definitions, producers_by_key.keys(), trees, errors)
     _validate_inputs(context, definitions, producers, outputs_by_key, related, errors)
     if errors:
         raise FacereError(*errors)
@@ -186,7 +186,47 @@ def collect(context: Context) -> Project:
         raise FacereError(_build_cycle_error(definitions, graph.cycle, related))
     shared_modules = frozenset(calc_path_key(normalize(path, context.root)) for path in imported)
     pool_sizes = {name: pool.size for pool, name in pools.items()}
-    return Project(definitions, by_name, graph, pool_sizes, producers_by_key, shared_modules)
+    return Project(
+        definitions,
+        by_name,
+        graph,
+        pool_sizes,
+        producers_by_key,
+        shared_modules,
+        _hash_unfingerprinted(context, definitions, imported, trees),
+        context.epoch,
+    )
+
+
+def _hash_unfingerprinted(
+    context: Context,
+    definitions: tuple[Definition, ...],
+    imported: list[str],
+    trees: dict[str, ast.Module],
+) -> dict[str, str]:
+    """Return a digest of the code that no fingerprint holds in each of the `imported` sources: all but recipes, the functions they wrap, and top-level statements. A task's recipe is left out with the rest, since a task executes whenever requested, and a source a rule inputs is left out whole, since its content joins that rule's fingerprint."""
+    recipes = [
+        code.__code__
+        for declaration in context.declarations
+        if isinstance(declaration.fn, types.FunctionType)
+        for code in _find_recipe_code(declaration.fn)
+    ]
+    input_keys = {
+        calc_path_key(path)
+        for definition in definitions
+        if not definition.is_task
+        for path in definition.inputs
+    }
+    digests = {}
+    for path in imported:
+        relative = normalize(path, context.root)
+        if is_within_any(calc_path_key(relative), input_keys):
+            continue
+        try:
+            digests[relative] = calc_unfingerprinted_digest(path, recipes, trees)
+        except _UNREADABLE_SOURCE:
+            continue
+    return digests
 
 
 def _map_related_outputs(
@@ -295,12 +335,12 @@ def _to_load_error(context: Context, error: BaseException) -> FacereError:
     return FacereError(Diagnostic(location, message), detail="".join(report.format()))
 
 
-def _validate_imports(context: Context, imported: list[str], errors: list[Diagnostic]) -> None:
-    """Fail each import in the `imported` sources that resolves outside the root, though the root holds a module of that name."""
+def _validate_imports(
+    context: Context, imported: list[str], trees: dict[str, ast.Module], errors: list[Diagnostic]
+) -> None:
+    """Fail each import in the `imported` sources that resolves outside the root, though the root holds a module of that name, parsing each into `trees`."""
     for path in imported:
-        with open(path, "rb") as file:
-            tree = ast.parse(file.read(), path)
-        for node in ast.walk(tree):
+        for node in ast.walk(parse(path, trees)):
             if not isinstance(node, ast.Import | ast.ImportFrom):
                 continue
             location = Location(path, node.lineno, node.col_offset + 1)
@@ -687,14 +727,17 @@ def _hash_values(
     context: Context,
     definitions: tuple[Definition, ...],
     output_keys: Container[str],
+    trees: dict[str, ast.Module],
     errors: list[Diagnostic],
 ) -> dict[Definition, bytes]:
-    trees: dict[str, ast.Module] = {}
+    """Return each rule's fingerprint of what collection knows: its code, values, and paths, the project's variables, and its epoch. A task records nothing, so neither hashes nor checks its values."""
     function_digests: dict[Callable[..., object], hashlib._Hash | None] = {}
     unread_by_function: dict[Callable[..., object], frozenset[str]] = {}
     digests: dict[Definition, bytes] = {}
     env = repr(sorted(context.env.items())).encode()
     for definition in definitions:
+        if definition.is_task:
+            continue
         if definition.fn not in function_digests:
             function_digests[definition.fn] = _hash_function(
                 context, definition, output_keys, trees, errors
@@ -702,6 +745,7 @@ def _hash_values(
         function_digest = function_digests[definition.fn]
         digest = function_digest.copy() if function_digest is not None else hashlib.sha256()
         feed(digest, b"env", env)
+        feed(digest, b"epoch", str(context.epoch).encode())
         if function_digest is not None and definition.fn not in unread_by_function:
             unread_by_function[definition.fn] = _find_unread_order_only(definition, trees)
         unread = unread_by_function.get(definition.fn, frozenset())
@@ -711,22 +755,18 @@ def _hash_values(
             if parameter not in unread
         }
         problems = []
-        held: list[Code] = []
+        lambdas: list[types.FunctionType] = []
         for kind, values, keys in (
             ("parameter", definition.values, output_keys),
             ("text parameter", definition.text_values, None),
             ("path parameter", path_values, None),
         ):
-            problems.extend(
-                _feed_values(context, digest, kind, values, keys, definition.is_task, held)
-            )
-        if not definition.is_task:
-            code_values = [*definition.values.values(), *held]
-            problems.extend(_feed_held_code(context, digest, code_values, output_keys, trees))
+            problems.extend(_feed_values(context, digest, kind, values, keys, lambdas))
+        problems.extend(_feed_lambdas(context, digest, lambdas, trees))
         errors.extend(
             _diagnose(definition, f"{definition.label} {problem}") for problem in problems
         )
-        if function_digest is not None and not problems and not definition.is_task:
+        if function_digest is not None and not problems:
             digests[definition] = digest.digest()
     return digests
 
@@ -746,180 +786,72 @@ def _hash_function(
     trees: dict[str, ast.Module],
     errors: list[Diagnostic],
 ) -> hashlib._Hash | None:
+    """Return a digest of the code of a rule's recipe and of the function it wraps through `__wrapped__`, which the user decorated, and of what each reads: module constants, a shared module's attributes, and closure variables. Their defaults are the rule's parameters, so join the fingerprint as its values."""
     fn = definition.fn
     assert isinstance(fn, types.FunctionType)
     digest = hashlib.sha256(_FINGERPRINT_FORMAT)
     # A Python minor release may change what the same code does, and changes its syntax trees.
     feed(digest, b"python", f"{sys.version_info.major}.{sys.version_info.minor}".encode())
     problems = []
-    if definition.is_task:
-        for kind, values in (
-            ("global", find_read_globals(fn)),
-            ("closure variable", find_closure_values(fn)),
-        ):
-            problems.extend(_feed_values(context, digest, kind, values, output_keys, True, []))
-    else:
+    lambdas: list[types.FunctionType] = []
+
+    def follow(module: types.ModuleType) -> bool:
+        return _is_project_code(context, module)
+
+    for code in _find_recipe_code(fn):
         try:
-            feed(digest, b"code", calc_code_text(fn, trees).encode())
+            feed(digest, b"code", calc_code_text(code, trees).encode())
         except _UNREADABLE_SOURCE as error:
+            reach = "has" if code is fn else f"wraps {code.__qualname__}, which has"
             problems.append(
-                f"has no source Facere can read, which a rule's fingerprint needs: {error}"
+                f"{reach} no source Facere can read, which a rule's fingerprint needs: {error}"
             )
-        problems.extend(_feed_reach(context, digest, fn, [fn], output_keys, trees, {fn}))
+        suffix = "" if code is fn else f" through {code.__qualname__}"
+        for kind, values in (
+            ("global", find_read_globals(code, follow)),
+            ("closure variable", find_closure_values(code)),
+        ):
+            named = {f"{name}{suffix}": value for name, value in values.items()}
+            problems.extend(_feed_values(context, digest, kind, named, output_keys, lambdas))
+    problems.extend(_feed_lambdas(context, digest, lambdas, trees))
     errors.extend(
         _diagnose(definition, f"function {fn.__name__} {problem}") for problem in problems
     )
     return None if problems else digest
 
 
-def _feed_reach(
+def _find_recipe_code(fn: types.FunctionType) -> list[types.FunctionType]:
+    """Return `fn` and, where a decorator wrapped it, the function it wraps through `__wrapped__`."""
+    unwrapped = inspect.unwrap(fn)
+    if unwrapped is fn or not isinstance(unwrapped, types.FunctionType):
+        return [fn]
+    return [fn, unwrapped]
+
+
+def _feed_lambdas(
     context: Context,
     digest: hashlib._Hash,
-    recipe: types.FunctionType | None,
-    pending: list[Code],
-    output_keys: Container[str],
+    lambdas: list[types.FunctionType],
     trees: dict[str, ast.Module],
-    seen: set[object],
 ) -> list[str]:
-    """Feed `digest` the values that each of `pending` reads, the defaults of all but `recipe` included, and the syntax tree and values of every function, class, and module of the project's they reach that `seen` lacks, returning what's wrong with them."""
+    """Feed `digest` the syntax tree of the module defining each of the project's `lambdas`, which no name finds, returning what's wrong with them."""
     problems = []
-    while pending:
-        current = pending.pop(0)
-        suffix = "" if current is recipe else f" through {_calc_label(current)}"
-        for kind, values in _find_reads(context, current, recipe, trees):
-            named = {f"{name}{suffix}": value for name, value in values.items()}
-            held: list[Code] = []
-            problems.extend(_feed_values(context, digest, kind, named, output_keys, False, held))
-            problems.extend(
-                _feed_newly_reached(
-                    context, digest, [*values.values(), *held], trees, seen, pending
-                )
+    for fn in dict.fromkeys(lambdas):
+        if not _is_project_code(context, fn):
+            continue
+        try:
+            feed(digest, b"lambda", calc_code_text(fn, trees).encode())
+        except _UNREADABLE_SOURCE as error:
+            problems.append(
+                f"reads a lambda, whose module has no source Facere can read, which a rule's fingerprint needs: {error}"
             )
     return problems
 
 
-def _find_reads(
-    context: Context,
-    code: Code,
-    recipe: types.FunctionType | None,
-    trees: dict[str, ast.Module],
-) -> tuple[tuple[str, dict[str, object]], ...]:
-    """Return what `code` reads, by kind: a function's globals, closure variables, and defaults unless it is `recipe`, what a class body read, or every global of a module."""
-
-    def follow(module: types.ModuleType) -> bool:
-        return _is_project_code(context, module)
-
-    if isinstance(code, types.ModuleType):
-        return (("global", find_module_values(code)),)
-    if isinstance(code, type):
-        return (("global", find_class_reads(code, trees, follow)),)
-    return (
-        ("global", find_read_globals(code, follow)),
-        ("closure variable", find_closure_values(code)),
-        ("default", {} if code is recipe else find_default_values(code)),
-    )
-
-
-def _calc_label(code: Code) -> str:
-    return code.__name__ if isinstance(code, types.ModuleType) else code.__qualname__
-
-
-def _feed_held_code(
-    context: Context,
-    digest: hashlib._Hash,
-    values: list[object],
-    output_keys: Container[str],
-    trees: dict[str, ast.Module],
-) -> list[str]:
-    """Feed `digest` the syntax tree and values of the project's functions, classes, and modules among `values`, and of all they reach, returning what's wrong with them."""
-    pending: list[Code] = []
-    seen: set[object] = set()
-    problems = _feed_newly_reached(context, digest, values, trees, seen, pending)
-    return [*problems, *_feed_reach(context, digest, None, pending, output_keys, trees, seen)]
-
-
-def _feed_newly_reached(
-    context: Context,
-    digest: hashlib._Hash,
-    values: list[object],
-    trees: dict[str, ast.Module],
-    seen: set[object],
-    pending: list[Code],
-) -> list[str]:
-    """Feed `digest` the syntax tree of the project's code that `values` reach and `seen` lacks, adding the code whose reads join the fingerprint to `pending`, and return what's wrong with that code."""
-    problems = []
-    for code in (code for value in values for code in _find_reached(value)):
-        if not _is_project_code(context, code) or code in seen:
-            continue
-        seen.add(code)
-        problem = _feed_definition(digest, code, trees)
-        if problem is not None:
-            problems.append(problem)
-            continue
-        pending.extend(_find_readers(code, seen))
-    return problems
-
-
-def _find_reached(value: object) -> list[Code]:
-    """Return the code that naming `value` reaches: a function, the one its decorators wrap, a class and those it inherits from, or a module."""
-    if isinstance(value, types.FunctionType):
-        unwrapped = inspect.unwrap(value)
-        reached = [value, unwrapped] if unwrapped is not value else [value]
-        return [code for code in reached if isinstance(code, types.FunctionType)]
-    if isinstance(value, type):
-        return list(value.__mro__)
-    if isinstance(value, types.ModuleType):
-        return [value]
-    return []
-
-
-def _feed_definition(digest: hashlib._Hash, code: Code, trees: dict[str, ast.Module]) -> str | None:
-    """Feed `digest` the syntax tree of `code`, or only the name of a module, whose every global joins the fingerprint as a value instead, returning what's wrong with it."""
-    if isinstance(code, types.ModuleType):
-        feed(digest, b"reached", code.__name__.encode())
-        return None
-    try:
-        text = (
-            calc_code_text(code, trees, keep_decorators=True)
-            if isinstance(code, types.FunctionType)
-            else calc_class_text(code, trees)
-        )
-    except _UNREADABLE_SOURCE as error:
-        return f"reaches {code.__qualname__}, which has no source Facere can read, which a rule's fingerprint needs: {error}"
-    feed(digest, b"reached", f"{code.__module__}.{code.__qualname__}".encode())
-    feed(digest, b"code", text.encode())
-    return None
-
-
-def _find_readers(value: Code, seen: set[object]) -> list[Code]:
-    """Return the code whose reads join a fingerprint once `value` is reached: a function or module itself, or a class, its methods, and the classes nested in it with their methods."""
-    if not isinstance(value, type):
-        return [value]
-    readers: list[Code] = [value]
-    for method in find_methods(value):
-        if method in seen:
-            continue
-        # A function defined elsewhere and bound in the class body stays unseen, so that the body's read of it feeds its syntax tree.
-        if _is_defined_in(method, value):
-            seen.add(method)
-        readers.append(method)
-    for nested in vars(value).values():
-        if isinstance(nested, type) and nested not in seen and _is_defined_in(nested, value):
-            seen.add(nested)
-            readers.extend(_find_readers(nested, seen))
-    return readers
-
-
-def _is_defined_in(code: types.FunctionType | type, cls: type) -> bool:
-    return code.__qualname__.startswith(f"{cls.__qualname__}.")
-
-
-def _is_project_code(context: Context, value: types.ModuleType | Code) -> bool:
-    """Say whether `value` is a module, function, or class the project wrote, rather than Facere, the standard library, or an installed package."""
+def _is_project_code(context: Context, value: types.ModuleType | types.FunctionType) -> bool:
+    """Say whether `value` is a module or function the project wrote, rather than Facere, the standard library, or an installed package."""
     if isinstance(value, types.FunctionType):
         path = value.__code__.co_filename
-    elif isinstance(value, type):
-        path = getattr(sys.modules.get(value.__module__), "__file__", None)
     else:
         path = getattr(value, "__file__", None)
     # A function that exec defined in a namespace without __name__ has no module.
@@ -943,21 +875,19 @@ def _feed_values(
     kind: str,
     values: dict[str, object],
     output_keys: Container[str] | None,
-    is_task: bool,
-    held: list[Code],
+    lambdas: list[types.FunctionType],
 ) -> list[str]:
-    """Feed `values` to `digest` unless `is_task`, adding the code they hold to `held`, and return what's wrong with them, checking paths unless `output_keys` is None."""
+    """Feed `values` to `digest`, adding the lambdas they hold to `lambdas`, and return what's wrong with them, checking paths unless `output_keys` is None."""
     problems = []
     for name, value in values.items():
-        if not is_task:
-            feed(digest, kind.encode(), name.encode())
-            try:
-                held.extend(feed_value(digest, value))
-            except UnhashableValueError as error:
-                problems.append(
-                    f"reads {kind} {name}, of type {error.type_name}, which Facere can't hash, since {error.reason}"
-                )
-                continue
+        feed(digest, kind.encode(), name.encode())
+        try:
+            lambdas.extend(feed_value(digest, value))
+        except UnhashableValueError as error:
+            problems.append(
+                f"reads {kind} {name}, of type {error.type_name}, which Facere can't hash, since {error.reason}"
+            )
+            continue
         if output_keys is None or isinstance(value, types.ModuleType | types.FunctionType | type):
             continue
         path = next(

@@ -97,12 +97,10 @@ class HashCache:
             if stat.S_ISDIR(info.st_mode):
                 enclosing = frozenset({os.path.realpath(path)})
                 hashed = self._fetch_tree(path, enclosing, look, new_files)
-                if look is not Look.CHECK:
-                    with self._lock:
-                        self._seen[path] = hashed
-                return hashed
+                with self._lock:
+                    return self._keep(path, hashed, look)
             if stat.S_ISREG(info.st_mode):
-                return self._fetch_file(path, info, look is not Look.CHECK)
+                return self._fetch_file(path, info, look)
             hashed = Hashed(_calc_stamp(path, info)[0], "O")
         except FileNotFoundError:
             if look is not Look.CHECK:
@@ -110,11 +108,7 @@ class HashCache:
                     self._forget(path)
             return None
         with self._lock:
-            if look is Look.FIRST:
-                return self._seen.setdefault(path, hashed)
-            if look is Look.AGAIN:
-                self._seen[path] = hashed
-        return hashed
+            return self._keep(path, hashed, look)
 
     def has_moved(self, path: str) -> bool:
         """Say whether the file at `path` differs from what the session saw of it, or was never seen."""
@@ -142,11 +136,19 @@ class HashCache:
             self._removed = set()
         return changes
 
-    def _fetch_file(self, path: str, info: os.stat_result, is_kept: bool) -> Hashed:
-        """Return the stamp and hash of the file at `path`, which `info` describes, keeping it as what the session saw where `is_kept`."""
+    def _keep(self, path: str, hashed: Hashed, look: Look) -> Hashed:
+        """Keep `hashed` as what the session saw of `path` as `look` asks, and return what the session now saw, or `hashed` for a CHECK. Each look is one dict operation, which a dict makes atomic with or without the GIL, so two threads looking FIRST at one unseen path agree."""
+        if look is Look.FIRST:
+            return self._seen.setdefault(path, hashed)
+        if look is Look.AGAIN:
+            self._seen[path] = hashed
+        return hashed
+
+    def _fetch_file(self, path: str, info: os.stat_result, look: Look) -> Hashed:
+        """Return the stamp and hash of the file at `path`, which `info` describes, keeping it as what the session saw as `look` asks."""
         stamp, change_ns = _calc_stamp(path, info)
         # A trusted entry costs no lock: each step reads or writes one table entry, which a dict makes atomic with
-        # or without the GIL, and two threads fetching one path at once each return what they saw.
+        # or without the GIL.
         seen = self._seen.get(path)
         entry = self._entries.get(path)
         is_vouched = (
@@ -157,10 +159,7 @@ class HashCache:
         )
         if is_vouched:
             assert entry is not None
-            hashed = Hashed(stamp, entry.digest)
-            if is_kept:
-                self._seen[path] = hashed
-            return hashed
+            return self._keep(path, Hashed(stamp, entry.digest), look)
         digest = _hash_file(path, info.st_mode)
         hashed = Hashed(stamp, digest)
         hashed_entry = Entry(stamp, digest, change_ns >= self._start_ns - _RACY_MARGIN_NS)
@@ -168,9 +167,7 @@ class HashCache:
             if hashed_entry != self._entries.get(path):
                 self._entries[path] = self._saved[path] = hashed_entry
                 self._removed.discard(path)
-            if is_kept:
-                self._seen[path] = hashed
-        return hashed
+            return self._keep(path, hashed, look)
 
     def _fetch_tree(
         self, path: str, enclosing: frozenset[str], look: Look, new_files: list[str] | None
@@ -210,7 +207,9 @@ class HashCache:
         if entry.is_file():
             with self._lock:
                 is_new = child not in self._entries
-            hashed = self._fetch_file(child, os.stat(child), look is not Look.CHECK)
+            # A tree reads each file it holds now, whatever the session saw.
+            again = Look.CHECK if look is Look.CHECK else Look.AGAIN
+            hashed = self._fetch_file(child, os.stat(child), again)
             if is_new and new_files is not None:
                 new_files.append(child)
             return hashed
