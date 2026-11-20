@@ -19,6 +19,16 @@ The audit hook and the argument check cost nothing here, since they act only whi
 
 The benchmark's generator is a shared module, so editing it regenerates the project. Its rule outputs the project as one directory output, and the timed invocation uses `-C` into it with `--out` outside it, since writing inside the generator's directory output would fail the end-of-invocation damage check.
 
+## Measuring
+
+Until the CI benchmarks exist, `fac bench` times the C project's no-op on this tree's code, under `build/noop-benchmark/`. `fac bench -- --base HEAD` also times a commit's code on a twin project, alternating the two trees run by run, since the machine's load drifts by about 2 ms between sittings and only a comparison in one sitting shows a smaller change.
+
+- `cProfile` inflates every C call, a lock's `__enter__` above all, so a profile diff points at a function but its milliseconds are not real. Time phases with `perf_counter` wrappers instead.
+- A no-op imports nothing it does not use, so a module only a recipe or an error needs is imported inside the function that needs it. On Python 3.15, `traceback` costs 3.5 ms, and `py_compile` imports it, while `subprocess` with `shutil` costs 3 ms. Check with `python -c "import sys, facere; print('traceback' in sys.modules)"`.
+- Defining a dataclass costs 0.3 to 0.6 ms at import, a named tuple 0.1 ms, an enum 0.05 ms, and a slotted plain class 3 us.
+- `-X importtime` attributes a garbage collection pass to whichever module is loading, so a 3 ms self time on a small module is noise. Time the module's code under `gc.disable()` instead.
+- The hash cache's trusted path takes no lock, relying on single dict operations being atomic, which free-threaded CPython keeps. Taking the lock there cost 2 ms over 7000 files.
+
 ## Open risks
 
 - **Module-level code**, such as a probe of a tool's `--version`, counts against the budget, where a rule recording it would not.

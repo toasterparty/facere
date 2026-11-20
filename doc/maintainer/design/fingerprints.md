@@ -140,3 +140,13 @@ The user docs list these in [hidden inputs](../../user/7-best-practices.md#hidde
 - **Incomplete added inputs.** A recipe that omits a rule-built file its tool reached indirectly, such as a header found through an include path, leaves the rule stale when that file changes.
 - **Undeclared inputs**, files a command's program reads without its arguments naming them, such as a config file a tool finds on its own, go unnoticed, as in every tool short of tracing tools like tup and the ptrace-based fac, or sandboxed ones like Bazel.
 - **Dependencies known only after a scan**, such as the imports of C++20 modules, have no mechanism like ninja's `dyndep`, and neither does a generator that chooses its own output names, such as protoc emitting a file per service.
+
+## Measured timestamps
+
+The racy-entry margin and the file system checks rest on these measurements, taken with `tools/timestamp-reference.py`, which compares a reference time against the timestamps of files changed just before and just after it. FAT, exFAT, and NFS are reasoned from their documented granularity, never measured, so measure one before trusting a claim about it.
+
+- Linux stamps inodes from the coarse clock, up to one timer tick behind `time.time_ns()`, 4 ms at `CONFIG_HZ=250`. A change made right after `time.time_ns()` read earlier than that reading in 20000 of 20000 trials, by up to 6.8 ms, on ext4 and tmpfs alike, so `st_ctime_ns >= start_ns` against that clock misses it.
+- Python's `time` module names no coarse clock, but `time.clock_gettime_ns(5)` reads Linux's `CLOCK_REALTIME_COARSE`. That clock and the mtime of a file just rewritten each missed 0 of 20000 changes made after them, and each read a change made just before them as at or after them 99% of the time, since the two share a tick. Kernels with multigrain timestamps, from 6.13, stamp finer only once something has read the file's ctime.
+- On Windows 11 NTFS, `time.time_ns()` ran up to 2.2 ms ahead of a just-changed file's mtime, missing 32% of renames and 59% of writes in place made after it, while a probe file's mtime missed none and flagged up to 87% made before it.
+
+Every lag measured sits well inside the 2 s margin.
