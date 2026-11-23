@@ -1,4 +1,4 @@
-"""The state: a record of each rule's last success, or of the inputs that changed during its last execution, the hash cache, and the code no fingerprint holds, kept in a SQLite database in the output directory.
+"""The state: a record of each rule's last success, or of the inputs that changed during its last execution, the hash cache, the code no fingerprint holds, and what each watch's last cycle observed, kept in a SQLite database in the output directory.
 
 The database is open only while it is read or written, so a task may delete the output directory on any OS. A database Facere can't read counts as empty, which costs only rebuilds, while one it can't write raises OSError. Writes skip fsync: a write lost to a crash costs a rebuild, since the next invocation re-verifies every output.
 """
@@ -13,7 +13,7 @@ from facere._cache import Entry, HashChanges
 from facere._engine import Trace
 
 _SCHEMA_VERSION = 7
-_TABLES = ("records", "listing", "declared", "moved", "hashes", "code")
+_TABLES = ("records", "listing", "declared", "moved", "hashes", "code", "observed")
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS records (outputs TEXT PRIMARY KEY, digest TEXT NOT NULL, inputs TEXT NOT NULL, output_hashes TEXT NOT NULL, added_inputs TEXT NOT NULL, added_names TEXT NOT NULL) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS listing (id INTEGER PRIMARY KEY CHECK (id = 0), paths TEXT NOT NULL);
@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS declared (id INTEGER PRIMARY KEY CHECK (id = 0), outp
 CREATE TABLE IF NOT EXISTS moved (outputs TEXT PRIMARY KEY, paths TEXT NOT NULL) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS hashes (path TEXT PRIMARY KEY, stamp TEXT NOT NULL, digest TEXT NOT NULL, is_racy INTEGER NOT NULL) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS code (id INTEGER PRIMARY KEY CHECK (id = 0), epoch INTEGER NOT NULL, digests TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS observed (targets TEXT PRIMARY KEY, digest TEXT NOT NULL, files TEXT NOT NULL, dirs TEXT NOT NULL, outputs TEXT NOT NULL) WITHOUT ROWID;
 """
 _SEPARATOR = "\0"
 
@@ -37,6 +38,14 @@ class Code(NamedTuple):
 
     epoch: int
     digests: dict[str, str]
+
+
+class Observation(NamedTuple):
+    """What a cycle of a watch observed: the hash of each file it read as it found it, or `""` where none was there, calc_entries_digest of each directory it listed, and which of those paths lie in a declared output. Paths are as normalize returns them."""
+
+    files: dict[str, str]
+    dirs: dict[str, str]
+    outputs: frozenset[str]
 
 
 class State(NamedTuple):
@@ -144,6 +153,62 @@ def save_code(path: str, code: Code) -> None:
         )
 
 
+def load_observation(path: str, targets: str) -> tuple[str, Observation] | None:
+    """Return the digest save_observation was given for the watch of `targets` with its observation, or None where none is saved or the state can't be read."""
+    if not os.path.exists(path):
+        return None
+    try:
+        with contextlib.closing(sqlite3.connect(path)) as connection:
+            rows = _fetch_where(
+                connection,
+                "SELECT digest, files, dirs, outputs FROM observed WHERE targets = ?",
+                targets,
+            )
+    except sqlite3.DatabaseError:
+        return None
+    if not rows:
+        return None
+    digest, files, dirs, outputs = rows[0]
+    assert isinstance(digest, str)
+    observation = Observation(
+        dict(_pair(_split(files))), dict(_pair(_split(dirs))), frozenset(_split(outputs))
+    )
+    return digest, observation
+
+
+def fetch_observation_digest(path: str, targets: str) -> str | None:
+    """Return the digest save_observation was given for the watch of `targets`, or None where none is saved or the state can't be read."""
+    if not os.path.exists(path):
+        return None
+    try:
+        with contextlib.closing(sqlite3.connect(path)) as connection:
+            rows = _fetch_where(
+                connection, "SELECT digest FROM observed WHERE targets = ?", targets
+            )
+    except sqlite3.DatabaseError:
+        return None
+    if not rows:
+        return None
+    digest = rows[0][0]
+    assert isinstance(digest, str)
+    return digest
+
+
+def save_observation(path: str, targets: str, digest: str, observation: Observation) -> None:
+    """Replace what the watch of `targets` observed, identified by `digest`, creating the state where it is gone, since a watch that built nothing yet still observed what to wait on."""
+    with _open(path) as connection:
+        connection.execute(
+            "INSERT OR REPLACE INTO observed VALUES (?, ?, ?, ?, ?)",
+            (
+                targets,
+                digest,
+                _join_pairs(tuple(sorted(observation.files.items()))),
+                _join_pairs(tuple(sorted(observation.dirs.items()))),
+                _SEPARATOR.join(sorted(observation.outputs)),
+            ),
+        )
+
+
 def _read(connection: sqlite3.Connection) -> State:
     records = {}
     for outputs, digest, inputs, hashes, added, names in _fetch(
@@ -183,6 +248,10 @@ def _read_paths(connection: sqlite3.Connection, query: str) -> frozenset[str] | 
 
 def _fetch(connection: sqlite3.Connection, query: str) -> list[Any]:
     return connection.execute(query).fetchall()
+
+
+def _fetch_where(connection: sqlite3.Connection, query: str, value: str) -> list[Any]:
+    return connection.execute(query, (value,)).fetchall()
 
 
 def _write_hashes(connection: sqlite3.Connection, changes: HashChanges) -> None:

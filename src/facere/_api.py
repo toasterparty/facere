@@ -31,7 +31,7 @@ from facere._version import VERSION
 Input = Annotated[str, Kind.INPUT]
 """Annotates a parameter holding a file or directory the rule or task reads, as a path relative to the root. Use `list[fac.Input]` for several."""
 OrderOnly = Annotated[str, Kind.ORDER_ONLY]
-"""Annotates a rule's parameter holding a file or directory its recipe may read, as a path relative to the root. It is built first, and its path joins the fingerprint where the recipe's code names the parameter, but a change to its content makes the rule stale only once the recipe reports reading it through `fac.add_inputs`. Use `list[fac.OrderOnly]` for several."""
+"""Annotates a rule's parameter holding a file or directory its recipe may read, as a path relative to the root. It is built first, and its path joins the fingerprint, but a change to its content makes the rule stale only once the recipe reports reading it through `fac.add_inputs`. Use `list[fac.OrderOnly]` for several."""
 Output = Annotated[str, Kind.OUTPUT]
 """Annotates a parameter holding a file or directory the rule writes, as a path relative to the root. Use `list[fac.Output]` for several."""
 Args = Annotated[tuple[str, ...], Kind.ARGS]

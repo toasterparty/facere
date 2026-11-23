@@ -68,7 +68,7 @@ MUTANTS = {
     ),
     "paths-unhashed": (
         "_collect.py",
-        '            ("path parameter", path_values, None),\n',
+        '            ("path parameter", definition.path_values, None),\n',
         "",
     ),
     "input-content-unhashed": (
@@ -96,10 +96,37 @@ MUTANTS = {
         "    if not _state.has_added_names(records):\n        return records",
         "    if True:\n        return records",
     ),
-    "order-only-paths-always-hashed": (
+    "order-only-paths-unhashed": (
         "_collect.py",
-        "    return definition.order_only_parameters - find_named_parameters(definition.fn, trees)",
-        "    return frozenset()",
+        "            value = path_values[parameter] = paths if slot.is_list else paths[0]",
+        "            value = paths if slot.is_list else paths[0]\n"
+        "            if slot.kind is not Kind.ORDER_ONLY:\n"
+        "                path_values[parameter] = value",
+    ),
+    "failed-record-kept": (
+        "_build.py",
+        "            self._remove_saved([_state.calc_key(rule.outputs)])",
+        "            pass",
+    ),
+    "keep-going-stops": (
+        "_engine.py",
+        "        if not self._keep_going:\n            self._has_stopped = True",
+        "        if True:\n            self._has_stopped = True",
+    ),
+    "downstream-of-failure-executes": (
+        "_engine.py",
+        "                if state in _FAILED_STATES:\n                    self._doomed.add(dependent)",
+        "                if False:\n                    self._doomed.add(dependent)",
+    ),
+    "ctime-unstamped": (
+        "_cache.py",
+        "    return _format_stamp(info, change_ns), max(info.st_mtime_ns, change_ns)",
+        "    return _format_stamp(info, 0), max(info.st_mtime_ns, change_ns)",
+    ),
+    "stamps-unchecked": (
+        "_cache.py",
+        "            and entry.stamp == stamp\n",
+        "",
     ),
     "bytecode-trusted": (
         "_bytecode.py",

@@ -160,24 +160,14 @@ def test_new_order_only_path_reruns_the_rule_though_no_content_changed(
 
 
 @pytest.mark.project("order_only_unread")
-def test_new_order_only_path_reruns_no_rule_whose_recipe_never_names_the_parameter(
+def test_new_order_only_path_reruns_a_rule_whose_recipe_never_names_the_parameter(
     root: Path, fac: Fac
 ) -> None:
     fac()
     edit(root / "fac.py", 'GENERATED = ["a.h"]', 'GENERATED = ["a.h", "b.h"]')
 
-    assert fac().err == "Finished in <elapsed>. Executed 1 rule. 2 outputs up to date.\n"
-    assert (root / "build" / "b.h").read_text() == "generated"
-
-
-@pytest.mark.project("order_only_unread")
-def test_recipe_calling_locals_counts_as_naming_every_parameter(root: Path, fac: Fac) -> None:
-    edit(root / "fac.py", '"compiled"', 'str(len(locals()["headers"]))')
-    fac()
-    edit(root / "fac.py", 'GENERATED = ["a.h"]', 'GENERATED = ["a.h", "b.h"]')
-
     assert fac().err == "Finished in <elapsed>. Executed 2 rules. 1 output up to date.\n"
-    assert (root / "build" / "main.o").read_text() == "2"
+    assert (root / "build" / "b.h").read_text() == "generated"
 
 
 @pytest.mark.project("order_only_missing")

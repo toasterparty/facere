@@ -37,7 +37,7 @@ VS Code suggests the extensions this project uses, from `.vscode/extensions.json
 
 `fac test` lints, then runs pytest under xdist. `fac test -- --long` adds the tests that take minutes, among them the [oracle](./oracle.md)'s shards.
 
-- Two pytest runs in one tree at the same time fail at random, since `test/conftest.py` fixes `basetemp` to `build/test/tmp` and pytest wipes it at startup. Give each concurrent run its own `--basetemp`.
+- Each pytest run numbers its own directory under `build/test/tmp/`, keeping the last three, so runs in one tree can overlap. A `--basetemp` given by hand is wiped at startup, so give each concurrent run its own.
 - `fac coverage` measures coverage, subprocesses included. It runs serially because `-p no:xdist` breaks on the `-n auto` in `addopts`. Without `PYTHONSAFEPATH`, `coverage run -m` puts the repo root on `sys.path`, so a fixture's `import fac` would import the root `fac.py`. Coverage never traces an audit hook, so `_undeclared._on_audit` reads as uncovered though `test/api/test_undeclared_paths.py` exercises it.
 - `test/test_repo.py` compares facts several config files repeat, such as the CI Python matrix against `.python-version`. Update both sides of a failure together. It skips in an sdist, which holds no `.github/`.
 - `my-site`'s `fac.py` must equal the finished `fac.py` in `doc/user/1-getting-started.md`, which `test/examples/test_my_site.py` checks, and the page's earlier snippets grow toward it, so edit them together.
@@ -45,6 +45,7 @@ VS Code suggests the extensions this project uses, from `.vscode/extensions.json
 - A test fixture naming an undeclared path must name it in the recipe's body. As a module constant or an unannotated value it fails collection instead, before the undeclared-path check can run.
 - A fixture's parameter cannot be called `name`, or anything else `@fac.rule` takes as an option.
 - A test of rules executing at once makes each recipe wait for a file the other writes, with a deadline, so it fails rather than hangs when they do not overlap. Sleeping and hoping for overlap is flaky.
+- A watch never ends by itself, so a test of `fac --watch` stops it as the test ends, as the fixture in `test/cli/test_watch.py` does, and waits on the lines it prints and the files a cycle writes, each with a deadline.
 - A test that needs a terminal runs on a pty from `test/cli/terminal.py`, with stdin on it too, since a command that holds the terminal needs both stdin and stderr to be terminals.
 - On a cold uv cache the first compile of a C example installs zig while it executes. Its headers lie outside the root, whose first reports are trusted, so the example tests need no install first. Check with `UV_CACHE_DIR=$(mktemp -d)`.
 - [Windows](./windows.md) has its own process, signal, and console behavior to know before testing there.
@@ -52,7 +53,7 @@ VS Code suggests the extensions this project uses, from `.vscode/extensions.json
 ### Timestamps in tests
 
 - `fac` run in-process reaches its first recipe within the timer tick of a file the test just wrote about a third of the time, where a `fac` process never does. Every file a test writes is therefore racy in the hash cache, and reread.
-- A test that reaches the cache's trusted path, by patching `facere._build.time` to start the clock later, must wait for the file system's tick before an edit, or the edit can share its stamp with the build that just read the file. `wait_for_later_change_time` in `test/api/test_hash_cache.py` does that.
+- A test that reaches the cache's trusted path, by patching `facere._build.time` to start the clock later, must wait for the file system's tick before an edit, or the edit can share its stamp with the build that just read the file. `wait_for_later_change_time` in `test/helpers.py` does that.
 - ctime cannot be set back, so `os.utime` cannot age a fixture.
 - A fixture that stands in for an editor saving a file during a recipe writes a scratch file and moves it onto the path with `os.replace`. Writing the path from the recipe's own Python marks it as the recipe's file, which the check exempts, and on Windows a file only moved keeps its mtime and creation time.
 - A fsync outlasts a timer tick, so records fsynced under `build/` on ext4 once hid timing bugs that tmpfs showed. Run timing-sensitive tests on tmpfs too.

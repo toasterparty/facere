@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, NamedTuple
 
 if TYPE_CHECKING:
     from facere._command import Commands
+    from facere._observed import Observed
     from facere._output import Output
 
 STATE_DIR_NAME = ".fac"
@@ -108,7 +109,7 @@ class _Threads(threading.local):
 class Context:
     """What one invocation shares.
 
-    `is_loading` holds while a fac.py loads. `epoch` is what fac.epoch set, called at `epoch_location`, else 0 and None. `task` is the task executing, which executes alone, so any thread without a recipe of its own acts for it. `console` is the default fac.console set for rules' commands, called at `console_location`, else AFTER and None. `has_terminal` says whether Facere's stdin and stderr are both terminals, so a rule's command may run `LIVE`. `window_size` is the terminal's rows and columns where Facere's stderr is a terminal a rule's command may be given one like, else None. `output` is Facere's own streams while a build runs. `give_lock_cb` gives the output directory's lock on a task's request.
+    `is_loading` holds while a fac.py loads. `epoch` is what fac.epoch set, called at `epoch_location`, else 0 and None. `task` is the task executing, which executes alone, so any thread without a recipe of its own acts for it. `console` is the default fac.console set for rules' commands, called at `console_location`, else AFTER and None. `has_terminal` says whether Facere's stdin and stderr are both terminals, so a rule's command may run `LIVE`. `window_size` is the terminal's rows and columns where Facere's stderr is a terminal a rule's command may be given one like, else None. `output` is Facere's own streams while a build runs. `give_lock_cb` gives the output directory's lock on a task's request. `observed` gathers what the invocation observed where it is a cycle of a watch, else None.
     """
 
     root: str
@@ -130,6 +131,7 @@ class Context:
     window_size: tuple[int, int] | None = None
     output: "Output | None" = None
     give_lock_cb: Callable[[], None] | None = None
+    observed: "Observed | None" = None
     _threads: _Threads = field(default_factory=_Threads)
     _starters_lock: threading.Lock = field(default_factory=threading.Lock)
     # Each thread a rule's recipe started, until that recipe ends, and each rule's recipe executing.

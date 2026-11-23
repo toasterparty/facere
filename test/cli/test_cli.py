@@ -79,10 +79,10 @@ def test_failed_build_exits_one(root: Path) -> None:
 
 @pytest.mark.project("touch")
 def test_unknown_flag_exits_two(root: Path) -> None:
-    result = run_fac(root, "--watch")
+    result = run_fac(root, "--no-such-flag")
 
     assert result.status == 2
-    assert result.err.splitlines()[-1] == "fac: error: unrecognized arguments: --watch"
+    assert result.err.splitlines()[-1] == "fac: error: unrecognized arguments: --no-such-flag"
 
 
 @pytest.mark.project("touch")

@@ -40,7 +40,6 @@ from facere._hash import (
     feed,
     feed_value,
     find_closure_values,
-    find_named_parameters,
     find_read_globals,
     iter_strings,
     parse,
@@ -93,7 +92,7 @@ def _diagnose(subject: _Declared, message: str, notes: tuple[Note, ...] = ()) ->
 class Definition:
     """A rule, or a task when `is_task`, with every parameter filled.
 
-    `args_slot` places a task's fac.Args parameter: an index into `args`, a key of `kwargs`, or None when it has none. `path_values` holds the paths of each fac.Input, fac.OrderOnly, and fac.Output parameter, and `order_only_parameters` names the fac.OrderOnly ones among them.
+    `args_slot` places a task's fac.Args parameter: an index into `args`, a key of `kwargs`, or None when it has none. `path_values` holds the paths of each fac.Input, fac.OrderOnly, and fac.Output parameter.
     """
 
     is_task: bool
@@ -112,7 +111,6 @@ class Definition:
     values: dict[str, object]
     text_values: dict[str, object]
     path_values: dict[str, object]
-    order_only_parameters: frozenset[str]
     args_slot: int | str | None
 
     @property
@@ -648,11 +646,6 @@ def _build_definition(
         values=values,
         text_values=text_values,
         path_values=path_values,
-        order_only_parameters=frozenset(
-            parameter
-            for parameter, slot in slots.items()
-            if isinstance(slot, _PathSlot) and slot.kind is Kind.ORDER_ONLY
-        ),
         args_slot=args_slot,
     )
 
@@ -728,7 +721,6 @@ def _hash_values(
 ) -> dict[Definition, bytes]:
     """Return each rule's fingerprint of what collection knows: its code, values, and paths, the project's variables, and its epoch. A task records nothing, so neither hashes nor checks its values."""
     function_digests: dict[Callable[..., object], hashlib._Hash | None] = {}
-    unread_by_function: dict[Callable[..., object], frozenset[str]] = {}
     digests: dict[Definition, bytes] = {}
     env = repr(sorted(context.env.items())).encode()
     for definition in definitions:
@@ -742,20 +734,12 @@ def _hash_values(
         digest = function_digest.copy() if function_digest is not None else hashlib.sha256()
         feed(digest, b"env", env)
         feed(digest, b"epoch", str(context.epoch).encode())
-        if function_digest is not None and definition.fn not in unread_by_function:
-            unread_by_function[definition.fn] = _find_unread_order_only(definition, trees)
-        unread = unread_by_function.get(definition.fn, frozenset())
-        path_values = {
-            parameter: paths
-            for parameter, paths in definition.path_values.items()
-            if parameter not in unread
-        }
         problems = []
         lambdas: list[types.FunctionType] = []
         for kind, values, keys in (
             ("parameter", definition.values, output_keys),
             ("text parameter", definition.text_values, None),
-            ("path parameter", path_values, None),
+            ("path parameter", definition.path_values, None),
         ):
             problems.extend(_feed_values(context, digest, kind, values, keys, lambdas))
         problems.extend(_feed_lambdas(context, digest, lambdas, trees))
@@ -765,14 +749,6 @@ def _hash_values(
         if function_digest is not None and not problems:
             digests[definition] = digest.digest()
     return digests
-
-
-def _find_unread_order_only(definition: Definition, trees: dict[str, ast.Module]) -> frozenset[str]:
-    """Return the fac.OrderOnly parameters the recipe of `definition`, whose source is readable, never names, whose paths can therefore change nothing it writes."""
-    if not definition.order_only_parameters:
-        return frozenset()
-    assert isinstance(definition.fn, types.FunctionType)
-    return definition.order_only_parameters - find_named_parameters(definition.fn, trees)
 
 
 def _hash_function(
@@ -947,6 +923,8 @@ def _validate_inputs(
                     )
                 )
             elif not os.path.exists(path):
+                if context.observed is not None:
+                    context.observed.add_absent(path)
                 message = (
                     f"{definition.label} inputs {path}, which doesn't exist, and no rule outputs it"
                 )

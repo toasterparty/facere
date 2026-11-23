@@ -157,6 +157,23 @@ def test_interrupt_kills_every_running_command_and_names_one_rule_counting_the_r
 
 
 @_POSIX_ONLY
+@pytest.mark.project("late_spawn")
+def test_interrupt_ends_a_command_a_recipe_spawns_after_the_kill_before_it_runs(
+    root: Path,
+) -> None:
+    process = start_fac(root, "-j2")
+    wait_for(root / "build" / "hold.started")
+    wait_for(root / "build" / "late.waiting")
+
+    process.send_signal(signal.SIGINT)
+    _, stderr = process.communicate(timeout=30)
+
+    assert process.returncode == 130, stderr
+    assert (root / "build" / "hold.ended").exists()
+    assert not (root / "build" / "late.ran").exists()
+
+
+@_POSIX_ONLY
 @pytest.mark.project("partial")
 def test_interrupt_keeps_the_record_of_each_rule_that_finished_before_it(root: Path) -> None:
     process = start_fac(root)

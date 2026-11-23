@@ -70,6 +70,17 @@ def test_rule_command_without_a_terminal_writes_stderr_to_a_pipe(root: Path) -> 
     assert facts == [False, False, False, False, None, None]
 
 
+@_POSIX_ONLY
+@pytest.mark.project("timeout")
+def test_rule_command_that_timed_out_shows_what_it_wrote_to_its_terminal(root: Path) -> None:
+    process, master = start_on_terminal(root)
+    shown = mask_elapsed(read_all(master))
+
+    assert process.wait(timeout=30) == 1, shown
+    assert "stuck here\r\n" in shown
+    assert "fac: command timed out after 1 seconds: " in shown
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason="only Windows keeps every terminal from a rule")
 @pytest.mark.project("probe_windows")
 def test_rule_command_on_windows_gets_no_console_and_its_stderr_shown_whole(root: Path) -> None:

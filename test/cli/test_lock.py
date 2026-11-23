@@ -1,5 +1,7 @@
 """The lock on an output directory: a second invocation waits for the first, which a task that keeps running lets in through fac.give_lock."""
 
+import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -169,3 +171,52 @@ def test_invocation_removes_the_file_naming_it_as_the_lock_holder(root: Path) ->
     assert run_fac(root, "quick").status == 0
 
     assert not (root / "build" / ".fac" / "lock.pid").exists()
+
+
+_TAKE_WITHOUT_PROC = """
+import builtins, sys
+import facere._lock as lock
+from facere._diagnostics import FacereError
+
+real_open = builtins.open
+
+
+def open_without_proc(path, *args, **kwargs):
+    if str(path).startswith("/proc/"):
+        raise FileNotFoundError(path)
+    return real_open(path, *args, **kwargs)
+
+
+lock.open = open_without_proc
+try:
+    lock.OutputLock("build", sys.argv[1]).take(5, lambda holder: None)
+except FacereError as error:
+    print(error.diagnostics[0].message)
+"""
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the ps fallback is for POSIX systems")
+def test_ancestor_holding_the_lock_is_found_on_a_system_without_proc(tmp_path: Path) -> None:
+    grandparent = os.getppid()
+    if grandparent <= 1:
+        pytest.skip("this process has no ancestor above its parent")
+    state_dir = tmp_path / "build" / ".fac"
+    held = OutputLock("build", str(state_dir))
+    held.take(None, lambda holder: None)
+    (state_dir / "lock.pid").write_text(str(grandparent))
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", _TAKE_WITHOUT_PROC, str(state_dir)],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    finally:
+        held.give()
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == (
+        f"the invocation with PID {grandparent}, which started this one, holds the output "
+        "directory build, so waiting for it would never end\n"
+    )

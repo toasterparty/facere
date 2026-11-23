@@ -1,6 +1,6 @@
 """A family of small generated Facere projects: the files one renders to, and what each of its rules depends on.
 
-Four rule functions chain. `generate` writes one header per row. `compile` expands the headers each source includes, searching directories in order as a compiler does and reporting what it finds. It orders after the generated headers, and in some projects never names that parameter, searching their directory instead, so their paths stay out of its fingerprint. `link` joins the objects with a directory of notes into two outputs, and `stamp` runs a tool over the first. Their recipes call helper functions spread over fac.py and two shared modules, each function returning its text with a tag that shows everything its output depends on, so a stale output differs from a fresh one in its bytes. A fingerprint holds only a recipe's own code, so the oracle raises the project's epoch wherever an edit changes what a helper adds.
+Four rule functions chain. `generate` writes one header per row. `compile` expands the headers each source includes, searching directories in order as a compiler does and reporting what it finds. It orders after the generated headers, whose paths join its fingerprint, and in some projects never names that parameter, searching their directory instead. `link` joins the objects with a directory of notes into two outputs, and `stamp` runs a tool over the first. `compile` and `link` fail where a file they read holds FAIL_TEXT, printing `failed` and their row's id first. Their recipes call helper functions spread over fac.py and two shared modules, each function returning its text with a tag that shows everything its output depends on, so a stale output differs from a fresh one in its bytes. A fingerprint holds only a recipe's own code, so the oracle raises the project's epoch wherever an edit changes what a helper adds.
 """
 
 from __future__ import annotations
@@ -36,6 +36,8 @@ TEXT_PATHS = (
 TEXTS = ("one", "two", "six")
 INITIAL_TEXT = "nil"
 """What every file holds at first, apart from TEXTS so that no first write leaves a file as it was."""
+FAIL_TEXT = "die"
+"""What a file holds where the recipe reading it must fail, as long as TEXTS so that a stat shows the edit only by its times."""
 ENVS: tuple[dict[str, str | None], ...] = (
     {"ORACLE_MARK": "a"},
     {"ORACLE_MARK": "b"},
@@ -76,6 +78,7 @@ def traced(fn):
     return wrapper
 """
 _FAC_HELPERS = f"""
+FAIL_TEXT = {FAIL_TEXT!r}
 SEARCH = {list(SEARCH)!r}
 SDK = {SDK!r}
 GENERATED_DIRECTORY = fac.out("gen")
@@ -100,12 +103,19 @@ def expand(source, generated):
         found = next(path for path in candidates if os.path.isfile(path))
         fac.add_inputs([found])
         lines.append(fac.read_text(found))
+    if FAIL_TEXT in lines:
+        print("failed", fac.out(source, ".o"))
+        raise ValueError(f"{{source}} reads {{FAIL_TEXT!r}}")
     return "\\n".join(lines)
 
 
 def join(objects, notes):
     paths = [*objects, *(f"{{notes}}/{{name}}" for name in sorted(os.listdir(notes)))]
-    return "\\n".join(fac.read_text(path) for path in paths)
+    texts = [fac.read_text(path) for path in paths]
+    if FAIL_TEXT in texts:
+        print("failed link")
+        raise ValueError(f"{{notes}} holds {{FAIL_TEXT!r}}")
+    return "\\n".join(texts)
 """
 _STAMP = """
 @fac.rule
@@ -273,7 +283,7 @@ class Project:
                     **shared,
                     "value": repr(source.value),
                     "flag": repr(self.flag),
-                    "order-only": tuple(generated) if self.names_order_only else None,
+                    "order-only": tuple(generated),
                 },
                 built=tuple(path for path in includes if path in generated),
                 include_names=frozenset(source.includes),
@@ -365,6 +375,29 @@ class Project:
         ]
         sources = [f"src/{name}.txt" for name in self.sources] if len(self.sources) > 1 else []
         return sorted([*headers, *sources, *(f"notes/{name}" for name in self.notes)])
+
+    def find_texts(self) -> dict[str, str]:
+        """Return the text of each source, header, and note, by its path relative to the root."""
+        return {
+            **{f"src/{name}.txt": source.text for name, source in self.sources.items()},
+            **self.headers,
+            **{f"notes/{name}": text for name, text in self.notes.items()},
+        }
+
+    def find_failing(self) -> frozenset[str]:
+        """Return the ids of the rows whose recipe fails: each compile whose source or a header it expands holds FAIL_TEXT, and link where a note does."""
+        failing = {
+            f"src/{name}.o"
+            for name, source in self.sources.items()
+            if FAIL_TEXT
+            in (
+                source.text,
+                *(self.headers.get(self.find_include(header) or "") for header in source.includes),
+            )
+        }
+        if FAIL_TEXT in self.notes.values():
+            failing.add("link")
+        return frozenset(failing)
 
     def write(self, path: str, text: str) -> None:
         """Set the text of `path`, one of TEXT_PATHS, adding the file where the project lacks it."""

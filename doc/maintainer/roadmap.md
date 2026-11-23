@@ -8,7 +8,7 @@
 
 ## Phase 1 milestones
 
-A proposal, ordered to rough in the whole path first. Each ends with its tests passing on Linux and Windows. Milestones 1, correctness, and 2, scheduling, are done.
+A proposal, ordered to rough in the whole path first. Each ends with its tests passing on Linux and Windows. Milestones 1, correctness, and 2, scheduling, are done, and 3, watch mode, is done on Linux and awaits its tests on Windows.
 
 3. **Watch mode.** The set of paths a cycle observed, then [the supervisor](./design/watch.md).
 4. **Stores.** `fac.Virtual`, `fac.Input[fac.Virtual]` and `fac.Output[fac.Virtual]`, `fac.read` and `fac.write`, `fac.FileStore`, virtual sources and their signatures, virtual output records and stamps in the state, the flush and its round-trip check, and file outputs moved onto the same code path as the built-in store. A task declaring `fac.Input[fac.Virtual]` fails, and so does a bare `fac.Input` naming a URI.

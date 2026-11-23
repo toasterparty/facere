@@ -39,7 +39,7 @@ def test_generated_code_rebuilds_exactly_what_read_it(tmp_path: Path) -> None:
     assert closing_line(root) == "Finished in <elapsed>. Executed 5 rules. 4 outputs up to date."
 
     (root / "messages" / "logout.toml").write_text('[fields]\nuser = "string"\n')
-    assert closing_line(root) == "Finished in <elapsed>. Executed 3 rules. 10 outputs up to date."
+    assert closing_line(root) == "Finished in <elapsed>. Executed 8 rules. 5 outputs up to date."
 
     with (root / "src" / "keywords.gperf").open("a") as table:
         table.write("quit, 4\n")

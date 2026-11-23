@@ -10,7 +10,7 @@ import posixpath
 import shlex
 import threading
 import time
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Container, Iterable
 from typing import Literal
 
 from facere import _state
@@ -46,6 +46,7 @@ from facere._engine import (
 )
 from facere._hash import iter_strings
 from facere._lock import OutputLock
+from facere._observed import Observed
 from facere._output import Chunk, Output
 from facere._schedule import Crew, Signals
 from facere._summary import Summary
@@ -334,6 +335,15 @@ def _find_shadowed(
     return [key for key, record in records.items() if not new_names.isdisjoint(record.added_names)]
 
 
+def _find_within(paths: set[str], outputs: Iterable[str], dirs: Container[str]) -> set[str]:
+    """Return those of `paths` that are one of `outputs` or lie in one of them that is among `dirs`, the directories a session walked."""
+    exact = paths.intersection(outputs)
+    prefixes = tuple(f"{path}/" for path in exact if path in dirs)
+    if not prefixes:
+        return exact
+    return exact | {path for path in paths if path.startswith(prefixes)}
+
+
 def _to_bytes(data: bytes | str | None) -> bytes:
     if data is None:
         return b""
@@ -462,6 +472,8 @@ class _Builder:
         self.built: set[str] = set()
         # The names of the files found new in a directory output, a set per walk that found some.
         self.shadows: list[frozenset[str]] = []
+        # The paths the session asked the hash of and found nothing at, for a watch.
+        self.absent: set[str] = set()
         self.unsettled: list[tuple[int, Diagnostic]] = []
         self.ended: list[tuple[int, Diagnostic]] = []
         # By a path key's prefix up to its last slash, the rule outputting that directory or one holding it.
@@ -504,7 +516,10 @@ class _Builder:
         """Save what the batch learned beyond its records, while the invocation holds the lock: the tree as it leaves it, so a file its recipes wrote never counts as new, the hash cache, the outputs declared, and the code no fingerprint holds, so an edit to it warns once. Losing any of them costs only rebuilds and reads, or a warning."""
         if not self.invocation.lock.is_held:
             return
+        observed = self.context.observed
         with self._state_lock, contextlib.suppress(OSError):
+            if observed is not None:
+                self._add_observed(observed)
             if self.has_executed and _state.has_added_names(self.records):
                 listing = frozenset(iter_listed_files(self.context.out_dir))
                 _state.save_listing(self.state_path, listing)
@@ -515,6 +530,27 @@ class _Builder:
             if self.code != self.saved_code:
                 _state.save_code(self.state_path, self.code)
                 self.saved_code = self.code
+            if observed is not None:
+                observed.save(self.state_path)
+
+    def _add_observed(self, observed: Observed) -> None:
+        """Add to `observed` what the session saw, noting which paths lie in a declared output, then hash the files collection opened."""
+        files = self.cache.get_seen_files()
+        dirs = self.cache.get_listed()
+        with self._mutex:
+            absent = set(self.absent)
+            failed = [
+                step
+                for step, verdict in self.engine.verdicts.items()
+                if verdict.reason is not Reason.CURRENT and step not in self.succeeded
+            ]
+        paths = {*files, *dirs, *absent}
+        outputs = _find_within(paths, self.producers, dirs)
+        failed_outputs = [
+            output for step in failed for output in self.project.definitions[step].outputs
+        ]
+        observed.add(files, dirs, absent, outputs, _find_within(outputs, failed_outputs, dirs))
+        observed.resolve_reads(self.cache)
 
     def validate_built_intact(self) -> None:
         """Fail the first output this invocation built whose content changed after its rule finished, which only an undeclared write explains. One that vanished passes, since the next invocation rebuilds it."""
@@ -730,6 +766,8 @@ class _Builder:
             digests[path] = None if hashed is None else hashed.digest
         shadowed: list[tuple[str, ...]] = []
         with self._mutex:
+            if self.context.observed is not None:
+                self.absent.update(path for path, digest in digests.items() if digest is None)
             if new_files:
                 shadowed = self._forget_shadowed(new_files)
             for path, hashed in built:
@@ -1071,6 +1109,12 @@ class _Builder:
             # A recipe that outlives its killed commands is left behind.
             return now_s < kill_at_s + _INTERRUPT_GRACE_S
 
+        if self.context.observed is not None:
+            missing = [path for path in task.inputs if self.cache.fetch(path) is None]
+            with self._mutex:
+                self.absent.update(missing)
+            # A task may never end, so the watch learns now what to wait on.
+            self.commit()
         with self._mutex:
             self.running[step] = task
         self.context.give_lock_cb = request_give

@@ -49,6 +49,15 @@ def watch_signals() -> Generator[Signals]:
             signal.signal(signum, handler)
 
 
+def enable_interrupts() -> None:
+    """On Windows, let Ctrl-C interrupt this process, which a parent starting it in a process group of its own disables, as a watch starts each cycle so it can send CTRL_BREAK_EVENT to that cycle alone."""
+    if sys.platform == "win32":
+        import ctypes
+
+        # Fails only without a console, where no Ctrl-C can arrive.
+        ctypes.WinDLL("kernel32").SetConsoleCtrlHandler(None, False)
+
+
 class Crew:
     """The threads that work for one batch, at most `calc_jobs()` of them at once, a count asked for only once a second thread is wanted."""
 

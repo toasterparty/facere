@@ -8,6 +8,7 @@ import copy
 import copyreg
 import dis
 import hashlib
+import os
 import types
 import typing
 from collections.abc import Callable, Iterable, Iterator
@@ -15,12 +16,11 @@ from pathlib import PurePath
 
 _GLOBAL_LOADS = frozenset({"LOAD_GLOBAL", "LOAD_NAME", "LOAD_FROM_DICT_OR_GLOBALS"})
 _ATTRIBUTE_LOADS = frozenset({"LOAD_ATTR", "LOAD_METHOD"})
-_FRAME_READERS = frozenset({"locals", "vars", "eval", "exec"})
 
 _Node = typing.TypeVar("_Node", bound=ast.AST)
 
 # Pinned, since a new default protocol could take values apart differently and change every fingerprint.
-_PICKLE_PROTOCOL = 5
+_PICKLE_PROTOCOL = 4
 
 
 class UnhashableValueError(Exception):
@@ -45,7 +45,7 @@ def feed(digest: hashlib._Hash, tag: bytes, payload: bytes) -> None:
 def feed_value(digest: hashlib._Hash, value: object) -> list[types.FunctionType]:
     """Feed `value` to `digest` by its content, taking apart what is no plain container as pickle would, functions, classes, and modules by qualified name, and return the lambdas `value` is or holds, which no name finds.
 
-    Raises UnhashableValueError for a value pickle can't take apart, a path object, or a value that holds itself.
+    Raises UnhashableValueError for a value pickle can't take apart, a path object, `os.environ`, or a value that holds itself.
     """
     lambdas: list[types.FunctionType] = []
     _feed_value(digest, value, lambdas, frozenset())
@@ -85,6 +85,10 @@ def _feed_value(
         feed(digest, b"Q", f"{value.__module__}.{value.__qualname__}".encode())
     elif isinstance(value, PurePath):
         raise UnhashableValueError(value, "Facere paths are strings with /")
+    elif isinstance(value, type(os.environ)):
+        raise UnhashableValueError(
+            value, "it is the inherited environment, which stays out of fingerprints"
+        )
     elif id(value) in enclosing:
         raise UnhashableValueError(value, "it holds itself")
     else:
@@ -287,19 +291,6 @@ def _iter_definitions(node: ast.AST) -> Iterator[ast.AST]:
             yield child
         else:
             yield from _iter_definitions(child)
-
-
-def find_named_parameters(fn: types.FunctionType, trees: dict[str, ast.Module]) -> frozenset[str]:
-    """Return the parameters of `fn` that its body names, so may read: all of them where it names a function that reads its caller's variables, such as `locals`."""
-    code = fn.__code__
-    parameters = frozenset(code.co_varnames[: code.co_argcount + code.co_kwonlyargcount])
-    named = {
-        inner.id
-        for statement in _find_function_node(fn, trees).body
-        for inner in ast.walk(statement)
-        if isinstance(inner, ast.Name)
-    }
-    return parameters if named & _FRAME_READERS else parameters & named
 
 
 def _find_function_node(

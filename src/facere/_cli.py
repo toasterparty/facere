@@ -4,6 +4,7 @@ import argparse
 import contextlib
 import importlib
 import os
+import posixpath
 import signal
 import sys
 import time
@@ -12,7 +13,14 @@ from collections.abc import Generator
 
 from facere import _build, _bytecode, _collect
 from facere._command import Commands
-from facere._context import Context, Location, activate, normalize
+from facere._context import (
+    STATE_DIR_NAME,
+    STATE_FILE_NAME,
+    Context,
+    Location,
+    activate,
+    normalize,
+)
 from facere._diagnostics import (
     Diagnostic,
     FacereError,
@@ -25,10 +33,12 @@ from facere._diagnostics import (
     print_warning,
 )
 from facere._lock import LockTimeoutError, OutputLock, describe_wait
+from facere._observed import Observed, calc_watch_key
 from facere._output import Output, capture_recipes
-from facere._schedule import Signals, watch_signals
+from facere._schedule import Signals, enable_interrupts, watch_signals
 from facere._status import pin_status
 from facere._summary import Outcome, Summary, format_summary
+from facere._undeclared import ensure_audit_hook
 from facere._version import VERSION
 
 _HELP_EPILOG = """\
@@ -46,7 +56,9 @@ exit status:
   143  the invocation was asked to stop, as SIGTERM asks, and let the rules executing finish
 
 Every invocation that parsed its arguments ends on a line starting with
-Finished, Failed, Stopped, or Interrupted.
+Finished, Failed, Stopped, or Interrupted. With --watch, each build starts
+with a line starting with "fac: change in", but for the first, and ends with
+the line "fac: watching for changes".
 """
 _AUTO = "auto"
 _EDITED_OUTSIDE_RECIPES = (
@@ -58,7 +70,7 @@ def main(args: list[str]) -> int:
     """Run the fac command line in-process with `args`, the arguments after the program name, and return its exit status."""
     parser = argparse.ArgumentParser(
         prog="fac",
-        usage="%(prog)s [-h] [-C DIR] [--out DIR] [-j N] [-k] [--lock-timeout SECONDS] [-q] [-v] [--version] [TARGET ...] [-- ARG ...]",
+        usage="%(prog)s [-h] [-C DIR] [--out DIR] [-j N] [-k] [--lock-timeout SECONDS] [-q] [-v] [--watch] [--version] [TARGET ...] [-- ARG ...]",
         description="Build each TARGET of the project the fac.py in the root defines, in the order given.",
         epilog=_HELP_EPILOG,
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -115,6 +127,13 @@ def main(args: list[str]) -> int:
         action="store_true",
         help="print each command, as one string, before it runs",
     )
+    parser.add_argument(
+        "--watch",
+        action="store_true",
+        help="build the targets, then build them again whenever a file the last build read, or a directory it listed, changes, until interrupted. A change during a build stops it as SIGTERM does, and every task among the targets restarts on each change",
+    )
+    # A cycle of a watch, which records in the state what it observed, for the watch to poll.
+    parser.add_argument("--watched", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--version", action="version", version=VERSION)
     task_args = None
     if "--" in args:
@@ -128,11 +147,29 @@ def main(args: list[str]) -> int:
             parser.error("-- passes arguments to the tasks among the targets, which name none")
     except SystemExit as exit_:
         return exit_.code if isinstance(exit_.code, int) else 1
+    if options.watch:
+        return _watch(options, args, task_args)
+    if options.watched:
+        enable_interrupts()
     return _invoke(options, task_args)
 
 
 def console_main() -> int:
     return main(sys.argv[1:])
+
+
+def _watch(options: argparse.Namespace, args: list[str], task_args: tuple[str, ...] | None) -> int:
+    """Watch the targets, each cycle running fac on `args`, the arguments before any `--`, less --watch, then `--` and `task_args`."""
+    root = _resolve_root(options.directory) if options.directory is not None else os.getcwd()
+    state_dir = os.path.join(root, normalize(options.out, root), STATE_DIR_NAME)
+    cycle_args = [arg for arg in args if arg != "--watch"]
+    if task_args is not None:
+        cycle_args.extend(["--", *task_args])
+    state_path = os.path.join(state_dir, STATE_FILE_NAME)
+    # Imported here, since it imports subprocess, which a build that runs no command never needs.
+    from facere._watch import watch
+
+    return watch(cycle_args, root, state_path, calc_watch_key(options.targets))
 
 
 def _parse_jobs(text: str) -> int | None:
@@ -252,6 +289,7 @@ def _run(
         has_terminal=_is_terminal(sys.stdin) and _is_terminal(sys.stderr),
         commands=Commands(),
         window_size=_try_fetch_window_size(),
+        observed=Observed(options.targets) if options.watched else None,
     )
     lock = OutputLock(out_dir, os.path.join(root, context.state_dir))
 
@@ -276,7 +314,14 @@ def _run(
                 importlib.invalidate_caches()
             has_collected = True
             _bytecode.ensure_checked(root)
-            return _collect.collect(context)
+            if context.observed is None:
+                return _collect.collect(context)
+            ensure_audit_hook()
+            try:
+                return _collect.collect(context)
+            except FacereError:
+                context.observed.is_extending = True
+                raise
 
         try:
             take_lock()
@@ -300,6 +345,10 @@ def _run(
                 )
                 _build.build(invocation, project, options.targets)
         finally:
+            if context.observed is not None and lock.is_held:
+                state_path = posixpath.join(context.state_dir, STATE_FILE_NAME)
+                with contextlib.suppress(OSError):
+                    context.observed.save(state_path)
             lock.give()
 
 

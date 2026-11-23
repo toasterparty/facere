@@ -62,6 +62,15 @@ def wait_for(path: Path) -> str:
     return path.read_text()
 
 
+def wait_for_later_change_time(path: Path) -> None:
+    """Return once a file written now gets a later change time than `path`, as an edit made after an invocation does once the file system's clock ticks."""
+    probe = path.with_name(".tick")
+    probe.write_bytes(b"")
+    while probe.stat().st_ctime_ns <= path.stat().st_ctime_ns:
+        probe.write_bytes(b"")
+    probe.unlink()
+
+
 def closing_line(root: Path, *args: str) -> str:
     """Return the last line of stderr from `run_fac(root, *args)`, which must succeed."""
     result = run_fac(root, *args)
