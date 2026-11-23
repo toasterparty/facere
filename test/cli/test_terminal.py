@@ -1,4 +1,4 @@
-"""What a command sees of the terminal Facere runs on: a rule's command gets a terminal of its own as stderr alone, while a task's commands, and those of a rule declared with terminal=True, share Facere's."""
+"""What a command sees of the terminal Facere runs on: a rule's command gets a terminal of its own as stderr alone, while a task's commands, and a rule's running live, share Facere's."""
 
 import ast
 import sys
@@ -35,10 +35,22 @@ def test_rule_command_gets_a_terminal_as_stderr_alone_sized_as_facere_and_unable
 
 @_POSIX_ONLY
 @pytest.mark.project("probe")
-def test_rule_declared_with_terminal_shares_facere_standard_streams(root: Path) -> None:
-    facts, _ = _probe(root, "terminal_command", "terminal.txt")
+def test_live_rule_command_shares_facere_standard_streams(root: Path) -> None:
+    facts, _ = _probe(root, "live_command", "live.txt")
 
     assert facts == [True, True, True, False, (COLUMNS, ROWS), True]
+
+
+@_POSIX_ONLY
+@pytest.mark.project("probe")
+def test_live_rule_command_shows_between_what_its_recipe_printed_before_and_after(
+    root: Path,
+) -> None:
+    process, master = start_on_terminal(root, "ordered")
+    shown = read_all(master)
+    assert process.wait(timeout=30) == 0, shown
+
+    assert shown.index("printed before") < shown.index("shown live") < shown.index("printed after")
 
 
 @_POSIX_ONLY

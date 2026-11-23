@@ -12,10 +12,10 @@ import shlex
 import signal
 import sys
 import threading
-from collections.abc import Mapping
+from collections.abc import Generator, Mapping
 from typing import IO, TYPE_CHECKING
 
-from facere._context import Context, Recipe, get_context
+from facere._context import Console, Context, Recipe, get_context
 from facere._diagnostics import format_entering, format_leaving
 from facere._output import Chunk, write_data
 from facere._undeclared import note_misuse, validate_command_args, validate_program
@@ -92,15 +92,16 @@ def run(
     stdout: str | None = None,
     stderr: str | None = None,
     timeout: float | None = None,
-    quiet: bool = False,
+    console: Console | None = None,
 ) -> None:
     """Run one command without a shell, raising subprocess.CalledProcessError on a non-zero exit.
 
     Each of `args` is one string, or a list or tuple of strings that contributes each of its items in order, so `fac.run(CC, CFLAGS, "-c", source)` needs no `*`. The first string is the program, the rest its arguments. The program resolves through `PATH`, or against the root when it contains a separator, and raises FileNotFoundError when it doesn't resolve. The command inherits Facere's environment, with what `fac.env` set over it, then `env` over both, where `None` unsets a variable. `cwd` is relative to the root. `stdin`, `stdout`, and `stderr` name files, relative to the root, to feed the command and fill, and a file both `stdout` and `stderr` name receives both streams.
 
-    In a rule, the command reads an empty stdin unless `stdin` names a file, has no terminal to prompt on, and its output is kept and printed whole once the rule finishes, unless `quiet` is true, which hides it. On failure the output travels in the raised error, which Facere prints if it fails the recipe. In a task, and in a rule declared with `terminal=True`, the command shares Facere's standard streams and its terminal instead, unless `quiet` is true, which runs it as in any other rule. `timeout` kills the command after that many seconds and raises subprocess.TimeoutExpired. Call it on the recipe's own thread, or in a task from any thread.
+    `console` takes the fac.Console member that says how the command meets the terminal, else the default fac.Console names. `timeout` kills the command after that many seconds and raises subprocess.TimeoutExpired. Call it on the recipe's own thread, or in a task from any thread.
     """
     context, recipe = _get_recipe("fac.run")
+    mode = _resolve_console(context, recipe, console)
     _run(
         "fac.run",
         context,
@@ -112,8 +113,8 @@ def run(
         stdout=stdout,
         stderr=stderr,
         timeout=timeout,
-        is_live=recipe.has_terminal and not quiet,
-        is_shown=not (quiet or context.is_quiet),
+        is_live=mode is Console.LIVE,
+        is_shown=mode is Console.AFTER,
     )
 
 
@@ -127,7 +128,7 @@ def capture(
 ) -> str:
     """Run one command as `fac.run` does in a rule, and return its stdout decoded as UTF-8, printing nothing when it succeeds.
 
-    It takes the arguments of `fac.run` but `stdout` and `quiet`, and behaves alike in a rule and a task: the command reads an empty stdin unless `stdin` names a file, and has no terminal.
+    It takes the arguments of `fac.run` but `stdout` and `console`, and behaves alike in a rule and a task: the command reads an empty stdin unless `stdin` names a file, and has no terminal.
     """
     context, recipe = _get_recipe("fac.capture")
     out = _run(
@@ -158,6 +159,21 @@ def _get_recipe(caller: str) -> tuple[Context, Recipe]:
     return context, recipe
 
 
+def _resolve_console(context: Context, recipe: Recipe, console: Console | None) -> Console:
+    """Return the mode a command runs in: `console`, else its recipe's default, captured only on failure where `fac -q` asks."""
+    if console is not None and not isinstance(console, Console):
+        raise TypeError(f"fac.run takes a fac.Console member as console=, not {console!r}")
+    if console is None:
+        console = Console.LIVE if recipe.is_task else context.console
+    if console is not Console.LIVE:
+        return Console.ON_FAILURE if context.is_quiet else console
+    if not recipe.is_task and not context.has_terminal:
+        raise RuntimeError(
+            "fac.run runs a rule's command with console=fac.Console.LIVE only where Facere's standard input and standard error are a terminal"
+        )
+    return console
+
+
 def _run(
     caller: str,
     context: Context,
@@ -175,7 +191,7 @@ def _run(
 ) -> bytes:
     """Run the command for `caller` and return what it wrote to a captured stdout.
 
-    A live command shares Facere's streams. Any other is captured, and where `is_shown`, its output joins the recipe's, or else goes straight to Facere's streams where the recipe has the terminal.
+    A live command shares Facere's streams, and in a rule holds the terminal while it runs. Any other is captured, and where `is_shown`, its output joins a rule's recipe's, or goes straight to Facere's streams in a task.
     """
     import subprocess
 
@@ -201,29 +217,25 @@ def _run(
                 if stdout is not None and _is_same_path(stderr, stdout)
                 else files.enter_context(open(stderr, "wb"))
             )
-        if is_live and cwd is not None:
-            print(format_entering(cwd), file=sys.stderr, flush=True)
         try:
-            returncode, out, err = _spawn(
-                context,
-                [program, *argv[1:]],
-                cwd=cwd,
-                env=command_env,
-                stdin=stdin_stream,
-                stdout=stdout_stream,
-                stderr=stderr_stream,
-                timeout=timeout,
-                is_live=is_live,
-                is_task=recipe.is_task,
-            )
+            with _share_streams(context, recipe, cwd) if is_live else contextlib.nullcontext():
+                returncode, out, err = _spawn(
+                    context,
+                    [program, *argv[1:]],
+                    cwd=cwd,
+                    env=command_env,
+                    stdin=stdin_stream,
+                    stdout=stdout_stream,
+                    stderr=stderr_stream,
+                    timeout=timeout,
+                    is_live=is_live,
+                    is_task=recipe.is_task,
+                )
         except subprocess.TimeoutExpired as error:
             # Without pipes, communicate() reports the time remaining, not the limit set.
             assert timeout is not None
             limit = subprocess.TimeoutExpired(argv, timeout, error.output, error.stderr)
             raise _locate(limit, cwd, is_live) from None
-        finally:
-            if is_live and cwd is not None:
-                print(format_leaving(cwd), file=sys.stderr, flush=True)
     if returncode != 0:
         failure = subprocess.CalledProcessError(
             returncode,
@@ -232,7 +244,7 @@ def _run(
             stderr=None if is_live else err.decode("utf-8", "surrogateescape"),
         )
         raise _locate(failure, cwd, is_live)
-    if is_shown and not is_live and (err or out):
+    if is_shown and (err or out):
         _show(recipe, [(True, err), (False, out)], cwd)
     return out
 
@@ -247,11 +259,40 @@ def _locate(
 
 
 def _show(recipe: Recipe, chunks: list[Chunk], cwd: str | None) -> None:
-    if cwd is not None:
-        chunks = [(True, f"{format_entering(cwd)}\n"), *chunks, (True, f"{format_leaving(cwd)}\n")]
-    if not recipe.has_terminal:
+    entering, leaving = _frame(cwd)
+    chunks = [*entering, *chunks, *leaving]
+    if recipe.is_task:
+        _write_now(chunks)
+    else:
         recipe.output.extend(chunks)
+
+
+@contextlib.contextmanager
+def _share_streams(context: Context, recipe: Recipe, cwd: str | None) -> Generator[None]:
+    """Frame the block with the lines naming `cwd`, and in a rule hold the terminal for it, first writing what the recipe wrote so far, so its output keeps its order."""
+    entering, leaving = _frame(cwd)
+    if recipe.is_task:
+        _write_now(entering)
+        try:
+            yield
+        finally:
+            _write_now(leaving)
         return
+    assert context.output is not None
+    before = [*recipe.output, *entering]
+    recipe.output.clear()
+    with context.output.hold_terminal(before, leaving):
+        yield
+
+
+def _frame(cwd: str | None) -> tuple[list[Chunk], list[Chunk]]:
+    """Return the lines Facere prints before and after the output of a command that ran in `cwd`."""
+    if cwd is None:
+        return [], []
+    return [(True, f"{format_entering(cwd)}\n")], [(True, f"{format_leaving(cwd)}\n")]
+
+
+def _write_now(chunks: list[Chunk]) -> None:
     for is_stderr, data in chunks:
         write_data(sys.stderr if is_stderr else sys.stdout, data)
 

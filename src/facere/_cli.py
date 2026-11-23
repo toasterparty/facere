@@ -107,7 +107,7 @@ def main(args: list[str]) -> int:
         "-q",
         "--quiet",
         action="store_true",
-        help="hide the output of every successful command a rule runs",
+        help="hide the output of every successful command not running live, as fac.Console.ON_FAILURE does",
     )
     parser.add_argument(
         "-v",
@@ -249,6 +249,7 @@ def _run(
         fac_py=fac_py,
         is_quiet=options.quiet,
         is_verbose=options.verbose,
+        has_terminal=_is_terminal(sys.stdin) and _is_terminal(sys.stderr),
         commands=Commands(),
         window_size=_try_fetch_window_size(),
     )
@@ -284,9 +285,9 @@ def _run(
                 pin_status(sys.stderr) as status_cb,
                 capture_recipes(context) as (stdout, stderr),
             ):
+                context.output = Output(stdout, stderr, status_cb)
                 invocation = _build.Invocation(
                     context=context,
-                    output=Output(stdout, stderr, status_cb),
                     signals=signals,
                     summary=summary,
                     lock=lock,
@@ -295,7 +296,6 @@ def _run(
                     take_lock_cb=take_lock,
                     calc_jobs=lambda: options.jobs or _calc_default_jobs(),
                     keep_going=options.keep_going,
-                    has_terminal=_is_terminal(sys.stdin) and _is_terminal(stderr),
                     task_args=task_args,
                 )
                 _build.build(invocation, project, options.targets)

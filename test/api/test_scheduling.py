@@ -125,12 +125,17 @@ def test_project_is_loaded_once_where_no_target_follows_the_task(root: Path, fac
 
 
 @pytest.mark.project("terminal_rule")
-def test_rule_that_needs_a_terminal_fails_naming_itself_without_one(root: Path, fac: Fac) -> None:
+def test_live_rule_command_fails_at_once_without_a_terminal_naming_its_rule(
+    root: Path, fac: Fac
+) -> None:
     result = fac()
 
     assert result.status == 1
-    assert result.err.splitlines() == [
-        "fac.py:6:2: error: rule 'sign' (build/signed.txt) failed: it is declared with terminal=True, and Facere's standard input and standard error are no terminal",
+    lines = result.err.splitlines()
+    assert lines[0] == "Traceback (most recent call last):"
+    assert lines[-3].startswith("RuntimeError: ")
+    assert lines[-2:] == [
+        "fac.py:6:2: error: rule 'sign' (build/signed.txt) failed",
         "Failed after <elapsed>.",
     ]
     assert not (root / "build" / "signed.txt").exists()

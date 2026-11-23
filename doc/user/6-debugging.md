@@ -26,7 +26,7 @@ A Python exception in a recipe prints its traceback in place of the command. *(0
 
 ## Step through a recipe
 
-Recipes are ordinary Python running inside `fac`, so `print` and `breakpoint()` work in them. Adding one changes the recipe's code, so the rule executes once more. *(0.4)* A rule's prints appear once it finishes, so to step through a rule with `breakpoint()`, also declare it with `terminal=True`, which gives it the terminal while it executes. A `print` at module level runs on every invocation, as the file loads.
+Recipes are ordinary Python running inside `fac`, so `print` and `breakpoint()` work in them. Adding one changes the recipe's code, so the rule executes once more. *(0.4)* A rule's prints appear once it finishes, and so would `breakpoint()`'s prompt, so step through a rule with `pdb.Pdb(stdout=sys.__stdout__).set_trace()`, which writes to the terminal at once, and run `fac -j 1` so no other rule's output mixes in. A task prints as it runs, so `breakpoint()` works there as written. A `print` at module level runs on every invocation, as the file loads.
 
 ## Work out why a rule did or did not execute
 

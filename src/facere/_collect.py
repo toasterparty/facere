@@ -48,7 +48,7 @@ from facere._hash import (
 from facere._version import VERSION
 
 MODULE_NAME = "__fac__"
-_RESERVED_OPTIONS = ("each", "name", "default", "pool", "terminal", "always", "clear")
+_RESERVED_OPTIONS = ("each", "name", "default", "pool", "always", "clear")
 _FINGERPRINT_FORMAT = b"facere fingerprint 8"
 _UNREADABLE_SOURCE = (OSError, LookupError, SyntaxError, ValueError)
 _PATH_ANNOTATIONS = {
@@ -93,7 +93,7 @@ def _diagnose(subject: _Declared, message: str, notes: tuple[Note, ...] = ()) ->
 class Definition:
     """A rule, or a task when `is_task`, with every parameter filled.
 
-    `args_slot` places a task's fac.Args parameter: an index into `args`, a key of `kwargs`, or None when it has none. `path_values` holds the paths of each fac.Input, fac.OrderOnly, and fac.Output parameter, and `order_only_parameters` names the fac.OrderOnly ones among them. `has_terminal` holds for a task, and for a rule whose commands share Facere's streams as a task's do.
+    `args_slot` places a task's fac.Args parameter: an index into `args`, a key of `kwargs`, or None when it has none. `path_values` holds the paths of each fac.Input, fac.OrderOnly, and fac.Output parameter, and `order_only_parameters` names the fac.OrderOnly ones among them.
     """
 
     is_task: bool
@@ -103,7 +103,6 @@ class Definition:
     is_default: bool
     is_always: bool
     pool: Pool | None
-    has_terminal: bool
     fn: Callable[..., object]
     args: tuple[object, ...]
     kwargs: dict[str, object]
@@ -204,7 +203,7 @@ def _hash_unfingerprinted(
     imported: list[str],
     trees: dict[str, ast.Module],
 ) -> dict[str, str]:
-    """Return a digest of the code that no fingerprint holds in each of the `imported` sources: all but recipes, the functions they wrap, and top-level statements. A task's recipe is left out with the rest, since a task executes whenever requested, and a source a rule inputs is left out whole, since its content joins that rule's fingerprint."""
+    """Return calc_unfingerprinted_digest of each of the `imported` sources, by path, treating every recipe and the function it wraps as fingerprinted, a task's too, since a task executes whenever requested. A source a rule inputs is left out whole, since its content joins that rule's fingerprint."""
     recipes = [
         code.__code__
         for declaration in context.declarations
@@ -435,8 +434,6 @@ def _define(
             problems.append(f"{decorator}({key}=...) names no parameter of {fn.__name__}")
     if declaration.pool is not None and not isinstance(declaration.pool, Pool):
         problems.append(f"pool= takes what fac.pool returned, not {declaration.pool!r}")
-    if not isinstance(declaration.has_terminal, bool):
-        problems.append(f"terminal= takes True or False, not {declaration.has_terminal!r}")
     if problems:
         return []
     definitions = []
@@ -642,7 +639,6 @@ def _build_definition(
         is_default=declaration.is_default,
         is_always=declaration.is_always,
         pool=declaration.pool if isinstance(declaration.pool, Pool) else None,
-        has_terminal=declaration.has_terminal,
         fn=declaration.fn,
         args=args,
         kwargs=kwargs,

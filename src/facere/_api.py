@@ -9,6 +9,7 @@ from pathlib import PurePosixPath
 from typing import Annotated, Any, TypeVar, overload
 
 from facere._context import (
+    Console,
     Context,
     Declaration,
     Kind,
@@ -51,7 +52,6 @@ def rule(
     default: bool = False,
     always: bool = False,
     pool: Pool | None = None,
-    terminal: bool = False,
     **values: object,
 ) -> Callable[[_F], _F]: ...
 
@@ -65,12 +65,11 @@ def rule(
     default: bool = False,
     always: bool = False,
     pool: Pool | None = None,
-    terminal: bool = False,
     **values: object,
 ) -> _F | Callable[[_F], _F]:
     """Define rules from a function, returned unchanged.
 
-    The function's signature declares what each rule reads and writes: a parameter annotated `fac.Input` or `list[fac.Input]` holds the files or directories it reads, one annotated `fac.OrderOnly` or `list[fac.OrderOnly]` those it may read, one annotated `fac.Output` or `list[fac.Output]` files or directories it writes, and any other parameter a value. `each=` takes an iterable of dicts, read once here, and defines one rule per dict, each key filling the parameter it names. Keyword arguments fill the parameters they name in every rule, and defaults fill the rest. `name=` replaces the function's name, less one trailing underscore, on the command line, and `default=True` builds the rules when `fac` gets no targets, in place of every rule. `always=True` executes the rules whenever a target reaches them, for what Facere can't see change, such as a program's version, while the rules downstream execute only when an output's content changed. `pool=` takes what `fac.pool` returned, and caps how many of the rules given that pool execute at once. `terminal=True` gives the rules' commands and prints Facere's standard streams and its terminal, as a task's have, for a rule that needs a person, such as one signing with a PIN: one such rule executes at a time, and without a terminal it fails.
+    The function's signature declares what each rule reads and writes: a parameter annotated `fac.Input` or `list[fac.Input]` holds the files or directories it reads, one annotated `fac.OrderOnly` or `list[fac.OrderOnly]` those it may read, one annotated `fac.Output` or `list[fac.Output]` files or directories it writes, and any other parameter a value. `each=` takes an iterable of dicts, read once here, and defines one rule per dict, each key filling the parameter it names. Keyword arguments fill the parameters they name in every rule, and defaults fill the rest. `name=` replaces the function's name, less one trailing underscore, on the command line, and `default=True` builds the rules when `fac` gets no targets, in place of every rule. `always=True` executes the rules whenever a target reaches them, for what Facere can't see change, such as a program's version, while the rules downstream execute only when an output's content changed. `pool=` takes what `fac.pool` returned, and caps how many of the rules given that pool execute at once.
     """
     rows = None if each is None else tuple(each)
     return _declarator(
@@ -80,7 +79,6 @@ def rule(
         is_default=default,
         is_always=always,
         pool=pool,
-        has_terminal=terminal,
         rows=rows,
         values=values,
     )
@@ -101,7 +99,7 @@ def task(
 ) -> _F | Callable[[_F], _F]:
     """Define a task from a function, returned unchanged.
 
-    A task takes inputs and values only, and executes whenever a target reaches it, alone, after the rules that output its inputs, with its commands sharing Facere's standard streams and its terminal. A parameter annotated `fac.Args` holds the arguments after `--` on the command line when the task is among the targets, else its default, else `()`. `name=`, `default=True`, and keyword arguments mean what they mean for `fac.rule`.
+    A task takes inputs and values only, and executes whenever a target reaches it, alone, after the rules that output its inputs, with its commands running `fac.Console.LIVE` by default. A parameter annotated `fac.Args` holds the arguments after `--` on the command line when the task is among the targets, else its default, else `()`. `name=`, `default=True`, and keyword arguments mean what they mean for `fac.rule`.
     """
     return _declarator(
         fn,
@@ -110,7 +108,6 @@ def task(
         is_default=default,
         is_always=False,
         pool=None,
-        has_terminal=True,
         rows=None,
         values=values,
     )
@@ -249,6 +246,28 @@ def epoch(number: int) -> None:
     context.epoch_location = earlier or location
 
 
+def console(mode: Console) -> None:
+    """Make `mode`, a fac.Console member, the default for the commands of every rule, as in `fac.console(fac.Console.ON_FAILURE)` for a project whose tools print only noise when they succeed.
+
+    Call it while fac.py loads. An explicit `console=` to `fac.run` overrides it, and a task's commands keep `LIVE`. Calls may repeat the mode but never change it.
+    """
+    context = _get_loading_context("fac.console")
+    if not isinstance(mode, Console):
+        raise TypeError(f"fac.console takes a fac.Console member, not {mode!r}")
+    location, _ = find_caller_locations(context.fac_py)
+    earlier = context.console_location
+    if earlier is not None and context.console is not mode:
+        raise FacereError(
+            Diagnostic(
+                location,
+                f"fac.console sets {mode.name}, though another call set {context.console.name}",
+                (Note(earlier, "fac.console sets the default here"),),
+            )
+        )
+    context.console = mode
+    context.console_location = earlier or location
+
+
 def sources(*patterns: str) -> list[str]:
     """Return the files under the root that match any of `patterns`, sorted, as paths relative to the root with `/`.
 
@@ -335,7 +354,6 @@ def _declarator(
     is_default: bool,
     is_always: bool,
     pool: object,
-    has_terminal: bool,
     rows: tuple[object, ...] | None,
     values: dict[str, object],
 ) -> _F | Callable[[_F], _F]:
@@ -350,7 +368,6 @@ def _declarator(
                 is_default=is_default,
                 is_always=is_always,
                 pool=pool,
-                has_terminal=has_terminal,
                 rows=rows,
                 values=values,
                 location=location,

@@ -93,7 +93,7 @@ class _EndedError(Exception):
 class Invocation:
     """What the command line gives a build, and what the build's batches share.
 
-    `collect_cb` loads the project again, `take_lock_cb` takes the output directory's lock unless it is held, and `calc_jobs` returns how many recipes may execute at once. `has_terminal` says whether a rule that needs a person can reach one. `reached` counts the rules and tasks reached so far, and `built` holds each output this invocation built, with its rule and the hash it left.
+    `collect_cb` loads the project again, `take_lock_cb` takes the output directory's lock unless it is held, and `calc_jobs` returns how many recipes may execute at once. `reached` counts the rules and tasks reached so far, and `built` holds each output this invocation built, with its rule and the hash it left.
     """
 
     __slots__ = (
@@ -101,10 +101,8 @@ class Invocation:
         "calc_jobs",
         "collect_cb",
         "context",
-        "has_terminal",
         "keep_going",
         "lock",
-        "output",
         "reached",
         "signals",
         "start_dir",
@@ -117,7 +115,6 @@ class Invocation:
         self,
         *,
         context: Context,
-        output: Output,
         signals: Signals,
         summary: Summary,
         lock: OutputLock,
@@ -126,11 +123,9 @@ class Invocation:
         take_lock_cb: Callable[[], None],
         calc_jobs: Callable[[], int],
         keep_going: bool,
-        has_terminal: bool,
         task_args: tuple[str, ...] | None,
     ) -> None:
         self.context = context
-        self.output = output
         self.signals = signals
         self.summary = summary
         self.lock = lock
@@ -139,10 +134,15 @@ class Invocation:
         self.take_lock_cb = take_lock_cb
         self.calc_jobs = calc_jobs
         self.keep_going = keep_going
-        self.has_terminal = has_terminal
         self.task_args = task_args
         self.reached = 0
         self.built: dict[str, tuple[Definition, str]] = {}
+
+    @property
+    def output(self) -> Output:
+        """Facere's own streams, which the context holds while a build runs."""
+        assert self.context.output is not None
+        return self.context.output
 
 
 class _Target:
@@ -447,7 +447,6 @@ class _Builder:
         self._idle = 0
         self._state_lock = threading.Lock()
         self._snapshot_lock = threading.Lock()
-        self._terminal_lock = threading.Lock()
         self._snapshot: Snapshot | None = None
         self.running: dict[int, Definition] = {}
         # Each rule that executed and awaits its Built.
@@ -796,25 +795,12 @@ class _Builder:
             os.makedirs(os.path.dirname(output) or ".", exist_ok=True)
         self._announce(rule, start.position)
         snapshot = self._ensure_snapshot()
-        recipe = self._execute_with_terminal(rule) if rule.has_terminal else self._execute(rule)
+        recipe = self._execute(rule)
         with self._mutex:
             producers = {path: self._find_producer(path) for path in recipe.reported}
         for path in sorted(recipe.reported):
             self._validate_ordered(step, path, producers[path], recipe)
         return recipe, self._find_moved_inputs(recipe, before, producers, snapshot)
-
-    def _execute_with_terminal(self, rule: Definition) -> Recipe:
-        """Execute the recipe of `rule`, which needs a person, alone at the terminal, while every other rule's output waits."""
-        if not self.invocation.has_terminal:
-            reason = "it is declared with terminal=True, and Facere's standard input and standard error are no terminal"
-            raise _RecipeFailure(rule, reason=reason)
-        output = self.invocation.output
-        with self._terminal_lock:
-            output.take_terminal()
-            try:
-                return self._execute(rule)
-            finally:
-                output.give_terminal()
 
     def _ensure_snapshot(self) -> Snapshot:
         """Return the snapshot, taken before the session's first recipe starts, since every worker asks for it first."""
@@ -1012,7 +998,6 @@ class _Builder:
         }
         return Recipe(
             is_task=definition.is_task,
-            has_terminal=definition.has_terminal,
             tracked=frozenset(map(calc_path_key, (*definition.inputs, *definition.outputs))),
             order_only=frozenset(map(calc_path_key, definition.order_only)),
             exempt=frozenset(data_paths),

@@ -257,7 +257,7 @@ def calc_code_text(fn: types.FunctionType, trees: dict[str, ast.Module]) -> str:
 def calc_unfingerprinted_digest(
     path: str, recipes: Iterable[types.CodeType], trees: dict[str, ast.Module]
 ) -> str:
-    """Return a digest of the code in the Python file at `path` that no fingerprint holds: the syntax trees of its functions and classes, without positions or docstrings, leaving out the `recipes` defined there wherever they lie, and every top-level statement, whose values a fingerprint holds where a recipe reads them. Parses the file into `trees` once."""
+    """Return a digest of the code in the Python file at `path` that no fingerprint holds: its functions and classes, less the `recipes` defined there wherever they lie, ignoring positions and docstrings. Top-level statements are left out, since a fingerprint holds the values a recipe reads of them. Parses the file into `trees` once."""
     codes = [code for code in recipes if code.co_filename == path]
     stripped = _strip_docstrings(parse(path, trees))
     _remove_definitions(stripped, codes)

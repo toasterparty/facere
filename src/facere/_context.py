@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, NamedTuple
 
 if TYPE_CHECKING:
     from facere._command import Commands
+    from facere._output import Output
 
 STATE_DIR_NAME = ".fac"
 STATE_FILE_NAME = "state.db"
@@ -22,6 +23,17 @@ class Kind(enum.Enum):
     OUTPUT = enum.auto()
     ORDER_ONLY = enum.auto()
     ARGS = enum.auto()
+
+
+class Console(enum.Enum):
+    """How a command `fac.run` runs meets the terminal, given as `fac.run(..., console=fac.Console.LIVE)`.
+
+    `LIVE` shares Facere's standard input, output, and error, so the command prints as it runs and may prompt. It is a task's default. In a rule, one such command runs at a time, holding the terminal while other rules' output waits, and it fails at once where Facere's standard input or error is no terminal. `AFTER` captures the output and prints it once the rule finishes, and is a rule's default unless `fac.console` sets another. `ON_FAILURE` captures the output and prints it only where the command's failure fails the recipe, and `fac -q` runs every command not running `LIVE` this way. A captured command reads an empty stdin unless `stdin=` names a file, and has no terminal to prompt on. In both captured modes a failing command's output travels in the raised error, so a failure the recipe catches prints nothing.
+    """
+
+    LIVE = enum.auto()
+    AFTER = enum.auto()
+    ON_FAILURE = enum.auto()
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,7 +56,6 @@ class Declaration:
     is_default: bool
     is_always: bool
     pool: object
-    has_terminal: bool
     rows: tuple[object, ...] | None
     values: dict[str, object]
     location: Location
@@ -69,11 +80,10 @@ class Pool:
 class Recipe:
     """One executing recipe, with what the undeclared-path check and fac.add_inputs track of it.
 
-    `has_terminal` holds for a task and for a rule declared with `terminal=True`, whose commands and prints share Facere's own streams. Any other recipe's are captured in `output`, in the order written, each chunk for stderr or else stdout. Every path is keyed by calc_path_key, but `reported`, which keeps each reported path as normalize returns it, so two files differing only in case stay apart where the file system tells them apart. `tracked` holds the rule's inputs and outputs, `exempt` what its `str` parameters hold, and `output_keys` every output in the project. A recipe may open a shared module, but no command may name one, since what a command reads joins a fingerprint only as a declared input. `reported_names` holds the file name of every path reported outside `tracked`, dropped ones included. `undeclared`, the first use the check rejected, fails the rule however the recipe treats the error, as does `misuse`, the first call a thread the recipe started made that only the recipe's own thread may.
+    A task's commands and prints share Facere's own streams. A rule's are captured in `output`, in the order written, each chunk for stderr or else stdout, but for a command running `LIVE`. Every path is keyed by calc_path_key, but `reported`, which keeps each reported path as normalize returns it, so two files differing only in case stay apart where the file system tells them apart. `tracked` holds the rule's inputs and outputs, `exempt` what its `str` parameters hold, and `output_keys` every output in the project. A recipe may open a shared module, but no command may name one, since what a command reads joins a fingerprint only as a declared input. `reported_names` holds the file name of every path reported outside `tracked`, dropped ones included. `undeclared`, the first use the check rejected, fails the rule however the recipe treats the error, as does `misuse`, the first call a thread the recipe started made that only the recipe's own thread may.
     """
 
     is_task: bool
-    has_terminal: bool
     tracked: frozenset[str]
     order_only: frozenset[str]
     exempt: frozenset[str]
@@ -98,7 +108,7 @@ class _Threads(threading.local):
 class Context:
     """What one invocation shares.
 
-    `is_loading` holds while a fac.py loads. `epoch` is what fac.epoch set, called at `epoch_location`, else 0 and None. `task` is the task executing, which executes alone, so any thread without a recipe of its own acts for it. `window_size` is the terminal's rows and columns where Facere's stderr is a terminal a rule's command may be given one like, else None. `give_lock_cb` gives the output directory's lock on a task's request.
+    `is_loading` holds while a fac.py loads. `epoch` is what fac.epoch set, called at `epoch_location`, else 0 and None. `task` is the task executing, which executes alone, so any thread without a recipe of its own acts for it. `console` is the default fac.console set for rules' commands, called at `console_location`, else AFTER and None. `has_terminal` says whether Facere's stdin and stderr are both terminals, so a rule's command may run `LIVE`. `window_size` is the terminal's rows and columns where Facere's stderr is a terminal a rule's command may be given one like, else None. `output` is Facere's own streams while a build runs. `give_lock_cb` gives the output directory's lock on a task's request.
     """
 
     root: str
@@ -106,15 +116,19 @@ class Context:
     fac_py: str
     is_quiet: bool
     is_verbose: bool
+    has_terminal: bool
     commands: "Commands"
     declarations: list[Declaration] = field(default_factory=list)
     env: dict[str, str | None] = field(default_factory=dict)
     env_locations: dict[str, Location] = field(default_factory=dict)
     epoch: int = 0
     epoch_location: Location | None = None
+    console: Console = Console.AFTER
+    console_location: Location | None = None
     is_loading: bool = False
     task: Recipe | None = None
     window_size: tuple[int, int] | None = None
+    output: "Output | None" = None
     give_lock_cb: Callable[[], None] | None = None
     _threads: _Threads = field(default_factory=_Threads)
     _starters_lock: threading.Lock = field(default_factory=threading.Lock)
@@ -176,6 +190,8 @@ class Context:
         self.env_locations.clear()
         self.epoch = 0
         self.epoch_location = None
+        self.console = Console.AFTER
+        self.console_location = None
 
 
 _current: Context | None = None
