@@ -11,6 +11,7 @@ What running, testing, and debugging Facere natively on Windows teaches, beyond 
 - CPython runs a Python-level SIGBREAK handler only when the main thread next executes bytecode, and `Event.wait(timeout)` is not interrupted by SIGBREAK, so Facere sees a `CTRL_BREAK_EVENT` up to `WAKE_S` late. A worker meanwhile starts the next rule on its own, so a test that creates `go` right after the break races. `test/cli/test_stop/break_rule/fac.py` waits on the installed handler's `__self__.is_stop_requested` to order it.
 - A task's command killed by the console's `CTRL_BREAK_EVENT` exits `0xC000013A` (3221225786). The venv launcher survives the break and passes the child's status through.
 - `SetConsoleCtrlHandler(None, True)` is inherited by children created after it, so a Ctrl-C driver sets it only after starting `fac`. A driver in `CREATE_NEW_CONSOLE` running `GenerateConsoleCtrlEvent(0, 0)` works from pytest, flashing a console window.
+- Git Bash, which CI's `shell: bash` runs, starts native programs with Ctrl-C ignored, and every descendant inherits that, `CREATE_NEW_CONSOLE` included. A Ctrl-C driver therefore calls `SetConsoleCtrlHandler(None, False)` before starting `fac`, or `fac` never sees the event and the test fails at its deadline from Git Bash while passing from PowerShell.
 
 ## Consoles
 
@@ -24,5 +25,6 @@ What running, testing, and debugging Facere natively on Windows teaches, beyond 
 
 ## Files and messages
 
+- `os.stat`'s `st_ctime_ns` is the creation time on Windows, through Python 3.15 at least, so no rewrite moves it, and two files created in one timer tick share it for good. A test reads the change time the hash cache uses through `facere._filesystem.read_change_time_ns`. A loop waiting for a rewrite's `st_ctime_ns` to pass another file's once spun until CI's job timeout.
 - An `OSError`'s message shows its filename with `repr`, so backslashes appear doubled in messages. Build expected text with `{str(path)!r}`.
 - PowerShell's `Set-Content` and `Add-Content` write CRLF, which `.gitattributes` (`eol=lf`) flags. Write files with `[IO.File]::WriteAllText` or an editor.

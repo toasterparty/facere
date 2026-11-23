@@ -11,10 +11,35 @@ from pathlib import Path
 
 import pytest
 
-from ..helpers import edit, mask_elapsed, wait_for
+from ..helpers import edit, is_running, mask_elapsed, run_in_new_console, wait_for
 
 WATCHING = "fac: watching for changes"
 _DEADLINE_S = 30
+
+# Started in a console of its own, as test/cli/test_stop.py's Ctrl-C driver is, it sends Ctrl-C once the watch's cycle runs
+# its task's command, and reports the watch's exit and the PIDs of the cycle and the command.
+_CTRL_C_DRIVER = """
+import ctypes, json, subprocess, sys, time
+from pathlib import Path
+
+root, report = Path(sys.argv[1]), Path(sys.argv[2])
+kernel32 = ctypes.windll.kernel32
+assert kernel32.SetConsoleCtrlHandler(None, False)
+watch = subprocess.Popen(
+    [sys.executable, "-m", "facere", "--watch", "serve"], cwd=root, stderr=subprocess.PIPE, text=True
+)
+pid_files = [root / "build" / ".fac" / "lock.pid", root / "build" / "pid"]
+deadline = time.monotonic() + 30
+while not all(path.exists() and path.read_text() for path in pid_files):
+    assert time.monotonic() < deadline, "the cycle never ran its command"
+    time.sleep(0.01)
+cycle_pid, command_pid = (int(path.read_text()) for path in pid_files)
+assert kernel32.SetConsoleCtrlHandler(None, True)
+assert kernel32.GenerateConsoleCtrlEvent(0, 0)
+_, stderr = watch.communicate(timeout=30)
+outcome = {"status": watch.returncode, "stderr": stderr, "pids": [cycle_pid, command_pid]}
+report.write_text(json.dumps(outcome))
+"""
 
 
 class _Watch:
@@ -104,6 +129,38 @@ def test_a_save_rebuilds(root: Path, watch: Callable[..., _Watch]) -> None:
     assert (root / "build" / "copy.txt").read_text() == "two\nother\n"
 
 
+@pytest.mark.project("pages")
+def test_a_save_to_a_file_a_glob_matched_rebuilds(root: Path, watch: Callable[..., _Watch]) -> None:
+    session = watch("index")
+    session.read_cycle()
+
+    (root / "pages" / "a.txt").write_text("edited\n")
+
+    assert session.read_cycle() == [
+        "fac: change in pages/a.txt",
+        "Finished in <elapsed>. Executed 1 rule.",
+        WATCHING,
+    ]
+    assert (root / "build" / "index.txt").read_text() == "edited\n"
+
+
+@pytest.mark.project("pages")
+def test_a_new_file_in_a_directory_a_glob_listed_rebuilds(
+    root: Path, watch: Callable[..., _Watch]
+) -> None:
+    session = watch("index")
+    session.read_cycle()
+
+    (root / "pages" / "b.txt").write_text("b\n")
+
+    assert session.read_cycle() == [
+        "fac: change in pages/",
+        "Finished in <elapsed>. Executed 1 rule.",
+        WATCHING,
+    ]
+    assert (root / "build" / "index.txt").read_text() == "a\nb\n"
+
+
 @pytest.mark.project("copy")
 def test_an_unchanged_save_a_touch_and_facere_s_own_writes_start_no_cycle(
     root: Path, watch: Callable[..., _Watch]
@@ -111,7 +168,8 @@ def test_an_unchanged_save_a_touch_and_facere_s_own_writes_start_no_cycle(
     session = watch("copy")
     session.read_cycle()
 
-    (root / "source.txt").write_text("one\n")
+    # Bytes, since text mode on Windows would save "one\r\n", a change.
+    (root / "source.txt").write_bytes(b"one\n")
     (root / "source.txt").touch()
     (root / "other.txt").write_text("changed\n")
 
@@ -170,6 +228,23 @@ def test_a_change_restarts_a_named_task(root: Path, watch: Callable[..., _Watch]
     assert session.read_line() == "fac: change in source.txt"
     _wait_for_text(starts, "one\ntwo\n")
     assert session.stop() == 143
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="console control events exist only on Windows")
+@pytest.mark.project("serve")
+def test_ctrl_c_ends_the_watch_and_its_cycle_on_windows(
+    root: Path, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    outcome = run_in_new_console(_CTRL_C_DRIVER, tmp_path_factory.mktemp("ctrl_c"), root)
+
+    assert outcome["status"] == 130, outcome["stderr"]
+    assert [is_running(pid) for pid in outcome["pids"]] == [False, False]
+    # The cycle's lines, then the watch's own closing line.
+    assert mask_elapsed(outcome["stderr"]) == (
+        "fac.py:9:2: note: interrupted task 'serve'\n"
+        "Interrupted after <elapsed>.\n"
+        "Interrupted after <elapsed>.\n"
+    )
 
 
 @pytest.mark.project("copy")

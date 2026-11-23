@@ -363,9 +363,13 @@ def _spawn(
         sys.stderr.flush()
     # A session of its own has no terminal to prompt on, and killing it whole closes the pipes a surviving grandchild would hold open.
     in_session = not is_live and sys.platform != "win32"
-    # A process group of its own keeps the console's CTRL_BREAK_EVENT, a graceful stop, from ending a rule's command.
+    # A process group of its own keeps a graceful stop, CTRL_BREAK_EVENT sent to Facere's group, from ending a rule's
+    # command, live or not, while a task's live command takes the stop with Facere. The group also disables the
+    # console's Ctrl-C in the command, so an interrupt reaches it through Commands.kill instead.
     creationflags = (
-        subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" and not is_live else 0
+        subprocess.CREATE_NEW_PROCESS_GROUP
+        if sys.platform == "win32" and not (is_live and is_task)
+        else 0
     )
     reader = None
     terminal = None
