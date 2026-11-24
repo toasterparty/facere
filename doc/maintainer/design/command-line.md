@@ -15,6 +15,7 @@
 | `--timings` | After the invocation, print to stderr where its time went: interpreter start, each `fac.py`'s collection with its slowest imports, hashing with its stat and hash counts, state reads and commits, each rule's and task's duration, and the critical path. With `--json` too, since stdout belongs to the build's commands |
 | `--lock-timeout SECONDS` | Fail instead of waiting longer than `SECONDS` for another invocation on the same output directory, where `0` fails at once. Without it, Facere waits as long as it takes |
 | `--out DIR` | Output directory, relative to the root, inside it or not, default `build` |
+| `--watch` | Build the targets, then build them again on each change to what the last build read, until interrupted, as [watch mode](./watch.md) designs. Every other flag, and every `ARG`, reaches each build |
 | `--docs` | Print the directory holding the running Facere's docs |
 | `--python` | Print the interpreter Facere runs on, for an editor reading `fac.py` files |
 | `--version` | Print Facere's version |
@@ -45,7 +46,7 @@ A caller may parse:
 - each line `--inputs` and `--outputs` print
 - the documented keys of `--json` from `--list` and `--check`
 - diagnostics, as `<location>: <severity>: <text>`, where the location is `path:line:column` or `fac` and the severity is `error`, `warning`, or `note`
-- the `fac: Entering directory` and `fac: Leaving directory` lines, and watch mode's `fac: change in` line
+- the `fac: Entering directory` and `fac: Leaving directory` lines, and watch mode's `fac: <file> modified` and `fac: N files modified` lines and `fac: watching for changes` line
 - the closing line's first word, `Finished`, `Failed`, `Stopped`, or `Interrupted`, which every invocation that parsed its arguments ends on, `Failed` for each status from `1` to `4`
 
 Everything else may change in any release: the text of any message, the rest of the closing line, the status row, `--list` and `--check` as text, `-v`, and all of `--timings`, JSON included, since its phases are Facere's internals.

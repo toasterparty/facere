@@ -1,7 +1,5 @@
 """Ending an invocation early: an interrupt kills every running command at once, and a graceful stop lets the rules executing finish."""
 
-import json
-import os
 import signal
 import subprocess
 import sys
@@ -9,7 +7,14 @@ from pathlib import Path
 
 import pytest
 
-from ..helpers import closing_line, mask_elapsed, start_fac, wait_for
+from ..helpers import (
+    closing_line,
+    is_running,
+    mask_elapsed,
+    run_in_new_console,
+    start_fac,
+    wait_for,
+)
 
 _POSIX_ONLY = pytest.mark.skipif(
     sys.platform == "win32", reason="these signals reach a process this way only on POSIX"
@@ -19,12 +24,15 @@ _WINDOWS_ONLY = pytest.mark.skipif(
 )
 
 # Started in a console of its own, so its Ctrl-C reaches Facere and the commands Facere shares a console with, never the
-# test runner. It ignores Ctrl-C only once Facere has started, since a child inherits that choice.
+# test runner. A child inherits whether Ctrl-C is ignored, so it turns Ctrl-C on before starting Facere, since Git Bash,
+# as in CI, starts native programs with it off, and ignores it only once Facere has started.
 _CTRL_C_DRIVER = """
 import ctypes, json, subprocess, sys, time
 from pathlib import Path
 
 root, report = Path(sys.argv[1]), Path(sys.argv[2])
+kernel32 = ctypes.windll.kernel32
+assert kernel32.SetConsoleCtrlHandler(None, False)
 fac = subprocess.Popen(
     [sys.executable, "-m", "facere", "-j2"], cwd=root, stderr=subprocess.PIPE, text=True
 )
@@ -33,38 +41,43 @@ pid_files = [root / "build" / name for name in ("a.pid", "b.pid")]
 while not all(path.exists() and path.read_text() for path in pid_files):
     assert time.monotonic() < deadline, "the commands never started"
     time.sleep(0.01)
-kernel32 = ctypes.windll.kernel32
 assert kernel32.SetConsoleCtrlHandler(None, True)
 assert kernel32.GenerateConsoleCtrlEvent(0, 0)
 _, stderr = fac.communicate(timeout=30)
 report.write_text(json.dumps({"status": fac.returncode, "stderr": stderr}))
 """
 
+# Facere gets the console as its stdin and stderr, which a rule's live command needs. With `break`, it starts Facere in
+# a process group of its own and sends CTRL_BREAK_EVENT to that group alone, as a parent stopping it does, then lets the
+# command finish. Otherwise it sends Ctrl-C to the whole console, as the keyboard does.
+_LIVE_DRIVER = """
+import ctypes, json, signal, subprocess, sys, time
+from pathlib import Path
 
-def _is_running(pid: int) -> bool:
-    if sys.platform == "win32":
-        # os.kill(pid, 0) on Windows terminates the process rather than probing it.
-        import ctypes
-        from ctypes import wintypes
-
-        query_limited_information = 0x1000
-        still_active = 259
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        kernel32.OpenProcess.restype = wintypes.HANDLE
-        handle = kernel32.OpenProcess(query_limited_information, False, pid)
-        if not handle:
-            return False
-        try:
-            exit_code = wintypes.DWORD()
-            assert kernel32.GetExitCodeProcess(wintypes.HANDLE(handle), ctypes.byref(exit_code))
-            return exit_code.value == still_active
-        finally:
-            kernel32.CloseHandle(wintypes.HANDLE(handle))
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    return True
+root, how, report = Path(sys.argv[1]), sys.argv[2], Path(sys.argv[3])
+kernel32 = ctypes.windll.kernel32
+assert kernel32.SetConsoleCtrlHandler(None, False)
+with open("CONIN$") as console_in, open("CONOUT$", "w") as console_out:
+    fac = subprocess.Popen(
+        [sys.executable, "-m", "facere"],
+        cwd=root,
+        stdin=console_in,
+        stderr=console_out,
+        creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if how == "break" else 0,
+    )
+pid_file = root / "build" / "pid"
+deadline = time.monotonic() + 30
+while not (pid_file.exists() and pid_file.read_text()):
+    assert time.monotonic() < deadline, "the command never started"
+    time.sleep(0.01)
+if how == "break":
+    fac.send_signal(signal.CTRL_BREAK_EVENT)
+    (root / "go").touch()
+else:
+    assert kernel32.SetConsoleCtrlHandler(None, True)
+    assert kernel32.GenerateConsoleCtrlEvent(0, 0)
+report.write_text(json.dumps({"status": fac.wait(30)}))
+"""
 
 
 def _start_fac_in_group(root: Path, *args: str) -> subprocess.Popen[str]:
@@ -85,6 +98,33 @@ def _send_ctrl_break(process: subprocess.Popen[str]) -> None:
 
 
 @_POSIX_ONLY
+@pytest.mark.project("breakpoint")
+def test_interrupt_at_a_rule_s_debugger_prints_the_output_that_waited_behind_it(
+    root: Path,
+) -> None:
+    # Its stdin stays open, since the debugger would quit at its end and release the terminal itself.
+    process = subprocess.Popen(
+        [sys.executable, "-m", "facere", "-j2"],
+        cwd=root,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        wait_for(root / "build" / "other-done")
+        process.send_signal(signal.SIGINT)
+        status = process.wait(timeout=30)
+    finally:
+        process.kill()
+    stdout, stderr = process.communicate()
+
+    assert status == 130, stderr
+    assert stdout.startswith("before\n")
+    assert stdout.endswith("other\n")
+
+
+@_POSIX_ONLY
 @pytest.mark.project("stop")
 def test_graceful_stop_lets_the_rule_executing_finish_and_starts_no_other(root: Path) -> None:
     process = start_fac(root)
@@ -102,7 +142,7 @@ def test_graceful_stop_lets_the_rule_executing_finish_and_starts_no_other(root: 
 
 @_POSIX_ONLY
 @pytest.mark.project("stop")
-def test_graceful_stop_passes_the_signal_to_the_command_a_task_is_running(root: Path) -> None:
+def test_graceful_stop_passes_the_signal_to_the_command_a_taskis_running(root: Path) -> None:
     process = start_fac(root, "serve")
     command_pid = int(wait_for(root / "build" / "pid"))
 
@@ -113,7 +153,7 @@ def test_graceful_stop_passes_the_signal_to_the_command_a_task_is_running(root: 
     assert mask_elapsed(stderr) == (
         "fac.py:29:2: note: stopped task 'serve'\nStopped after <elapsed>.\n"
     )
-    assert not _is_running(command_pid)
+    assert not is_running(command_pid)
 
 
 @_POSIX_ONLY
@@ -132,7 +172,7 @@ def test_graceful_stop_passes_the_signal_to_the_session_of_a_command_a_task_capt
         "fac.py:43:2: note: stopped task 'serve_captured'\nStopped after <elapsed>.\n"
     )
     assert (root / "build" / "terminated").exists()
-    assert not _is_running(command_pid)
+    assert not is_running(command_pid)
 
 
 @_POSIX_ONLY
@@ -151,9 +191,26 @@ def test_interrupt_kills_every_running_command_and_names_one_rule_counting_the_r
         "fac.py:12:2: note: interrupted rule 'sleep' (build/a.txt), and 1 more recipe\n"
         "Interrupted after <elapsed>.\n"
     )
-    assert [_is_running(pid) for pid in command_pids] == [False, False]
+    assert [is_running(pid) for pid in command_pids] == [False, False]
     assert not (root / "build" / "a.txt").exists()
     assert not (root / "build" / "b.txt").exists()
+
+
+@_POSIX_ONLY
+@pytest.mark.project("late_spawn")
+def test_interrupt_ends_a_command_a_recipe_spawns_after_the_kill_before_it_runs(
+    root: Path,
+) -> None:
+    process = start_fac(root, "-j2")
+    wait_for(root / "build" / "hold.started")
+    wait_for(root / "build" / "late.waiting")
+
+    process.send_signal(signal.SIGINT)
+    _, stderr = process.communicate(timeout=30)
+
+    assert process.returncode == 130, stderr
+    assert (root / "build" / "hold.ended").exists()
+    assert not (root / "build" / "late.ran").exists()
 
 
 @_POSIX_ONLY
@@ -203,7 +260,7 @@ def test_ctrl_break_kills_the_task_command_that_ignores_it_after_the_grace(root:
     assert mask_elapsed(stderr) == (
         "fac.py:15:2: note: stopped task 'serve'\nStopped after <elapsed>.\n"
     )
-    assert not _is_running(command_pid)
+    assert not is_running(command_pid)
 
 
 @_WINDOWS_ONLY
@@ -219,7 +276,32 @@ def test_ctrl_break_stops_a_task_whose_command_ends_on_it(root: Path) -> None:
     assert mask_elapsed(stderr) == (
         "fac.py:29:2: note: stopped task 'serve'\nStopped after <elapsed>.\n"
     )
-    assert not _is_running(command_pid)
+    assert not is_running(command_pid)
+
+
+@_WINDOWS_ONLY
+@pytest.mark.project("live_break")
+def test_ctrl_break_lets_a_rule_s_live_command_finish(
+    root: Path, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    outcome = run_in_new_console(_LIVE_DRIVER, tmp_path_factory.mktemp("live"), root, "break")
+
+    assert outcome["status"] == 143
+    assert (root / "build" / "slow.txt").read_text() == "slow"
+    assert closing_line(root) == "Finished in <elapsed>. No work to do. 1 output up to date."
+
+
+@_WINDOWS_ONLY
+@pytest.mark.project("live_ctrl_c")
+def test_ctrl_c_kills_a_rule_s_live_command_on_windows(
+    root: Path, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    outcome = run_in_new_console(_LIVE_DRIVER, tmp_path_factory.mktemp("live"), root, "ctrl_c")
+    command_pid = int((root / "build" / "pid").read_text())
+
+    assert outcome["status"] == 130
+    assert not is_running(command_pid)
+    assert not (root / "build" / "slow.txt").exists()
 
 
 @_WINDOWS_ONLY
@@ -227,19 +309,7 @@ def test_ctrl_break_stops_a_task_whose_command_ends_on_it(root: Path) -> None:
 def test_ctrl_c_kills_every_running_command_on_windows(
     root: Path, tmp_path_factory: pytest.TempPathFactory
 ) -> None:
-    assert sys.platform == "win32"
-    scratch = tmp_path_factory.mktemp("ctrl_c")
-    driver = scratch / "driver.py"
-    driver.write_text(_CTRL_C_DRIVER)
-    report = scratch / "report.json"
-
-    subprocess.run(
-        [sys.executable, driver, root, report],
-        check=True,
-        timeout=60,
-        creationflags=subprocess.CREATE_NEW_CONSOLE,
-    )
-    outcome = json.loads(report.read_text())
+    outcome = run_in_new_console(_CTRL_C_DRIVER, tmp_path_factory.mktemp("ctrl_c"), root)
     command_pids = [int((root / "build" / name).read_text()) for name in ("a.pid", "b.pid")]
 
     assert outcome["status"] == 130, outcome["stderr"]
@@ -247,6 +317,6 @@ def test_ctrl_c_kills_every_running_command_on_windows(
         "fac.py:12:2: note: interrupted rule 'sleep' (build/a.txt), and 1 more recipe\n"
         "Interrupted after <elapsed>.\n"
     )
-    assert [_is_running(pid) for pid in command_pids] == [False, False]
+    assert [is_running(pid) for pid in command_pids] == [False, False]
     assert not (root / "build" / "a.txt").exists()
     assert not (root / "build" / "b.txt").exists()

@@ -224,6 +224,22 @@ def test_value_holding_itself_fails_collection(fac: Fac) -> None:
     ]
 
 
+@pytest.mark.project("os_environ")
+def test_os_environ_value_fails_collection_naming_the_variable(fac: Fac) -> None:
+    result = fac("page")
+
+    assert result.status == 2
+    assert result.err.splitlines() == [
+        "fac.py:8:2: error: function page reads global ENV, of type os._Environ, which Facere can't hash, since it is the inherited environment, which stays out of fingerprints",
+        "Failed after <elapsed>.",
+    ]
+
+
+@pytest.mark.project("out_of_band_buffer")
+def test_value_reducing_to_an_out_of_band_buffer_from_protocol_5_hashes(fac: Fac) -> None:
+    assert fac("page").status == 0
+
+
 @pytest.mark.project("pure_path")
 def test_pathlib_path_value_fails_naming_string_paths(fac: Fac) -> None:
     result = fac("page")

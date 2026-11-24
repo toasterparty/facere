@@ -46,11 +46,7 @@ def test_a_site_rebuilds_only_what_a_change_reaches(tmp_path: Path) -> None:
     assert closing_line(root) == "Finished in <elapsed>. Executed 3 rules. 1 output up to date."
 
     edit(root / "fac.py", "return text.replace(", "return text.strip().replace(")
-    edited = run_fac(root)
-    assert edited.err.splitlines() == [
-        "fac.py:1:1: warning: code outside recipes changed, which executes no rule until fac.epoch rises",
-        "Finished in <elapsed>. No work to do. 6 outputs up to date.",
-    ]
+    assert closing_line(root) == "Finished in <elapsed>. No work to do. 6 outputs up to date."
 
     edit(root / "fac.py", "fac.epoch(0)", "fac.epoch(1)")
     assert closing_line(root) == "Finished in <elapsed>. Executed 4 rules."

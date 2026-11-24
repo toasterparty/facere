@@ -5,10 +5,12 @@ The user documentation ships as Markdown in this package's `doc/` directory, bes
 
 from facere._api import (
     Args,
+    Console,
     Input,
     OrderOnly,
     Output,
     add_inputs,
+    console,
     env,
     epoch,
     give_lock,
@@ -26,11 +28,13 @@ from facere._command import capture, run
 
 __all__ = [
     "Args",
+    "Console",
     "Input",
     "OrderOnly",
     "Output",
     "add_inputs",
     "capture",
+    "console",
     "env",
     "epoch",
     "give_lock",

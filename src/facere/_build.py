@@ -10,7 +10,7 @@ import posixpath
 import shlex
 import threading
 import time
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Container, Iterable
 from typing import Literal
 
 from facere import _state
@@ -46,6 +46,7 @@ from facere._engine import (
 )
 from facere._hash import iter_strings
 from facere._lock import OutputLock
+from facere._observed import Observed
 from facere._output import Chunk, Output
 from facere._schedule import Crew, Signals
 from facere._summary import Summary
@@ -93,7 +94,7 @@ class _EndedError(Exception):
 class Invocation:
     """What the command line gives a build, and what the build's batches share.
 
-    `collect_cb` loads the project again, `take_lock_cb` takes the output directory's lock unless it is held, and `calc_jobs` returns how many recipes may execute at once. `has_terminal` says whether a rule that needs a person can reach one. `reached` counts the rules and tasks reached so far, and `built` holds each output this invocation built, with its rule and the hash it left.
+    `collect_cb` loads the project again, `take_lock_cb` takes the output directory's lock unless it is held, and `calc_jobs` returns how many recipes may execute at once. `reached` counts the rules and tasks reached so far, and `built` holds each output this invocation built, with its rule and the hash it left.
     """
 
     __slots__ = (
@@ -101,10 +102,8 @@ class Invocation:
         "calc_jobs",
         "collect_cb",
         "context",
-        "has_terminal",
         "keep_going",
         "lock",
-        "output",
         "reached",
         "signals",
         "start_dir",
@@ -117,7 +116,6 @@ class Invocation:
         self,
         *,
         context: Context,
-        output: Output,
         signals: Signals,
         summary: Summary,
         lock: OutputLock,
@@ -126,11 +124,9 @@ class Invocation:
         take_lock_cb: Callable[[], None],
         calc_jobs: Callable[[], int],
         keep_going: bool,
-        has_terminal: bool,
         task_args: tuple[str, ...] | None,
     ) -> None:
         self.context = context
-        self.output = output
         self.signals = signals
         self.summary = summary
         self.lock = lock
@@ -139,10 +135,15 @@ class Invocation:
         self.take_lock_cb = take_lock_cb
         self.calc_jobs = calc_jobs
         self.keep_going = keep_going
-        self.has_terminal = has_terminal
         self.task_args = task_args
         self.reached = 0
         self.built: dict[str, tuple[Definition, str]] = {}
+
+    @property
+    def output(self) -> Output:
+        """Facere's own streams, which the context holds while a build runs."""
+        assert self.context.output is not None
+        return self.context.output
 
 
 class _Target:
@@ -291,17 +292,6 @@ def _take_batch(
     return rules, None, []
 
 
-def _find_edited(root: str, code: _state.Code, saved: _state.Code | None) -> list[str]:
-    """Return the absolute path of each Python file whose code no fingerprint holds changed since `saved`, unless the epoch changed too, which executes every rule."""
-    if saved is None or saved.epoch != code.epoch:
-        return []
-    return [
-        os.path.join(root, path)
-        for path, digest in code.digests.items()
-        if saved.digests.get(path, digest) != digest
-    ]
-
-
 def _remove_shadowed(
     context: Context,
     state_path: str,
@@ -332,6 +322,15 @@ def _find_shadowed(
     """Return the key of each record naming the file name of one of `new_paths`."""
     new_names = _calc_names(new_paths)
     return [key for key, record in records.items() if not new_names.isdisjoint(record.added_names)]
+
+
+def _find_within(paths: set[str], outputs: Iterable[str], dirs: Container[str]) -> set[str]:
+    """Return those of `paths` that are one of `outputs` or lie in one of them that is among `dirs`, the directories a session walked."""
+    exact = paths.intersection(outputs)
+    prefixes = tuple(f"{path}/" for path in exact if path in dirs)
+    if not prefixes:
+        return exact
+    return exact | {path for path in paths if path.startswith(prefixes)}
 
 
 def _to_bytes(data: bytes | str | None) -> bytes:
@@ -416,13 +415,6 @@ class _Builder:
             if not definition.is_task
         }
         state = _state.load(self.state_path)
-        self.code = _state.Code(project.epoch, project.unfingerprinted)
-        self.saved_code = state.code
-        invocation.summary.edited.extend(
-            path
-            for path in _find_edited(context.root, self.code, state.code)
-            if path not in invocation.summary.edited
-        )
         self.output_keys = frozenset(project.producers_by_key)
         self.saved_declared = state.declared
         new_outputs = (
@@ -447,7 +439,6 @@ class _Builder:
         self._idle = 0
         self._state_lock = threading.Lock()
         self._snapshot_lock = threading.Lock()
-        self._terminal_lock = threading.Lock()
         self._snapshot: Snapshot | None = None
         self.running: dict[int, Definition] = {}
         # Each rule that executed and awaits its Built.
@@ -463,6 +454,8 @@ class _Builder:
         self.built: set[str] = set()
         # The names of the files found new in a directory output, a set per walk that found some.
         self.shadows: list[frozenset[str]] = []
+        # The paths the session asked the hash of and found nothing at, for a watch.
+        self.absent: set[str] = set()
         self.unsettled: list[tuple[int, Diagnostic]] = []
         self.ended: list[tuple[int, Diagnostic]] = []
         # By a path key's prefix up to its last slash, the rule outputting that directory or one holding it.
@@ -486,6 +479,8 @@ class _Builder:
         upstream = () if task is None else self.project.graph.upstream[self.steps[task]]
         self._plan_total([*steps, *upstream], task, pending)
         try:
+            if self.context.observed is not None:
+                self._observe_sources([*steps, *upstream], task)
             self._build_steps([*steps, *upstream])
             if task is not None and self._can_execute(upstream):
                 self._run_task(task)
@@ -502,10 +497,13 @@ class _Builder:
         return self._can_go_on()
 
     def commit(self) -> None:
-        """Save what the batch learned beyond its records, while the invocation holds the lock: the tree as it leaves it, so a file its recipes wrote never counts as new, the hash cache, the outputs declared, and the code no fingerprint holds, so an edit to it warns once. Losing any of them costs only rebuilds and reads, or a warning."""
+        """Save what the batch learned beyond its records, while the invocation holds the lock: the tree as it leaves it, so a file its recipes wrote never counts as new, the hash cache, and the outputs declared. Losing any of them costs only rebuilds and reads."""
         if not self.invocation.lock.is_held:
             return
+        observed = self.context.observed
         with self._state_lock, contextlib.suppress(OSError):
+            if observed is not None:
+                self._add_observed(observed)
             if self.has_executed and _state.has_added_names(self.records):
                 listing = frozenset(iter_listed_files(self.context.out_dir))
                 _state.save_listing(self.state_path, listing)
@@ -513,9 +511,50 @@ class _Builder:
             if self.output_keys != self.saved_declared:
                 _state.save_declared(self.state_path, self.output_keys)
                 self.saved_declared = self.output_keys
-            if self.code != self.saved_code:
-                _state.save_code(self.state_path, self.code)
-                self.saved_code = self.code
+            if observed is not None:
+                observed.save(self.state_path)
+
+    def _observe_sources(self, steps: list[int], task: Definition | None) -> None:
+        """Hash each input no rule outputs of `steps`, the rules they depend on, and `task`, then save what the cycle observed, so a watch stops this cycle on an edit to one before any rule reached it, as in its first cycle, which no earlier one tells what to poll."""
+        observed = self.context.observed
+        assert observed is not None
+        closure = self.engine.find_closure(steps)
+        if task is not None:
+            closure.add(self.steps[task])
+        steps_by_index = self.project.graph.steps
+        sources = {
+            key
+            for step in closure
+            for key in steps_by_index[step].inputs
+            if key not in self.producers
+        }
+        absent = [path for path in sources if self.cache.fetch(path) is None]
+        with self._mutex:
+            self.absent.update(absent)
+        if not self.invocation.lock.is_held:
+            return
+        with self._state_lock, contextlib.suppress(OSError):
+            self._add_observed(observed)
+            observed.save(self.state_path)
+
+    def _add_observed(self, observed: Observed) -> None:
+        """Add to `observed` what the session saw, noting which paths lie in a declared output, then hash the files collection opened."""
+        files = self.cache.get_seen_files()
+        dirs = self.cache.get_listed()
+        with self._mutex:
+            absent = set(self.absent)
+            failed = [
+                step
+                for step, verdict in self.engine.verdicts.items()
+                if verdict.reason is not Reason.CURRENT and step not in self.succeeded
+            ]
+        paths = {*files, *dirs, *absent}
+        outputs = _find_within(paths, self.producers, dirs)
+        failed_outputs = [
+            output for step in failed for output in self.project.definitions[step].outputs
+        ]
+        observed.add(files, dirs, absent, outputs, _find_within(outputs, failed_outputs, dirs))
+        observed.resolve_reads(self.cache)
 
     def validate_built_intact(self) -> None:
         """Fail the first output this invocation built whose content changed after its rule finished, which only an undeclared write explains. One that vanished passes, since the next invocation rebuilds it."""
@@ -551,6 +590,7 @@ class _Builder:
         deadline_s = time.monotonic() + _INTERRUPT_GRACE_S
         with contextlib.suppress(KeyboardInterrupt):
             self.crew.wait(lambda: time.monotonic() < deadline_s)
+        self.invocation.output.end_hold()
 
     def _plan_total(
         self, steps: list[int], task: Definition | None, pending: list[_Target]
@@ -731,6 +771,8 @@ class _Builder:
             digests[path] = None if hashed is None else hashed.digest
         shadowed: list[tuple[str, ...]] = []
         with self._mutex:
+            if self.context.observed is not None:
+                self.absent.update(path for path, digest in digests.items() if digest is None)
             if new_files:
                 shadowed = self._forget_shadowed(new_files)
             for path, hashed in built:
@@ -796,25 +838,12 @@ class _Builder:
             os.makedirs(os.path.dirname(output) or ".", exist_ok=True)
         self._announce(rule, start.position)
         snapshot = self._ensure_snapshot()
-        recipe = self._execute_with_terminal(rule) if rule.has_terminal else self._execute(rule)
+        recipe = self._execute(rule)
         with self._mutex:
             producers = {path: self._find_producer(path) for path in recipe.reported}
         for path in sorted(recipe.reported):
             self._validate_ordered(step, path, producers[path], recipe)
         return recipe, self._find_moved_inputs(recipe, before, producers, snapshot)
-
-    def _execute_with_terminal(self, rule: Definition) -> Recipe:
-        """Execute the recipe of `rule`, which needs a person, alone at the terminal, while every other rule's output waits."""
-        if not self.invocation.has_terminal:
-            reason = "it is declared with terminal=True, and Facere's standard input and standard error are no terminal"
-            raise _RecipeFailure(rule, reason=reason)
-        output = self.invocation.output
-        with self._terminal_lock:
-            output.take_terminal()
-            try:
-                return self._execute(rule)
-            finally:
-                output.give_terminal()
 
     def _ensure_snapshot(self) -> Snapshot:
         """Return the snapshot, taken before the session's first recipe starts, since every worker asks for it first."""
@@ -1012,7 +1041,6 @@ class _Builder:
         }
         return Recipe(
             is_task=definition.is_task,
-            has_terminal=definition.has_terminal,
             tracked=frozenset(map(calc_path_key, (*definition.inputs, *definition.outputs))),
             order_only=frozenset(map(calc_path_key, definition.order_only)),
             exempt=frozenset(data_paths),
@@ -1086,6 +1114,12 @@ class _Builder:
             # A recipe that outlives its killed commands is left behind.
             return now_s < kill_at_s + _INTERRUPT_GRACE_S
 
+        if self.context.observed is not None:
+            missing = [path for path in task.inputs if self.cache.fetch(path) is None]
+            with self._mutex:
+                self.absent.update(missing)
+            # A task may never end, so the watch learns now what to wait on.
+            self.commit()
         with self._mutex:
             self.running[step] = task
         self.context.give_lock_cb = request_give

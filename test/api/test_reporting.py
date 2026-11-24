@@ -31,6 +31,34 @@ def test_quiet_argument_hides_successful_command_output(fac: Fac) -> None:
     assert result == (0, "", "Finished in <elapsed>. Executed 1 rule.\n")
 
 
+@pytest.mark.project("console_default")
+def test_project_console_default_hides_a_rules_successful_command_output(fac: Fac) -> None:
+    result = fac()
+
+    assert result == (0, "", "Finished in <elapsed>. Executed 1 rule.\n")
+
+
+@pytest.mark.project("console_default")
+def test_command_console_overrides_the_project_default(fac: Fac) -> None:
+    result = fac("overridden")
+
+    assert result == (0, "overridden\n", "Finished in <elapsed>. Executed 1 rule.\n")
+
+
+@pytest.mark.project("console_default")
+def test_project_console_default_leaves_a_tasks_commands_live(fac: Fac) -> None:
+    result = fac("live")
+
+    assert result.status == 0, result.err
+    assert result.out == "live\n"
+
+
+@pytest.mark.project("quiet_task")
+def test_quiet_flag_hides_a_tasks_captured_command_and_shows_its_live_one(fac: Fac) -> None:
+    assert fac().out == "live\ncaptured\n"
+    assert fac("-q").out == "live\n"
+
+
 @pytest.mark.project("echo")
 def test_failed_command_leads_with_the_command_and_its_output_then_names_the_rule(fac: Fac) -> None:
     result = fac("-q", "failing_echo")

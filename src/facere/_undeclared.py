@@ -1,4 +1,4 @@
-"""The undeclared-path check: a rule's recipe fails when it uses a file under the root, or a path a rule outputs, that its rule doesn't declare and its recipe hasn't reported."""
+"""The undeclared-path check: a rule's recipe fails when it uses a file under the root, or a path a rule outputs, that its rule doesn't declare and its recipe hasn't reported. The same audit hook notes what collection reads and lists, for a cycle of a watch, and gives the terminal to a rule's recipe that calls `breakpoint()`."""
 
 import os
 import re
@@ -17,6 +17,8 @@ from facere._context import (
     is_within_any,
     normalize,
 )
+from facere._observed import note_listed, note_read
+from facere._output import ensure_held_for_debugger
 
 _FLAG_SEPARATORS = re.compile("[=,]")
 _WRITE_ACCESS = os.O_WRONLY | os.O_RDWR
@@ -51,7 +53,7 @@ def validate_program(context: Context, recipe: Recipe, program: str) -> None:
 
 
 def ensure_audit_hook() -> None:
-    """Add the hook that checks what recipes open, once per process, since PEP 578 hooks can't be removed."""
+    """Add the hook that checks what recipes open, gives the terminal to a rule's debugger, and notes what collection opens and lists for a watch, once per process, since PEP 578 hooks can't be removed."""
     global _is_audit_hook_added
     if not _is_audit_hook_added:
         sys.addaudithook(_on_audit)
@@ -69,9 +71,16 @@ def _on_audit(event: str, args: tuple[object, ...]) -> None:
     if event != "open":
         if event in _THREAD_STARTS:
             _on_thread_start(args)
+        elif event == "os.scandir":
+            _on_scandir(args)
+        elif event == "builtins.breakpoint":
+            _on_breakpoint()
         return
     context = find_context()
     if context is None:
+        return
+    if context.is_loading:
+        _on_load_open(context, args)
         return
     # Only the thread a rule's recipe executes on has one, so rules executing at once are each checked against their own.
     recipe = context.find_rule_recipe()
@@ -80,13 +89,49 @@ def _on_audit(event: str, args: tuple[object, ...]) -> None:
     path, _, flags = args
     if not isinstance(path, str | bytes | os.PathLike) or not isinstance(flags, int):
         return
-    absolute = os.path.abspath(os.fsdecode(cast("str | bytes | os.PathLike[str]", path)))
+    absolute = _to_absolute(path)
     key = calc_path_key(normalize(absolute, context.root))
     access = flags & _WRITE_ACCESS
     if access != os.O_WRONLY and key not in recipe.shared_modules:
         _validate_used(context, recipe, absolute, "opened")
     if access != os.O_RDONLY:
         recipe.written.add(key)
+
+
+def _on_load_open(context: Context, args: tuple[object, ...]) -> None:
+    observed = context.observed
+    if observed is None:
+        return
+    path, _, flags = args
+    if not isinstance(path, str | bytes | os.PathLike) or not isinstance(flags, int):
+        return
+    if flags & _WRITE_ACCESS != os.O_WRONLY:
+        note_read(observed, context, _to_absolute(path))
+
+
+def _on_scandir(args: tuple[object, ...]) -> None:
+    context = find_context()
+    if context is None or not context.is_loading or context.observed is None:
+        return
+    (path,) = args
+    if path is None:
+        path = "."
+    if isinstance(path, str | bytes | os.PathLike):
+        note_listed(context.observed, context, _to_absolute(path))
+
+
+def _to_absolute(path: object) -> str:
+    return os.path.abspath(os.fsdecode(cast("str | bytes | os.PathLike[str]", path)))
+
+
+def _on_breakpoint() -> None:
+    context = find_context()
+    # Python's own hook reads the variable on every call, and 0 makes breakpoint() do nothing.
+    if context is None or os.environ.get("PYTHONBREAKPOINT") == "0":
+        return
+    recipe = context.find_rule_recipe()
+    if recipe is not None:
+        ensure_held_for_debugger(context, recipe)
 
 
 def _on_thread_start(args: tuple[object, ...]) -> None:

@@ -27,7 +27,6 @@ from facere._context import (
     calc_path_key,
     is_under_root,
     is_within,
-    is_within_any,
     iter_self_and_parents,
     normalize,
 )
@@ -36,11 +35,9 @@ from facere._engine import Graph, Step
 from facere._hash import (
     UnhashableValueError,
     calc_code_text,
-    calc_unfingerprinted_digest,
     feed,
     feed_value,
     find_closure_values,
-    find_named_parameters,
     find_read_globals,
     iter_strings,
     parse,
@@ -48,7 +45,7 @@ from facere._hash import (
 from facere._version import VERSION
 
 MODULE_NAME = "__fac__"
-_RESERVED_OPTIONS = ("each", "name", "default", "pool", "terminal", "always", "clear")
+_RESERVED_OPTIONS = ("each", "name", "default", "pool", "always", "clear")
 _FINGERPRINT_FORMAT = b"facere fingerprint 8"
 _UNREADABLE_SOURCE = (OSError, LookupError, SyntaxError, ValueError)
 _PATH_ANNOTATIONS = {
@@ -93,7 +90,7 @@ def _diagnose(subject: _Declared, message: str, notes: tuple[Note, ...] = ()) ->
 class Definition:
     """A rule, or a task when `is_task`, with every parameter filled.
 
-    `args_slot` places a task's fac.Args parameter: an index into `args`, a key of `kwargs`, or None when it has none. `path_values` holds the paths of each fac.Input, fac.OrderOnly, and fac.Output parameter, and `order_only_parameters` names the fac.OrderOnly ones among them. `has_terminal` holds for a task, and for a rule whose commands share Facere's streams as a task's do.
+    `args_slot` places a task's fac.Args parameter: an index into `args`, a key of `kwargs`, or None when it has none. `path_values` holds the paths of each fac.Input, fac.OrderOnly, and fac.Output parameter.
     """
 
     is_task: bool
@@ -103,7 +100,6 @@ class Definition:
     is_default: bool
     is_always: bool
     pool: Pool | None
-    has_terminal: bool
     fn: Callable[..., object]
     args: tuple[object, ...]
     kwargs: dict[str, object]
@@ -113,7 +109,6 @@ class Definition:
     values: dict[str, object]
     text_values: dict[str, object]
     path_values: dict[str, object]
-    order_only_parameters: frozenset[str]
     args_slot: int | str | None
 
     @property
@@ -140,7 +135,7 @@ class Definition:
 
 @dataclass(frozen=True, slots=True)
 class Project:
-    """A root's rules and tasks. `graph` holds one step per definition, in order, whose keys are paths as normalize returns them, `pool_sizes` how many steps of each pool the graph names may run at once, and `producers_by_key` maps the path key of each output to its rule. `unfingerprinted` maps each of the project's Python files that loading imported, as normalize returns it, to a digest of its code that no fingerprint holds, and `epoch` is what fac.epoch set."""
+    """A root's rules and tasks. `graph` holds one step per definition, in order, whose keys are paths as normalize returns them, `pool_sizes` how many steps of each pool the graph names may run at once, and `producers_by_key` maps the path key of each output to its rule."""
 
     definitions: tuple[Definition, ...]
     by_name: dict[str, list[Definition]]
@@ -148,8 +143,6 @@ class Project:
     pool_sizes: dict[str, int]
     producers_by_key: dict[str, Definition]
     shared_modules: frozenset[str]
-    unfingerprinted: dict[str, str]
-    epoch: int
 
 
 def collect(context: Context) -> Project:
@@ -193,40 +186,7 @@ def collect(context: Context) -> Project:
         pool_sizes,
         producers_by_key,
         shared_modules,
-        _hash_unfingerprinted(context, definitions, imported, trees),
-        context.epoch,
     )
-
-
-def _hash_unfingerprinted(
-    context: Context,
-    definitions: tuple[Definition, ...],
-    imported: list[str],
-    trees: dict[str, ast.Module],
-) -> dict[str, str]:
-    """Return a digest of the code that no fingerprint holds in each of the `imported` sources: all but recipes, the functions they wrap, and top-level statements. A task's recipe is left out with the rest, since a task executes whenever requested, and a source a rule inputs is left out whole, since its content joins that rule's fingerprint."""
-    recipes = [
-        code.__code__
-        for declaration in context.declarations
-        if isinstance(declaration.fn, types.FunctionType)
-        for code in _find_recipe_code(declaration.fn)
-    ]
-    input_keys = {
-        calc_path_key(path)
-        for definition in definitions
-        if not definition.is_task
-        for path in definition.inputs
-    }
-    digests = {}
-    for path in imported:
-        relative = normalize(path, context.root)
-        if is_within_any(calc_path_key(relative), input_keys):
-            continue
-        try:
-            digests[relative] = calc_unfingerprinted_digest(path, recipes, trees)
-        except _UNREADABLE_SOURCE:
-            continue
-    return digests
 
 
 def _map_related_outputs(
@@ -435,8 +395,6 @@ def _define(
             problems.append(f"{decorator}({key}=...) names no parameter of {fn.__name__}")
     if declaration.pool is not None and not isinstance(declaration.pool, Pool):
         problems.append(f"pool= takes what fac.pool returned, not {declaration.pool!r}")
-    if not isinstance(declaration.has_terminal, bool):
-        problems.append(f"terminal= takes True or False, not {declaration.has_terminal!r}")
     if problems:
         return []
     definitions = []
@@ -642,7 +600,6 @@ def _build_definition(
         is_default=declaration.is_default,
         is_always=declaration.is_always,
         pool=declaration.pool if isinstance(declaration.pool, Pool) else None,
-        has_terminal=declaration.has_terminal,
         fn=declaration.fn,
         args=args,
         kwargs=kwargs,
@@ -652,11 +609,6 @@ def _build_definition(
         values=values,
         text_values=text_values,
         path_values=path_values,
-        order_only_parameters=frozenset(
-            parameter
-            for parameter, slot in slots.items()
-            if isinstance(slot, _PathSlot) and slot.kind is Kind.ORDER_ONLY
-        ),
         args_slot=args_slot,
     )
 
@@ -732,7 +684,6 @@ def _hash_values(
 ) -> dict[Definition, bytes]:
     """Return each rule's fingerprint of what collection knows: its code, values, and paths, the project's variables, and its epoch. A task records nothing, so neither hashes nor checks its values."""
     function_digests: dict[Callable[..., object], hashlib._Hash | None] = {}
-    unread_by_function: dict[Callable[..., object], frozenset[str]] = {}
     digests: dict[Definition, bytes] = {}
     env = repr(sorted(context.env.items())).encode()
     for definition in definitions:
@@ -746,20 +697,12 @@ def _hash_values(
         digest = function_digest.copy() if function_digest is not None else hashlib.sha256()
         feed(digest, b"env", env)
         feed(digest, b"epoch", str(context.epoch).encode())
-        if function_digest is not None and definition.fn not in unread_by_function:
-            unread_by_function[definition.fn] = _find_unread_order_only(definition, trees)
-        unread = unread_by_function.get(definition.fn, frozenset())
-        path_values = {
-            parameter: paths
-            for parameter, paths in definition.path_values.items()
-            if parameter not in unread
-        }
         problems = []
         lambdas: list[types.FunctionType] = []
         for kind, values, keys in (
             ("parameter", definition.values, output_keys),
             ("text parameter", definition.text_values, None),
-            ("path parameter", path_values, None),
+            ("path parameter", definition.path_values, None),
         ):
             problems.extend(_feed_values(context, digest, kind, values, keys, lambdas))
         problems.extend(_feed_lambdas(context, digest, lambdas, trees))
@@ -769,14 +712,6 @@ def _hash_values(
         if function_digest is not None and not problems:
             digests[definition] = digest.digest()
     return digests
-
-
-def _find_unread_order_only(definition: Definition, trees: dict[str, ast.Module]) -> frozenset[str]:
-    """Return the fac.OrderOnly parameters the recipe of `definition`, whose source is readable, never names, whose paths can therefore change nothing it writes."""
-    if not definition.order_only_parameters:
-        return frozenset()
-    assert isinstance(definition.fn, types.FunctionType)
-    return definition.order_only_parameters - find_named_parameters(definition.fn, trees)
 
 
 def _hash_function(
@@ -951,6 +886,8 @@ def _validate_inputs(
                     )
                 )
             elif not os.path.exists(path):
+                if context.observed is not None:
+                    context.observed.add_absent(path)
                 message = (
                     f"{definition.label} inputs {path}, which doesn't exist, and no rule outputs it"
                 )

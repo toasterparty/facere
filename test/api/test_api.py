@@ -1,4 +1,4 @@
-"""The rest of the fac.py interface and fac.main: exports, decorators, fac.out, minimum_version, epoch, flags, and isolation between calls."""
+"""The rest of the fac.py interface and fac.main: exports, decorators, fac.out, minimum_version, epoch, console, flags, and isolation between calls."""
 
 import os
 import sys
@@ -14,11 +14,13 @@ from ..helpers import Fac
 def test_all_exports_exactly_the_fac_py_interface() -> None:
     assert sorted(facere.__all__) == [
         "Args",
+        "Console",
         "Input",
         "OrderOnly",
         "Output",
         "add_inputs",
         "capture",
+        "console",
         "env",
         "epoch",
         "give_lock",
@@ -175,6 +177,18 @@ def test_epoch_set_twice_to_different_numbers_fails_naming_both_calls(fac: Fac) 
     assert result.err.splitlines() == [
         "fac.py:5:1: error: fac.epoch sets 2, though another call set 1",
         "fac.py:3:1: note: fac.epoch sets the epoch here",
+        "Failed after <elapsed>.",
+    ]
+
+
+@pytest.mark.project("console_conflict")
+def test_console_set_twice_to_different_modes_fails_naming_both_calls(fac: Fac) -> None:
+    result = fac()
+
+    assert result.status == 2
+    assert result.err.splitlines() == [
+        "fac.py:4:1: error: fac.console sets ON_FAILURE, though another call set AFTER",
+        "fac.py:3:1: note: fac.console sets the default here",
         "Failed after <elapsed>.",
     ]
 

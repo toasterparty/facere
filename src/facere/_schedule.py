@@ -1,6 +1,7 @@
 """The threads recipes execute on, and the main thread's wait on them, since only the main thread receives the signals that end a build early."""
 
 import contextlib
+import os
 import signal
 import sys
 import threading
@@ -26,6 +27,12 @@ class Signals:
         self.is_hung_up = True
         raise KeyboardInterrupt
 
+    def end_if_hung_up(self) -> None:
+        """End the process by SIGHUP, as it would have ended but for on_hangup, where the terminal closed. Call it once everything is cleaned up."""
+        if self.is_hung_up and sys.platform != "win32":
+            signal.signal(signal.SIGHUP, signal.SIG_DFL)
+            os.kill(os.getpid(), signal.SIGHUP)
+
 
 @contextlib.contextmanager
 def watch_signals() -> Generator[Signals]:
@@ -47,6 +54,15 @@ def watch_signals() -> Generator[Signals]:
     finally:
         for signum, handler in saved.items():
             signal.signal(signum, handler)
+
+
+def enable_interrupts() -> None:
+    """On Windows, let Ctrl-C interrupt this process, which a parent starting it in a process group of its own disables, as a watch starts each cycle so it can send CTRL_BREAK_EVENT to that cycle alone."""
+    if sys.platform == "win32":
+        import ctypes
+
+        # Fails only without a console, where no Ctrl-C can arrive.
+        ctypes.WinDLL("kernel32").SetConsoleCtrlHandler(None, False)
 
 
 class Crew:

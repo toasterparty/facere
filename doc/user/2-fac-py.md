@@ -40,7 +40,7 @@ def app(objects: list[fac.Input], program: fac.Output):
     fac.run(CC, objects, "-o", program)
 ```
 
-*(0.4)* `@fac.rule(terminal=True)` gives a rule's commands the terminal, as a task's have, for a rule that needs a person, such as signing with a PIN. Such a rule executes while no other rule's output is shown, and fails without a terminal, so CI never waits on it. It still executes only when stale. *(planned)* The option goes: a command passes `console=fac.Console.LIVE` instead, and holds the terminal only while it runs.
+*(0.4)* A command that needs a person, such as signing with a PIN, passes `console=fac.Console.LIVE` to `fac.run`, which gives it the terminal, as a task's commands have. It holds the terminal only while it runs, one such command at a time, while other rules' output waits, and fails at once without a terminal, so CI never waits on it. Its rule still executes only when stale.
 
 *(planned)* `@fac.rule(clear=True)` deletes every output before the recipe executes, for a tool that keeps what an earlier execution left, such as `ar r`, `zip`, or `uv build --out-dir`.
 
@@ -64,7 +64,7 @@ Before executing any recipe, Facere loads `fac.py` and checks every rule, so a m
 
 `fac.run` runs one command, and *(0.4)* returns nothing. It runs without a shell, so pass the program and each argument separately: `fac.run("pandoc", source)`, never `fac.run("pandoc about.txt")`. A list or tuple of strings passes each of its elements as one argument. A command that exits non-zero fails the recipe.
 
-*(0.4)* `fac.capture` takes the same arguments but `stdout=` and `quiet=`, and returns the command's standard output as text, printing nothing else when the command succeeds, in a rule and a task alike: `version = fac.capture("git", "describe")`.
+*(0.4)* `fac.capture` takes the same arguments but `stdout=` and `console=`, and returns the command's standard output as text, printing nothing else when the command succeeds, in a rule and a task alike: `version = fac.capture("git", "describe")`.
 
 In a rule, a command reads an empty standard input and has no terminal to prompt on, so one that would ask for a password fails at once. *(0.4)* Its output, and whatever the recipe prints, is kept and printed whole once the rule finishes, so rules executing at once never mix their lines. When `fac` runs in a terminal, the command's standard error is a terminal of its own outside Windows, so a compiler colors its diagnostics as it would on its own, while its standard output stays a pipe. Keyword arguments adjust that:
 
@@ -73,7 +73,7 @@ In a rule, a command reads an empty standard input and has no terminal to prompt
 | `stdin=`, `stdout=`, `stderr=` | Name a file to read standard input from or write a stream to. A file both `stdout=` and `stderr=` name gets both streams |
 | `env=` | Set environment variables over the inherited ones and those `fac.env` sets. `None` unsets a variable |
 | `cwd=` | Run in another directory, relative to the root. *(0.4)* Its output is framed by `fac: Entering directory` and `fac: Leaving directory` lines, as make prints them, so an editor resolves the relative paths in a tool's diagnostics |
-| `quiet=True` | Hide the command's output when it succeeds. *(0.4)* In a task, the command runs as in a rule instead, with its output kept and an empty standard input. *(planned)* `console=` takes its place: `fac.Console.LIVE` prints as it runs and may prompt, `AFTER` prints once the rule finishes, and `ON_FAILURE` prints only if the failure fails the recipe. Rules default to `AFTER`, tasks to `LIVE`, and `fac.console(mode)` in a `fac.py` sets the default for the rules that file defines |
+| `console=` *(0.4)* | Choose how the command meets the terminal: `fac.Console.LIVE` prints as it runs and may prompt, `AFTER` prints once the rule finishes, and `ON_FAILURE` prints only if the failure fails the recipe. A rule's commands default to `AFTER` and a task's to `LIVE`, and `fac.console(fac.Console.ON_FAILURE)`, called while `fac.py` loads, changes a rule's default. In 0.3, `quiet=True` hides the output of a command that succeeds |
 | `timeout=` | Kill the command after that many seconds, failing the recipe |
 
 *(0.2)* `fac.env(LC_ALL="C")`, called while `fac.py` loads, sets a variable for every command, or unsets it with `None`. Calls may repeat a variable's value, but one that changes it fails, naming both calls. Unlike a variable inherited from your shell, it joins every rule's fingerprint, so changing it re-executes them.
@@ -103,8 +103,8 @@ Facere compares content, never timestamps. A rule executes when any of these cha
 - *(0.4)* the paths a `fac.OrderOnly` parameter holds, though never their content
 - *(0.4)* the content of a file its recipe last reported through `fac.add_inputs`, wherever it lies, or a new file under the root, or a new output, with the name of one it reported, since a tool searching a path may find that first
 - its recipe's code, along with *(0.4)* that of the function a decorator wraps
-- a value the recipe receives, or a module constant or closure variable it reads, *(0.2)* a shared module's included. *(0.4)* A value counts by its content wherever `pickle` can take it apart, a dataclass, enum member, date, or compiled pattern included, and one it cannot, such as an open file or a lock, fails collection. A function, class, or module counts by its name alone
-- *(0.4)* the number `fac.epoch(n)` sets in the root `fac.py`. The code a recipe calls, such as a helper in `fac.py`, a class, or a shared module, joins no fingerprint: after editing it in a way that changes what rules build, raise the epoch, which executes every rule once on every machine. `fac` warns once when it sees such an edit, unless the epoch changed too
+- a value the recipe receives, or a module constant or closure variable it reads, *(0.2)* a shared module's included. *(0.4)* A value counts by its content wherever `pickle` can take it apart, a dataclass, enum member, date, or compiled pattern included, and one it cannot, such as an open file or a lock, fails collection, as does `os.environ`, since the environment you inherit never counts. A function, class, or module counts by its name alone
+- *(0.4)* the number `fac.epoch(n)` sets in the root `fac.py`. The code a recipe calls, such as a helper in `fac.py`, a class, or a shared module, joins no fingerprint: after editing it in a way that changes what rules build, raise the epoch, which executes every rule once on every machine. [Best practices](./7-best-practices.md#hidden-inputs) shows how to keep such logic where a fingerprint sees it, so a project rarely needs the epoch
 - a variable `fac.env` sets *(0.2)*
 - one of its outputs, deleted or edited by hand, and *(planned)* a virtual output changed in or missing from its store
 

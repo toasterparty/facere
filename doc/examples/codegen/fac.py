@@ -4,10 +4,10 @@ import os
 import shutil
 import sys
 
+import facere as fac
+
 # A plain module that knows nothing of Facere.
 from tools import messages
-
-import facere as fac
 
 ZIG_VERSION = "0.16.0"
 CC = ["uvx", "--from", f"ziglang=={ZIG_VERSION}", "python-zig", "cc"]
@@ -61,8 +61,8 @@ def parse_depfile(path):
 # Order-only headers are built before any compile, and make it stale only once its depfile lists them.
 # Drop `headers` and the compile fails, naming the rule that outputs the header it read, since nothing
 # orders it after the generator. The price is that the first run waits for every header.
-# The recipe never names `headers`, so the list stays out of each compile's fingerprint, and a new
-# header executes only the compiles that come to include it.
+# The list joins each compile's fingerprint, so a new header executes every compile, though only
+# those that come to include it can produce different bytes.
 # A new file named as a header a compile read, such as a login.h at the root, might shadow it.
 # Facere compares names alone, so each such compile executes.
 @fac.rule(each=OBJECT_FILE_RULES)

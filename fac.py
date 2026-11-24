@@ -224,6 +224,12 @@ def coverage() -> None:
 
 
 @fac.task
+def bench(args: fac.Args) -> None:
+    """Time this tree's no-op on a generated C-shaped project, passing `tools/noop-benchmark.py` the arguments after --, such as --base HEAD."""
+    _uv_run("python", "tools/noop-benchmark.py", *args)
+
+
+@fac.task
 def ci(directory: fac.Input = DIST, version_file: fac.Input = VERSION_FILE) -> None:
     """Run what a pull request must pass: `test`, then a check of the wheel `dist` builds."""
     test(())

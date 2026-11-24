@@ -13,7 +13,7 @@ def test_a_pipeline_stops_where_an_output_comes_out_the_same(tmp_path: Path) -> 
         with path.open("a") as table:
             table.write(row)
 
-    assert closing_line(root) == "Finished in <elapsed>. Executed 6 rules."
+    assert run_fac(root) == (0, "", "Finished in <elapsed>. Executed 6 rules.\n")
     assert closing_line(root) == "Finished in <elapsed>. No work to do. 9 outputs up to date."
 
     add_row(root / "data" / "south.csv", "gears,5\n")

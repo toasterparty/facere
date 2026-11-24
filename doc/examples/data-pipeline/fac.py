@@ -8,6 +8,9 @@ import facere as fac
 
 # Sets each variable for every command, and joins every rule's fingerprint.
 fac.env(LC_ALL="C", PYTHONUTF8="1")
+# Shows what a rule's command prints only when the command fails the rule, so a build that succeeds
+# prints only its closing line. A task's commands still print as they run.
+fac.console(fac.Console.ON_FAILURE)
 
 # A new value executes `total` and what follows from it, since its summary changes.
 CURRENCY = "USD"

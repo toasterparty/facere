@@ -227,6 +227,14 @@ def test_quiet_task_command_that_fails_shows_the_output_it_hid(fac: Fac) -> None
     assert "from stderr\n" in result.err
 
 
+@pytest.mark.project("console_invalid")
+def test_run_given_a_console_that_is_no_member_fails_the_recipe(fac: Fac) -> None:
+    result = fac()
+
+    assert result.status == 1
+    assert result.err.splitlines()[-3].startswith("TypeError: ")
+
+
 @pytest.mark.project("outside_recipe")
 def test_run_outside_a_recipe_fails_collection(fac: Fac) -> None:
     result = fac()

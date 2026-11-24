@@ -7,4 +7,4 @@ SCRIPT = "import sys; print('from stdout'); print('from stderr', file=sys.stderr
 
 @fac.task(default=True)
 def fail():
-    fac.run(sys.executable, "-c", SCRIPT, quiet=True)
+    fac.run(sys.executable, "-c", SCRIPT, console=fac.Console.ON_FAILURE)

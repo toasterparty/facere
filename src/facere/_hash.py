@@ -1,4 +1,4 @@
-"""Content hashes of values and recipe code, from which fingerprints are built, and of the code no fingerprint holds."""
+"""Content hashes of values and recipe code, from which fingerprints are built."""
 
 from __future__ import annotations
 
@@ -8,19 +8,19 @@ import copy
 import copyreg
 import dis
 import hashlib
+import os
 import types
 import typing
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterator
 from pathlib import PurePath
 
 _GLOBAL_LOADS = frozenset({"LOAD_GLOBAL", "LOAD_NAME", "LOAD_FROM_DICT_OR_GLOBALS"})
 _ATTRIBUTE_LOADS = frozenset({"LOAD_ATTR", "LOAD_METHOD"})
-_FRAME_READERS = frozenset({"locals", "vars", "eval", "exec"})
 
 _Node = typing.TypeVar("_Node", bound=ast.AST)
 
 # Pinned, since a new default protocol could take values apart differently and change every fingerprint.
-_PICKLE_PROTOCOL = 5
+_PICKLE_PROTOCOL = 4
 
 
 class UnhashableValueError(Exception):
@@ -45,7 +45,7 @@ def feed(digest: hashlib._Hash, tag: bytes, payload: bytes) -> None:
 def feed_value(digest: hashlib._Hash, value: object) -> list[types.FunctionType]:
     """Feed `value` to `digest` by its content, taking apart what is no plain container as pickle would, functions, classes, and modules by qualified name, and return the lambdas `value` is or holds, which no name finds.
 
-    Raises UnhashableValueError for a value pickle can't take apart, a path object, or a value that holds itself.
+    Raises UnhashableValueError for a value pickle can't take apart, a path object, `os.environ`, or a value that holds itself.
     """
     lambdas: list[types.FunctionType] = []
     _feed_value(digest, value, lambdas, frozenset())
@@ -85,6 +85,10 @@ def _feed_value(
         feed(digest, b"Q", f"{value.__module__}.{value.__qualname__}".encode())
     elif isinstance(value, PurePath):
         raise UnhashableValueError(value, "Facere paths are strings with /")
+    elif isinstance(value, type(os.environ)):
+        raise UnhashableValueError(
+            value, "it is the inherited environment, which stays out of fingerprints"
+        )
     elif id(value) in enclosing:
         raise UnhashableValueError(value, "it holds itself")
     else:
@@ -252,54 +256,6 @@ def calc_code_text(fn: types.FunctionType, trees: dict[str, ast.Module]) -> str:
     stripped = _strip_docstrings(_find_function_node(fn, trees))
     stripped.decorator_list = []
     return ast.dump(stripped, include_attributes=False)
-
-
-def calc_unfingerprinted_digest(
-    path: str, recipes: Iterable[types.CodeType], trees: dict[str, ast.Module]
-) -> str:
-    """Return a digest of the code in the Python file at `path` that no fingerprint holds: the syntax trees of its functions and classes, without positions or docstrings, leaving out the `recipes` defined there wherever they lie, and every top-level statement, whose values a fingerprint holds where a recipe reads them. Parses the file into `trees` once."""
-    codes = [code for code in recipes if code.co_filename == path]
-    stripped = _strip_docstrings(parse(path, trees))
-    _remove_definitions(stripped, codes)
-    digest = hashlib.sha256()
-    for node in _iter_definitions(stripped):
-        feed(digest, b"code", ast.dump(node, include_attributes=False).encode())
-    return digest.hexdigest()
-
-
-def _remove_definitions(tree: ast.AST, codes: list[types.CodeType]) -> None:
-    """Remove from `tree`, wherever they lie, the definitions of the functions whose code is among `codes`."""
-    for node in ast.walk(tree):
-        for name, value in ast.iter_fields(node):
-            if isinstance(value, list):
-                kept = [
-                    item
-                    for item in value
-                    if not any(_is_definition_of(item, code) for code in codes)
-                ]
-                setattr(node, name, kept)
-
-
-def _iter_definitions(node: ast.AST) -> Iterator[ast.AST]:
-    """Yield the functions and classes `node` holds outside any function or class, as in the branches of a top-level `if`."""
-    for child in ast.iter_child_nodes(node):
-        if isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
-            yield child
-        else:
-            yield from _iter_definitions(child)
-
-
-def find_named_parameters(fn: types.FunctionType, trees: dict[str, ast.Module]) -> frozenset[str]:
-    """Return the parameters of `fn` that its body names, so may read: all of them where it names a function that reads its caller's variables, such as `locals`."""
-    code = fn.__code__
-    parameters = frozenset(code.co_varnames[: code.co_argcount + code.co_kwonlyargcount])
-    named = {
-        inner.id
-        for statement in _find_function_node(fn, trees).body
-        for inner in ast.walk(statement)
-        if isinstance(inner, ast.Name)
-    }
-    return parameters if named & _FRAME_READERS else parameters & named
 
 
 def _find_function_node(

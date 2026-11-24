@@ -65,6 +65,19 @@ Facere's side of the engine is `_build.py`, with the graph built in `_collect.py
 
 `test/engine/scenarios/` holds one transcript per behavior: a graph, its saved traces, and the host calls with the events `poll` must return between them. The files hold only names, keys, and digests, in a line format `test/engine/scenario.py` documents, so a second implementation replays them unchanged. The scenarios, not the types, are what implementations share: Python's keys and digests are strings, while one in C would intern keys to integers and take fixed-width digests. A change to the engine's behavior changes a scenario in the same commit, and a new behavior adds one.
 
+## Working on the engine
+
+- Write a scenario's expected events by reasoning, then run it. The failure message prints what the engine returned instead, which is a prompt to recheck the reasoning, never text to paste back.
+- A change to what the engine reads, or in what order, changes transcripts. Asking for fewer keys before a `run` is the usual diff, and is an improvement only where the skipped key cannot change the verdict.
+- `test/engine/test_properties.py` runs every project of one or two steps by default and of three under `--long`. Run `uv run --locked pytest test/engine -n0 --long` after any change to `_engine.py`.
+- The host must compare a recipe's inputs against what it told the engine, `observed` in `_build.py`, never against a later reading of the hash cache. A rule recorded with the engine's older digest and a newer file reads as current once the file changes back.
+- Each batch is a session of its own over the state as it found it, with the project collected again, so a task's edit to a source an earlier target already read is seen by the targets after the task.
+- A built trace pairs the step's inputs with their digests at completion, not at its check. That holds only because `finish` forgets nothing but the finishing step's own outputs, and every producer of an input settles before the check. Live invalidation breaks this, so an engine with it must keep each step's inputs as checked.
+- The hash cache's `Look` decides who may move what the session saw: only what the engine is told, `FIRST` or `AGAIN`. A check reads `CHECK`, or one rule's damage check would hide a change from another rule executing at once, which `test/api/test_in_flight.py` pins.
+- The state's schema version covers the hash cache too, so bumping it for a record change costs every project one full rebuild and one full rehash.
+- The no-op's hot loop is the found inputs of every rule, 30000 in the benchmark. `_decide_from` compares each once, and on resuming a check only those that had no digest, since a second full pass costs about 2.5 ms. A step with 1000 inputs makes any `x in tuple` over its inputs quadratic, which once cost `_build_graph` 6 ms.
+- The engine's import costs about 2 ms, most of it its enums and named tuples, so a new event type costs every invocation.
+
 ## Beyond Facere
 
 A host that loads assets while running needs what Facere never exercises, so none of it is in the Python engine: a step that learns its inputs only by running and must run again once they exist, which is also the `dyndep` mechanism the [roadmap](../roadmap.md) defers, invalidating one key in a live session, and releasing the keys a new target set no longer reaches. Each fits the polled interface as a finish status, a call, and an event.

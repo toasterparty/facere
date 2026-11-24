@@ -125,12 +125,72 @@ def test_project_is_loaded_once_where_no_target_follows_the_task(root: Path, fac
 
 
 @pytest.mark.project("terminal_rule")
-def test_rule_that_needs_a_terminal_fails_naming_itself_without_one(root: Path, fac: Fac) -> None:
+def test_live_rule_command_fails_at_once_without_a_terminal_naming_its_rule(
+    root: Path, fac: Fac
+) -> None:
     result = fac()
 
     assert result.status == 1
-    assert result.err.splitlines() == [
-        "fac.py:6:2: error: rule 'sign' (build/signed.txt) failed: it is declared with terminal=True, and Facere's standard input and standard error are no terminal",
+    lines = result.err.splitlines()
+    assert lines[0] == "Traceback (most recent call last):"
+    assert lines[-3].startswith("RuntimeError: ")
+    assert lines[-2:] == [
+        "fac.py:6:2: error: rule 'sign' (build/signed.txt) failed",
         "Failed after <elapsed>.",
     ]
     assert not (root / "build" / "signed.txt").exists()
+
+
+def _fail_building_recipe(*_: object) -> None:
+    raise RuntimeError("engine bug")
+
+
+@pytest.mark.project("crash")
+def test_bug_in_facere_on_a_rules_worker_ends_the_invocation_as_a_crash(
+    fac: Fac, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("facere._build._Builder._build_recipe", _fail_building_recipe)
+
+    result = fac("page")
+
+    assert result.status == 4
+    assert result.err.splitlines()[-3:] == [
+        "RuntimeError: engine bug",
+        "fac: error: Facere itself raised this, which is a bug in Facere",
+        "Failed after <elapsed>.",
+    ]
+
+
+@pytest.mark.project("crash")
+def test_bug_in_facere_on_a_tasks_thread_ends_the_invocation_as_a_crash(
+    fac: Fac, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("facere._build._Builder._build_recipe", _fail_building_recipe)
+
+    result = fac("show")
+
+    assert result.status == 4
+    assert result.out == ""
+    assert result.err.splitlines()[-3:] == [
+        "RuntimeError: engine bug",
+        "fac: error: Facere itself raised this, which is a bug in Facere",
+        "Failed after <elapsed>.",
+    ]
+
+
+@pytest.mark.project("crash")
+def test_file_error_while_answering_the_engine_fails_the_rule_and_ends_the_invocation(
+    fac: Fac, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fail_recording(*_: object) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr("facere._build._Builder._record", fail_recording)
+
+    result = fac("page")
+
+    assert result.status == 1
+    assert result.err.splitlines() == [
+        "fac.py:4:2: error: rule 'page' (build/page.txt) failed: disk full",
+        "Failed after <elapsed>.",
+    ]

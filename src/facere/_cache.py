@@ -7,7 +7,7 @@ import posixpath
 import stat
 import sys
 import threading
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from typing import NamedTuple
 
 from facere._context import (
@@ -35,6 +35,14 @@ class Entry(NamedTuple):
 
     stamp: str
     digest: str
+    is_racy: bool
+
+
+class Listing(NamedTuple):
+    """A directory's entries, as calc_entries gives them, with the stamp of the stat taken before listing it. `is_racy` holds as an entry's does."""
+
+    stamp: str
+    entries: tuple[str, ...]
     is_racy: bool
 
 
@@ -77,6 +85,7 @@ class HashCache:
         self._lock = threading.Lock()
         self._seen: dict[str, Hashed] = {}
         self._walked: set[str] = set()
+        self._listed: dict[str, tuple[str, ...]] = {}
         self._saved: dict[str, Entry] = {}
         self._removed: set[str] = set()
 
@@ -125,6 +134,21 @@ class HashCache:
             return _hash_file(path, info.st_mode)
         except OSError:
             return None
+
+    def get_seen_files(self) -> dict[str, str]:
+        """Return the hash of each regular file the session saw, by path."""
+        with self._lock:
+            return {
+                path: hashed.digest
+                for path, hashed in self._seen.items()
+                if hashed.digest[0] in "FX"
+            }
+
+    def get_listed(self) -> dict[str, tuple[str, ...]]:
+        """Return calc_entries of each directory the session walked in a tree, as it last saw it, by path."""
+        with self._lock:
+            listed = dict(self._listed)
+        return {path: calc_entries(names) for path, names in listed.items()}
 
     def take_changes(self, *, is_final: bool = False) -> HashChanges:
         """Return the changes since the last call, and forget them. Where `is_final`, also drop the entries of files gone from the trees walked."""
@@ -179,6 +203,10 @@ class HashCache:
         stamps: list[tuple[str, Stamp]] = []
         with os.scandir(path) as scan:
             entries = sorted(scan, key=lambda entry: entry.name)
+        if look is not Look.CHECK:
+            names = tuple(entry.name for entry in entries)
+            with self._lock:
+                self._listed[path] = names
         for entry in entries:
             child = f"{path}/{entry.name}"
             try:
@@ -300,6 +328,71 @@ def iter_listed_files(out_dir: str) -> Iterator[str]:
         ]
         for name in names:
             yield posixpath.normpath(posixpath.join(relative, name))
+
+
+def calc_entries(names: Iterable[str]) -> tuple[str, ...]:
+    """Return the entry names a directory listing gave, less hidden ones, sorted, so they compare equal whatever order the listing gave them in."""
+    return tuple(sorted(name for name in names if not name.startswith(".")))
+
+
+def fetch_file_stamp(path: str) -> str | None:
+    """Return the stamp of the regular file at `path`, as an entry holds it, or None where none is there."""
+    try:
+        info = os.stat(path)
+        if not stat.S_ISREG(info.st_mode):
+            return None
+        return _calc_stamp(path, info)[0]
+    except OSError:
+        return None
+
+
+def poll_file(
+    path: str, last: Entry | None, start_ns: int, file_systems: FileSystems
+) -> Entry | None:
+    """Return the hash of the file at `path` with its stamp, as a poll outside any session finds it: `last` where a stat vouches for it, as a session trusts an entry, or else a hash read now. `start_ns` is when the poll started, which decides what is racy. None where no regular file is there."""
+    try:
+        info = os.stat(path)
+        if not stat.S_ISREG(info.st_mode):
+            return None
+        stamp, change_ns = _calc_stamp(path, info)
+        if _is_vouched(last, stamp, path, info, file_systems):
+            return last
+        digest = _hash_file(path, info.st_mode)
+    except OSError:
+        return None
+    return Entry(stamp, digest, change_ns >= start_ns - _RACY_MARGIN_NS)
+
+
+def poll_directory(
+    path: str, last: Listing | None, start_ns: int, file_systems: FileSystems
+) -> Listing | None:
+    """Return the entries of the directory at `path` with its stamp, as poll_file does for a file: `last` where a stat vouches for it, or else a listing read now. None where no directory is there."""
+    try:
+        info = os.stat(path)
+        if not stat.S_ISDIR(info.st_mode):
+            return None
+        stamp, change_ns = _calc_stamp(path, info)
+        if _is_vouched(last, stamp, path, info, file_systems):
+            return last
+        entries = calc_entries(os.listdir(path))
+    except OSError:
+        return None
+    return Listing(stamp, entries, change_ns >= start_ns - _RACY_MARGIN_NS)
+
+
+def _is_vouched(
+    last: Entry | Listing | None,
+    stamp: str,
+    path: str,
+    info: os.stat_result,
+    file_systems: FileSystems,
+) -> bool:
+    return (
+        last is not None
+        and last.stamp == stamp
+        and not last.is_racy
+        and file_systems.is_trusted(path, info)
+    )
 
 
 def _calc_stamp(path: str, info: os.stat_result) -> tuple[str, int]:

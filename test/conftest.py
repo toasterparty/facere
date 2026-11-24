@@ -1,3 +1,4 @@
+import os
 import shutil
 from pathlib import Path
 
@@ -6,10 +7,11 @@ import pytest
 
 @pytest.hookimpl(tryfirst=True)
 def pytest_configure(config: pytest.Config) -> None:
-    if config.option.basetemp is None:
-        basetemp = config.rootpath / "build" / "test" / "tmp"
-        basetemp.parent.mkdir(parents=True, exist_ok=True)
-        config.option.basetemp = basetemp
+    # A root rather than a fixed basetemp, so each run numbers its own directory under it and
+    # concurrent runs in one tree never wipe each other's.
+    temproot = config.rootpath / "build" / "test" / "tmp"
+    temproot.mkdir(parents=True, exist_ok=True)
+    os.environ.setdefault("PYTEST_DEBUG_TEMPROOT", str(temproot))
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:

@@ -6,7 +6,7 @@ import threading
 from collections.abc import Callable, Generator, Iterable
 from typing import TextIO, cast
 
-from facere._context import Context
+from facere._context import Context, Recipe
 
 Chunk = tuple[bool, bytes | str]
 """A piece of output, for stderr or else stdout: bytes a command wrote, written unaltered, or text."""
@@ -15,7 +15,7 @@ Chunk = tuple[bool, bytes | str]
 class Output:
     """Facere's own streams, written by one thread at a time.
 
-    While the terminal is held, for a rule that prompts, everything else waits, and is written once it is given back.
+    While a rule's command running `LIVE` holds the terminal, everything else waits, and is written once the command ends.
     """
 
     def __init__(self, stdout: TextIO, stderr: TextIO, status_cb: Callable[[str], None]) -> None:
@@ -23,6 +23,7 @@ class Output:
         self._stderr = stderr
         self._status_cb = status_cb
         self._lock = threading.Lock()
+        self._holder_lock = threading.Lock()
         self._is_held = False
         self._waiting: list[Chunk] = []
 
@@ -40,11 +41,23 @@ class Output:
             if not self._is_held:
                 self._status_cb(text)
 
-    def take_terminal(self) -> None:
-        with self._lock:
-            self._is_held = True
+    @contextlib.contextmanager
+    def hold_terminal(self, before: Iterable[Chunk], after: Iterable[Chunk]) -> Generator[None]:
+        """Write `before`, then hold the terminal for the block, one holder at a time, while every other write waits, then write `after` and what waited."""
+        with self._holder_lock:
+            with self._lock:
+                self._write(before)
+                self._is_held = True
+            try:
+                yield
+            finally:
+                with self._lock:
+                    self._is_held = False
+                    waiting, self._waiting = self._waiting, []
+                    self._write([*after, *waiting])
 
-    def give_terminal(self) -> None:
+    def end_hold(self) -> None:
+        """Write what waited and stop holding the terminal, for a holder an interrupt abandoned, such as a recipe waiting on its debugger."""
         with self._lock:
             self._is_held = False
             waiting, self._waiting = self._waiting, []
@@ -74,7 +87,7 @@ def write_data(stream: TextIO, data: bytes | str) -> None:
 def capture_recipes(context: Context) -> Generator[tuple[TextIO, TextIO]]:
     """Keep what each rule's recipe writes to `sys.stdout` and `sys.stderr` from its own thread in that recipe's output, for the length of the block, and yield the two streams as they were.
 
-    A task's writes, and those of a rule that has the terminal, pass through, as do those of any thread a recipe started.
+    A task's writes pass through, as do those of any thread a recipe started, and a rule's once ensure_held_for_debugger holds the terminal for it.
     """
     stdout = cast("TextIO", sys.stdout)
     stderr = cast("TextIO", sys.stderr)
@@ -84,6 +97,17 @@ def capture_recipes(context: Context) -> Generator[tuple[TextIO, TextIO]]:
         yield stdout, stderr
     finally:
         sys.stdout, sys.stderr = stdout, stderr
+
+
+def ensure_held_for_debugger(context: Context, recipe: Recipe) -> None:
+    """Hold the terminal for the rule's `recipe` until it ends, first writing what it wrote so far, so a debugger's prompt reaches the terminal while the recipe waits on it, and its output keeps its order."""
+    if recipe.terminal_hold is not None or context.output is None:
+        return
+    before = list(recipe.output)
+    recipe.output.clear()
+    hold = contextlib.ExitStack()
+    hold.enter_context(context.output.hold_terminal(before, []))
+    recipe.terminal_hold = hold
 
 
 class _RecipeBytes:
@@ -96,7 +120,7 @@ class _RecipeBytes:
 
     def write(self, data: bytes) -> int:
         recipe = self._context.find_rule_recipe()
-        if recipe is None or recipe.has_terminal:
+        if recipe is None or recipe.terminal_hold is not None:
             self._stream.flush()
             return self._stream.buffer.write(data)
         recipe.output.append((self._is_stderr, bytes(data)))
@@ -121,7 +145,7 @@ class _RecipeText:
 
     def write(self, text: str) -> int:
         recipe = self._context.find_rule_recipe()
-        if recipe is None or recipe.has_terminal:
+        if recipe is None or recipe.terminal_hold is not None:
             return self._stream.write(text)
         recipe.output.append((self._is_stderr, text))
         return len(text)

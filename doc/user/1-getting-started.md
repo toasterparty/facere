@@ -134,14 +134,15 @@ $ fac
 Finished in 19ms. Executed 2 rules.
 ```
 
-The fingerprint holds the recipe's own code, but not the code of `fill` or any other function it calls, which is why `page` passes `SITE_NAME` to `fill` rather than `fill` reading it. After an edit to `fill`, `fac` warns once and executes nothing. *(0.4)* Where the edit changes what rules build, add `fac.epoch(1)` near the top of `fac.py`, or raise the number it already passes, and every rule executes once, on every machine that builds the project:
+The fingerprint holds the recipe's own code, but not the code of `fill` or any other function it calls, which is why `page` passes `SITE_NAME` to `fill` rather than `fill` reading it. An edit to `fill` executes nothing, which suits most edits to a helper, such as a refactor:
 
 ```
 $ sed -i 's/text.replace(/text.strip().replace(/' fac.py
 $ fac
-fac.py:1:1: warning: code outside recipes changed, which executes no rule until fac.epoch rises
 Finished in 17ms. No work to do. 2 outputs up to date.
 ```
+
+*(0.4)* Where the edit changes what rules build, add `fac.epoch(1)` near the top of `fac.py`, or raise the number it already passes, and every rule executes once, on every machine that builds the project.
 
 Facere compares a value only if `fac.py` reads it as it loads. [Hidden inputs](./7-best-practices.md#hidden-inputs) lists what Facere cannot see.
 
@@ -266,7 +267,7 @@ def clean():
         shutil.rmtree(fac.out())
 ```
 
-A task is a function decorated with `@fac.task` that executes whenever you ask. It reads files as a rule does but writes none that Facere tracks, and its commands print live. `fac serve` inputs every file of the site, so it builds whatever is stale, then serves the site at `http://localhost:8000` until you stop it. Leave it running, edit a page, and run `fac` in a second terminal: the open tab updates itself, since the server reloads a page when `build/pages` changes. Two invocations on one output directory take turns, the second waiting for the first, so a task that keeps running calls `fac.give_lock()` *(0.4)* first, which lets the others in. *(planned)* `fac --watch serve` will rebuild on each save, with no second terminal. `fac clean` deletes the output directory, with Facere's state, its record of past builds, inside it. `fac.out()` *(0.2)* is that directory.
+A task is a function decorated with `@fac.task` that executes whenever you ask. It reads files as a rule does but writes none that Facere tracks, and its commands print live. `fac serve` inputs every file of the site, so it builds whatever is stale, then serves the site at `http://localhost:8000` until you stop it. Leave it running, edit a page, and run `fac` in a second terminal: the open tab updates itself, since the server reloads a page when `build/pages` changes. Two invocations on one output directory take turns, the second waiting for the first, so a task that keeps running calls `fac.give_lock()` *(0.4)* first, which lets the others in. *(0.4)* `fac --watch serve` rebuilds on each save and restarts the server, with no second terminal. `fac clean` deletes the output directory, with Facere's state, its record of past builds, inside it. `fac.out()` *(0.2)* is that directory.
 
 Targets build in the order given, so `fac clean serve` rebuilds from nothing, then serves. *(0.2)* Whatever follows `--` goes to a task's `fac.Args` parameter, so `fac serve -- 8080` picks another port.
 
@@ -278,10 +279,11 @@ Delete a page and its old HTML stays in `build/pages`, still served, until `fac 
 | --- | --- |
 | `-C path/to/project` | Run as if started in that directory, from anywhere |
 | `--out build-debug` | Keep outputs and state in that directory instead of `build/`, leaving `build/` alone |
-| `-q` | Hide the output of every successful command a rule runs. *(planned)* Except one running live, which no flag can hide |
+| `-q` | Hide the output of every successful command a rule runs. *(0.4)* A command running live, as a task's do by default, still prints |
 | `-j 4` *(0.4)* | Execute at most 4 rules at once, where the default is one per CPU |
 | `-k` *(0.4)* | After a failure, still build everything that does not depend on what failed |
 | `-v` *(0.2)* | Print each command, as one string, before it runs |
+| `--watch` *(0.4)* | Build the targets, then build them again on each change to what they read, until Ctrl-C |
 
 `-v` shows what `fac.run` made of its arguments. The pages and the home page run no command, since their recipes are plain Python:
 
@@ -292,6 +294,8 @@ $ fac -v
 /usr/bin/python3 tools/sitemap.py https://example.com/ index.html about.html projects.html
 Finished in 40ms. Executed 4 rules.
 ```
+
+*(0.4)* `fac --watch serve` builds the site and starts the server, then waits. Saving a page, or adding one to `pages/`, prints the file that changed, as in `fac: pages/new.html modified`, or a count where several did, stops the server as `kill` would, and runs `fac serve` again in a fresh process, which rebuilds what changed and starts the server again. A change during a build stops that build once the rules executing finish, and the next one picks up from there. A save that leaves a file as it was, `touch`, a hidden file, and the files Facere itself writes start nothing, while an output you edit by hand is rebuilt. An error in `fac.py` waits for the next save. Each build ends with the line `fac: watching for changes`, which an editor's background task can match, and arguments after `--` reach every build, as in `fac --watch serve -- 8080`.
 
 `fac --help` documents every flag, target, and exit status.
 
@@ -332,8 +336,8 @@ SITEMAP = fac.out("pages/sitemap.txt")
 SITE = [rule["html"] for rule in PAGE_RULES] + [INDEX, SITEMAP]
 
 
-# A fingerprint holds a recipe's own code, not this function's, so editing it executes nothing, and
-# fac warns once. It takes the site's name from its callers, whose fingerprints hold SITE_NAME.
+# A fingerprint holds a recipe's own code, not this function's, so editing it executes nothing.
+# It takes the site's name from its callers, whose fingerprints hold SITE_NAME.
 def fill(template, site, title, body):
     text = template.replace("{site}", site)
     return text.replace("{title}", title).replace("{body}", body)

@@ -80,7 +80,7 @@ ignore = ["E501"]
 "doc/examples/**" = ["ANN"]
 
 [tool.ty.src]
-include = ["fac.py", "release.py", "src", "test", "doc/examples"]
+include = ["fac.py", "release.py", "src", "test", "doc/examples", "tools/noop-benchmark.py"]
 exclude = [
     "doc/examples/c-server-client",
     "doc/examples/http-api/fac.py",

@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from ..helpers import Fac
+from ..helpers import Fac, wait_for_later_change_time
 
 EXECUTED_ONE = "Finished in <elapsed>. Executed 1 rule.\n"
 UP_TO_DATE_ONE = "Finished in <elapsed>. No work to do. 1 output up to date.\n"
@@ -34,15 +34,6 @@ def blind_stats(monkeypatch: pytest.MonkeyPatch) -> None:
         return f"{info.st_size}", max(info.st_mtime_ns, info.st_ctime_ns)
 
     monkeypatch.setattr("facere._cache._calc_stamp", calc_stamp)
-
-
-def wait_for_later_change_time(path: Path) -> None:
-    """Return once a file written now gets a later change time than `path`, as an edit made after an invocation does once the file system's clock ticks."""
-    probe = path.with_name(".tick")
-    probe.write_bytes(b"")
-    while probe.stat().st_ctime_ns <= path.stat().st_ctime_ns:
-        probe.write_bytes(b"")
-    probe.unlink()
 
 
 @pytest.mark.usefixtures("blind_stats")
@@ -147,6 +138,22 @@ def test_pipe_in_an_input_tree_counts_by_its_presence(root: Path, fac: Fac) -> N
     assert fac().err == UP_TO_DATE_ONE
 
     os.remove(root / "tree" / "pipe")
+
+    assert fac().err == EXECUTED_ONE
+
+
+@posix_only
+@pytest.mark.project("pipe_input")
+def test_pipe_named_as_an_input_counts_by_its_presence_and_is_never_opened(
+    root: Path, fac: Fac
+) -> None:
+    assert sys.platform != "win32"
+    os.mkfifo(root / "pipe")
+    assert fac().err == EXECUTED_ONE
+    assert fac().err == UP_TO_DATE_ONE
+
+    os.remove(root / "pipe")
+    (root / "pipe").write_text("now a file")
 
     assert fac().err == EXECUTED_ONE
 
