@@ -23,15 +23,18 @@ _Node = typing.TypeVar("_Node", bound=ast.AST)
 _PICKLE_PROTOCOL = 4
 
 
+def calc_type_name(value: object) -> str:
+    """Return the qualified name of the type of `value` as messages show it, without `builtins.`."""
+    cls = type(value)
+    return (
+        cls.__qualname__ if cls.__module__ == "builtins" else f"{cls.__module__}.{cls.__qualname__}"
+    )
+
+
 class UnhashableValueError(Exception):
     def __init__(self, value: object, reason: str) -> None:
-        cls = type(value)
         self.value = value
-        self.type_name = (
-            cls.__qualname__
-            if cls.__module__ == "builtins"
-            else f"{cls.__module__}.{cls.__qualname__}"
-        )
+        self.type_name = calc_type_name(value)
         self.reason = reason
         super().__init__(f"{self.type_name}: {reason}")
 
@@ -50,6 +53,13 @@ def feed_value(digest: hashlib._Hash, value: object) -> list[types.FunctionType]
     lambdas: list[types.FunctionType] = []
     _feed_value(digest, value, lambdas, frozenset())
     return lambdas
+
+
+def calc_value_digest(value: object) -> str:
+    """Return the digest of `value` as feed_value hashes it, which is what a virtual output's content is. Raises UnhashableValueError as feed_value does."""
+    digest = hashlib.sha256()
+    feed_value(digest, value)
+    return f"V{digest.hexdigest()}"
 
 
 def _feed_value(

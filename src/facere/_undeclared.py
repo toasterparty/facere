@@ -84,7 +84,7 @@ def _on_audit(event: str, args: tuple[object, ...]) -> None:
         return
     # Only the thread a rule's recipe executes on has one, so rules executing at once are each checked against their own.
     recipe = context.find_rule_recipe()
-    if recipe is None:
+    if recipe is None or recipe.is_calling_store:
         return
     path, _, flags = args
     if not isinstance(path, str | bytes | os.PathLike) or not isinstance(flags, int):

@@ -75,7 +75,7 @@ def main(args: list[str]) -> int:
         "targets",
         nargs="*",
         metavar="TARGET",
-        help="a rule or task name, which covers every rule its function defines, or, when it contains a path separator, one path a rule outputs, relative to the root. Without a TARGET, every rule and task declared with default=True, or else every rule and no task. Consecutive targets that name no task are built together, and a task executes alone, once the targets before it are built",
+        help="a rule or task name, which covers every rule its function defines, or, when it contains a path separator, one path a rule outputs, relative to the root, or a FileStore's path, which covers every rule writing to it. A TARGET ending in ] names one virtual output as messages show it, as in 'build/rows.txt[7]' or 'page[about]'. Without a TARGET, every rule and task declared with default=True, or else every rule and no task. Consecutive targets that name no task are built together, and a task executes alone, once the targets before it are built",
     )
     parser.add_argument(
         "-C",

@@ -112,7 +112,7 @@ def test_annotation_facere_cannot_read_fails(fac: Fac) -> None:
 
     assert result.status == 2
     assert result.err.splitlines() == [
-        "fac.py:6:2: error: parameter source has an annotation Facere can't read, and reads only fac.Input, list[fac.Input], fac.OrderOnly, list[fac.OrderOnly], fac.Output, list[fac.Output], and fac.Args",
+        "fac.py:6:2: error: parameter source has an annotation Facere can't read, and reads only fac.Input, fac.OrderOnly, fac.Output, fac.Input[fac.Virtual], and fac.Output[fac.Virtual], each alone or in a list, and fac.Args",
         "fac.py:11:2: error: can't read the annotations of undefined: NameError: name 'Missing' is not defined",
         "Failed after <elapsed>.",
     ]

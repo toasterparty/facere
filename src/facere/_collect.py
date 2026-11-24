@@ -10,6 +10,7 @@ import importlib.util
 import inspect
 import os
 import posixpath
+import re
 import sys
 import types
 import typing
@@ -17,7 +18,7 @@ from collections.abc import Callable, Container, Iterable, Mapping
 from dataclasses import dataclass
 from typing import NamedTuple
 
-from facere._api import Args
+from facere._api import Args, FileStore, Virtual
 from facere._context import (
     Context,
     Declaration,
@@ -35,6 +36,8 @@ from facere._engine import Graph, Step
 from facere._hash import (
     UnhashableValueError,
     calc_code_text,
+    calc_type_name,
+    calc_value_digest,
     feed,
     feed_value,
     find_closure_values,
@@ -48,6 +51,9 @@ MODULE_NAME = "__fac__"
 _RESERVED_OPTIONS = ("each", "name", "default", "pool", "always", "clear")
 _FINGERPRINT_FORMAT = b"facere fingerprint 8"
 _UNREADABLE_SOURCE = (OSError, LookupError, SyntaxError, ValueError)
+_STORE_METHODS = ("stamp", "read", "update")
+# A URI scheme of two characters or more, so a Windows drive letter is none.
+_URI = re.compile(r"[A-Za-z][A-Za-z0-9+.-]+://")
 _PATH_ANNOTATIONS = {
     Kind.INPUT: "fac.Input",
     Kind.ORDER_ONLY: "fac.OrderOnly",
@@ -62,13 +68,121 @@ class _Slot(enum.Enum):
 
 
 class _PathSlot(NamedTuple):
+    """A parameter holding paths, or where `is_virtual`, fac.Virtual values."""
+
     kind: Kind
     is_list: bool
+    is_virtual: bool = False
 
     @property
     def annotation(self) -> str:
         name = _PATH_ANNOTATIONS[self.kind]
+        if self.is_virtual:
+            name = f"{name}[fac.Virtual]"
         return f"list[{name}]" if self.is_list else name
+
+
+class _VirtualError(Exception):
+    """A fac.Virtual whose store, signature function, or key Facere can't hash, described as what a parameter holds."""
+
+
+def _calc_identity(owner: str, key: object) -> str:
+    """Return 32 hex digits identifying `key` within `owner`, the digest of a store's identity or of a signature function. Raises _VirtualError where Facere can't hash `key`."""
+    try:
+        hash(key)
+        key_digest = calc_value_digest(key)
+    except TypeError:
+        raise _VirtualError(
+            f"a fac.Virtual whose key, of type {calc_type_name(key)}, can't be a dict's key"
+        ) from None
+    except UnhashableValueError as error:
+        raise _VirtualError(
+            f"a fac.Virtual whose key, of type {calc_type_name(key)}, Facere can't hash, since {error.reason}"
+        ) from None
+    return hashlib.sha256(f"{owner}{key_digest}".encode()).hexdigest()[:32]
+
+
+def _show_key(key: object) -> str:
+    return key if isinstance(key, str) else repr(key)
+
+
+class _Stores:
+    """The stores, virtual outputs, and virtual sources the definitions name, as collection meets them.
+
+    `objects` holds the distinct store objects of each identity, by store id, `paths` each FileStore's path, by store id, `entries` each virtual output's store id and fac.Virtual, by engine key, and `sources` each virtual source's fac.Virtual, by engine key.
+    """
+
+    def __init__(self, root: str) -> None:
+        self.root = root
+        self._ids: dict[int, str] = {}
+        self.objects: dict[str, list[object]] = {}
+        self.paths: dict[str, str] = {}
+        self.entries: dict[str, tuple[str, Virtual]] = {}
+        self.sources: dict[str, Virtual] = {}
+
+    def add(self, virtual: Virtual) -> str:
+        """Return the engine key of the virtual output or virtual source `virtual`, which stays the same across invocations and never equals a path as normalize returns one, since it ends in `/`. Raises _VirtualError where Facere can't hash its store, signature function, or key."""
+        if virtual.store is None:
+            return self._add_source(virtual)
+        store = virtual.store
+        store_id = self._ids.get(id(store))
+        if store_id is None:
+            store_id, path = self._identify(store)
+            self._ids[id(store)] = store_id
+            self.objects.setdefault(store_id, []).append(store)
+            if path is not None:
+                self.paths[store_id] = path
+        engine_key = f"virtual:{_calc_identity(store_id, virtual.key)}/"
+        self.entries.setdefault(engine_key, (store_id, virtual))
+        return engine_key
+
+    def _add_source(self, virtual: Virtual) -> str:
+        """Return the engine key of the virtual source `virtual`, identified by its key and its signature function's qualified name, so the function's code stays out of it."""
+        try:
+            function_digest = calc_value_digest(virtual.fingerprint)
+        except UnhashableValueError as error:
+            raise _VirtualError(
+                f"a fac.Virtual whose fingerprint, of type {error.type_name}, Facere can't hash, since {error.reason}"
+            ) from None
+        engine_key = f"source:{_calc_identity(function_digest, virtual.key)}/"
+        self.sources.setdefault(engine_key, virtual)
+        return engine_key
+
+    def show(self, engine_key: str, writer: str | None) -> str:
+        """Return how messages show a virtual output: its FileStore's path, or else the name of the rule `writer` writing it, followed by its key in brackets, and where neither names it, the fac.Virtual. A virtual source shows as its key."""
+        source = self.sources.get(engine_key)
+        if source is not None:
+            return _show_key(source.key)
+        store_id, virtual = self.entries[engine_key]
+        prefix = self.paths.get(store_id, writer)
+        if prefix is None:
+            return repr(virtual)
+        return f"{prefix}[{_show_key(virtual.key)}]"
+
+    def _identify(self, store: object) -> tuple[str, str | None]:
+        digest = hashlib.sha256()
+        if isinstance(store, FileStore):
+            path = getattr(store, "path", None)
+            if not isinstance(path, str) or not path:
+                raise _VirtualError(
+                    f"a fac.Virtual whose store, a FileStore, has the path {path!r}, not a path relative to the root"
+                )
+            normalized = normalize(path, self.root)
+            feed(digest, b"file", normalized.encode())
+            return digest.hexdigest(), normalized
+        missing = [name for name in _STORE_METHODS if not callable(getattr(store, name, None))]
+        if missing:
+            raise _VirtualError(
+                f"a fac.Virtual whose store, of type {calc_type_name(store)}, has no {missing[0]} method, though a store other than a FileStore has stamp, read, and update"
+            )
+        try:
+            feed(digest, b"store", b"")
+            feed_value(digest, store)
+        except UnhashableValueError as error:
+            raise _VirtualError(
+                f"a fac.Virtual whose store, of type {calc_type_name(store)}, Facere can't hash, since {error.reason}"
+            ) from None
+        return digest.hexdigest(), None
 
 
 class _Declared(typing.Protocol):
@@ -90,7 +204,7 @@ def _diagnose(subject: _Declared, message: str, notes: tuple[Note, ...] = ()) ->
 class Definition:
     """A rule, or a task when `is_task`, with every parameter filled.
 
-    `args_slot` places a task's fac.Args parameter: an index into `args`, a key of `kwargs`, or None when it has none. `path_values` holds the paths of each fac.Input, fac.OrderOnly, and fac.Output parameter.
+    `args_slot` places a task's fac.Args parameter: an index into `args`, a key of `kwargs`, or None when it has none. `path_values` holds the paths of each fac.Input, fac.OrderOnly, and fac.Output parameter, and the engine key of each fac.Virtual. `virtual_inputs` and `virtual_outputs` map the engine key of each virtual output the rule reads and writes to its fac.Virtual, `virtual_sources` that of each virtual source it inputs, and `shown_outputs` holds its outputs as messages show them, the paths first.
     """
 
     is_task: bool
@@ -110,6 +224,10 @@ class Definition:
     text_values: dict[str, object]
     path_values: dict[str, object]
     args_slot: int | str | None
+    virtual_inputs: dict[str, Virtual]
+    virtual_outputs: dict[str, Virtual]
+    virtual_sources: dict[str, Virtual]
+    shown_outputs: tuple[str, ...]
 
     @property
     def prerequisites(self) -> tuple[str, ...]:
@@ -117,8 +235,15 @@ class Definition:
         return (*self.inputs, *self.order_only)
 
     @property
+    def keys(self) -> tuple[str, ...]:
+        """Return the engine key of every output, the paths first, which the rule's record is keyed by."""
+        return (*self.outputs, *self.virtual_outputs)
+
+    @property
     def label(self) -> str:
-        return f"task '{self.name}'" if self.is_task else f"rule '{self.name}' ({self.outputs[0]})"
+        if self.is_task:
+            return f"task '{self.name}'"
+        return f"rule '{self.name}' ({self.shown_outputs[0]})"
 
     def calc_call(
         self, task_args: tuple[str, ...] | None
@@ -133,9 +258,44 @@ class Definition:
         return tuple(args), self.kwargs
 
 
+@dataclass(frozen=True, slots=True, eq=False)
+class DeclaredStore:
+    """A store holding a virtual output some rule declares.
+
+    `id` digests its identity: a FileStore's `path`, as normalize returns it, else its class and attributes. `name` is how messages show it, `code` digests the syntax trees of its class's methods, `attributes` digests what its attributes held as collection ended, and `location` is the first rule declaring one of its virtual outputs.
+    """
+
+    id: str
+    value: object
+    path: str | None
+    name: str
+    code: str
+    attributes: str
+    location: Location
+
+
+class VirtualEntry(NamedTuple):
+    """A virtual output by engine key: its store's id, its key, and how messages show it."""
+
+    store: str
+    key: object
+    text: str
+
+
+class SourceEntry(NamedTuple):
+    """A virtual source by engine key: its key, its signature function, and how messages show it."""
+
+    key: object
+    fingerprint: Callable[[typing.Any], object]
+    text: str
+
+
 @dataclass(frozen=True, slots=True)
 class Project:
-    """A root's rules and tasks. `graph` holds one step per definition, in order, whose keys are paths as normalize returns them, `pool_sizes` how many steps of each pool the graph names may run at once, and `producers_by_key` maps the path key of each output to its rule."""
+    """A root's rules and tasks. `graph` holds one step per definition, in order, whose keys are paths as normalize returns them and the engine keys of virtual outputs, `pool_sizes` how many steps of each pool the graph names may run at once, and `producers_by_key` maps the path key of each output to its rule.
+
+    `stores` holds each store a rule declares a virtual output of, by id, `virtuals` each virtual output by engine key, and `sources` each virtual source by engine key. `virtual_targets` maps how messages show each virtual output a rule writes to its engine key, and `store_writers` the path key of each FileStore to the rules writing to it.
+    """
 
     definitions: tuple[Definition, ...]
     by_name: dict[str, list[Definition]]
@@ -143,6 +303,11 @@ class Project:
     pool_sizes: dict[str, int]
     producers_by_key: dict[str, Definition]
     shared_modules: frozenset[str]
+    stores: dict[str, DeclaredStore]
+    virtuals: dict[str, VirtualEntry]
+    sources: dict[str, SourceEntry]
+    virtual_targets: dict[str, str]
+    store_writers: dict[str, tuple[Definition, ...]]
 
 
 def collect(context: Context) -> Project:
@@ -155,7 +320,8 @@ def collect(context: Context) -> Project:
     errors: list[Diagnostic] = []
     trees: dict[str, ast.Module] = {}
     _validate_imports(context, imported, trees, errors)
-    definitions = tuple(_define_all(context, errors))
+    stores = _Stores(context.root)
+    definitions = tuple(_define_all(context, stores, errors))
     _validate_outputs(context, definitions, errors)
     producers = {output: definition for definition in definitions for output in definition.outputs}
     by_name: dict[str, list[Definition]] = {}
@@ -164,9 +330,18 @@ def collect(context: Context) -> Project:
     _validate_names(by_name, errors)
     outputs_by_key = {calc_path_key(output): output for output in producers}
     producers_by_key = {key: producers[output] for key, output in outputs_by_key.items()}
+    users = _find_store_users(definitions, stores)
+    writers = _validate_virtuals(definitions, stores, users, errors)
     related = _map_related_outputs(definitions, outputs_by_key)
-    code_digests = _hash_values(context, definitions, producers_by_key.keys(), trees, errors)
-    _validate_inputs(context, definitions, producers, outputs_by_key, related, errors)
+    file_store_outputs = _map_file_store_outputs(stores, writers)
+    store_codes = _hash_store_codes(context, stores, users, trees, errors)
+    code_digests = _hash_values(
+        context, definitions, producers_by_key.keys(), stores, store_codes, trees, errors
+    )
+    _validate_inputs(
+        context, definitions, producers, outputs_by_key, related, file_store_outputs, errors
+    )
+    declared_stores = _declare_stores(stores, store_codes, users, errors)
     if errors:
         raise FacereError(*errors)
     pools = {
@@ -174,11 +349,29 @@ def collect(context: Context) -> Project:
         for number, definition in enumerate(definitions)
         if definition.pool is not None
     }
-    graph = _build_graph(definitions, related, code_digests, pools)
+    graph = _build_graph(definitions, related, file_store_outputs, code_digests, pools)
     if graph.cycle is not None:
-        raise FacereError(_build_cycle_error(definitions, graph.cycle, related))
+        raise FacereError(_build_cycle_error(definitions, graph.cycle, related, file_store_outputs))
     shared_modules = frozenset(calc_path_key(normalize(path, context.root)) for path in imported)
     pool_sizes = {name: pool.size for pool, name in pools.items()}
+    virtuals = {
+        key: VirtualEntry(store, virtual.key, stores.show(key, writers[key].name))
+        for key, (store, virtual) in stores.entries.items()
+        if key in writers
+    }
+    sources = {}
+    for key, virtual in stores.sources.items():
+        assert virtual.fingerprint is not None
+        sources[key] = SourceEntry(virtual.key, virtual.fingerprint, stores.show(key, None))
+    store_writers = {
+        calc_path_key(store.path): tuple(
+            definition
+            for definition in definitions
+            if any(virtuals[key].store == store.id for key in definition.virtual_outputs)
+        )
+        for store in declared_stores.values()
+        if store.path is not None
+    }
     return Project(
         definitions,
         by_name,
@@ -186,7 +379,170 @@ def collect(context: Context) -> Project:
         pool_sizes,
         producers_by_key,
         shared_modules,
+        declared_stores,
+        virtuals,
+        sources,
+        {entry.text: key for key, entry in virtuals.items()},
+        store_writers,
     )
+
+
+def _map_file_store_outputs(
+    stores: _Stores, writers: dict[str, Definition]
+) -> dict[str, tuple[str, ...]]:
+    """Return the engine key of each virtual output a rule writes to each FileStore, by the path key of its file, which a rule reading the whole file is ordered after."""
+    outputs: dict[str, list[str]] = {}
+    for key, (store_id, _) in stores.entries.items():
+        path = stores.paths.get(store_id)
+        if path is not None and key in writers:
+            outputs.setdefault(calc_path_key(path), []).append(key)
+    return {path_key: tuple(keys) for path_key, keys in outputs.items()}
+
+
+def _find_store_users(
+    definitions: tuple[Definition, ...], stores: _Stores
+) -> dict[str, Definition]:
+    """Return the first definition declaring a virtual output of each store, by store id."""
+    users: dict[str, Definition] = {}
+    for definition in definitions:
+        for key in (*definition.virtual_outputs, *definition.virtual_inputs):
+            users.setdefault(stores.entries[key][0], definition)
+    return users
+
+
+def _validate_virtuals(
+    definitions: tuple[Definition, ...],
+    stores: _Stores,
+    users: dict[str, Definition],
+    errors: list[Diagnostic],
+) -> dict[str, Definition]:
+    """Fail a virtual output two rules write, one a rule reads that no rule writes, a FileStore's path a rule outputs as a file, and two FileStore values on one path, and return the rule writing each virtual output, by engine key."""
+    claims: dict[str, list[Definition]] = {}
+    for definition in definitions:
+        for key in definition.virtual_outputs:
+            claims.setdefault(key, []).append(definition)
+    for key, claimants in claims.items():
+        if len(claimants) < 2:
+            continue
+        notes = tuple(
+            Note(
+                definition.location,
+                f"{definition.label} outputs {stores.show(key, definition.name)}",
+            )
+            for definition in claimants
+        )
+        message = f"{len(claimants)} rules output {stores.show(key, claimants[0].name)}"
+        errors.append(_diagnose(claimants[0], message, notes))
+    for definition in definitions:
+        for key in definition.virtual_inputs:
+            if key not in claims:
+                message = f"{definition.label} inputs {stores.show(key, None)}, which no rule outputs, though a store is never a source, and an input no rule writes is a fac.Virtual given fingerprint="
+                errors.append(_diagnose(definition, message))
+    paths = {calc_path_key(path): store_id for store_id, path in stores.paths.items()}
+    for definition in definitions:
+        for output in definition.outputs:
+            user = users.get(paths.get(calc_path_key(output), ""))
+            if user is None:
+                continue
+            message = f"{definition.label} outputs {output}, which holds the virtual outputs of a FileStore"
+            note = Note(user.location, f"{user.label} declares a virtual output of it")
+            errors.append(_diagnose(definition, message, (note,)))
+    for store_id, path in stores.paths.items():
+        objects = stores.objects[store_id]
+        if len(objects) < 2:
+            continue
+        first_users = {
+            id(virtual.store): definition
+            for definition in reversed(definitions)
+            for virtual in (
+                *definition.virtual_outputs.values(),
+                *definition.virtual_inputs.values(),
+            )
+        }
+        sharing = [first_users[id(store)] for store in objects if id(store) in first_users]
+        notes = tuple(
+            Note(definition.location, f"{definition.label} declares a virtual output of one")
+            for definition in sharing
+        )
+        message = f"{len(objects)} FileStore values share the path {path}"
+        errors.append(_diagnose(sharing[0], message, notes))
+    return {key: claimants[0] for key, claimants in claims.items()}
+
+
+def _hash_store_codes(
+    context: Context,
+    stores: _Stores,
+    users: dict[str, Definition],
+    trees: dict[str, ast.Module],
+    errors: list[Diagnostic],
+) -> dict[str, str]:
+    """Return the digest of the syntax trees of each store class's methods, by store id, leaving out the code they call and their class's module, as a recipe's fingerprint does."""
+    by_class: dict[type, str | None] = {}
+    codes = {}
+    for store_id, objects in stores.objects.items():
+        if store_id not in users:
+            continue
+        cls = type(objects[0])
+        if cls not in by_class:
+            by_class[cls] = _hash_store_class(context, cls, trees, users[store_id], errors)
+        code = by_class[cls]
+        if code is not None:
+            codes[store_id] = code
+    return codes
+
+
+def _hash_store_class(
+    context: Context,
+    cls: type,
+    trees: dict[str, ast.Module],
+    user: Definition,
+    errors: list[Diagnostic],
+) -> str | None:
+    digest = hashlib.sha256(_FINGERPRINT_FORMAT)
+    for klass in cls.__mro__:
+        for name, attribute in vars(klass).items():
+            fn = attribute
+            if isinstance(attribute, staticmethod | classmethod):
+                fn = attribute.__func__
+            elif isinstance(attribute, property):
+                fn = attribute.fget
+            if not isinstance(fn, types.FunctionType) or not _is_project_code(context, fn):
+                continue
+            feed(digest, b"method", f"{klass.__qualname__}.{name}".encode())
+            try:
+                feed(digest, b"code", calc_code_text(fn, trees).encode())
+            except _UNREADABLE_SOURCE as error:
+                message = f"store class {cls.__qualname__} has a method {klass.__qualname__}.{name} with no source Facere can read, which the fingerprint of each rule writing to it needs: {error}"
+                errors.append(_diagnose(user, message))
+                return None
+    return digest.hexdigest()
+
+
+def _declare_stores(
+    stores: _Stores,
+    codes: dict[str, str],
+    users: dict[str, Definition],
+    errors: list[Diagnostic],
+) -> dict[str, DeclaredStore]:
+    """Return each store a definition declares a virtual output of, by store id, with what its attributes hold as collection ends."""
+    declared = {}
+    for store_id, objects in stores.objects.items():
+        user = users.get(store_id)
+        if user is None:
+            continue
+        value = objects[0]
+        path = stores.paths.get(store_id)
+        name = path or type(value).__qualname__
+        try:
+            attributes = calc_value_digest(value)
+        except UnhashableValueError as error:
+            message = f"store {name} holds an attribute of type {error.type_name}, which Facere can't hash, since {error.reason}"
+            errors.append(_diagnose(user, message))
+            continue
+        declared[store_id] = DeclaredStore(
+            store_id, value, path, name, codes.get(store_id, ""), attributes, user.location
+        )
+    return declared
 
 
 def _map_related_outputs(
@@ -214,13 +570,19 @@ def _map_related_outputs(
 def _build_graph(
     definitions: tuple[Definition, ...],
     related: dict[str, tuple[str, ...]],
+    file_store_outputs: dict[str, tuple[str, ...]],
     code_digests: dict[Definition, bytes],
     pools: dict[Pool, str],
 ) -> Graph:
-    """Return a step per definition, ordered after the rule of each output related to a path the definition must have built first. Only an input's own content makes its step stale, so every other related output is order-only."""
+    """Return a step per definition, ordered after the rule of each output related to a path the definition must have built first, and of each virtual output of a FileStore whose file it inputs. Only an input's own content makes its step stale, so every other related output is order-only."""
     steps = []
     for definition in definitions:
         outputs = [output for path in definition.prerequisites for output in related[path]]
+        outputs.extend(
+            key
+            for path in definition.inputs
+            for key in file_store_outputs.get(calc_path_key(path), ())
+        )
         order_only = definition.order_only
         if outputs:
             inputs = frozenset(definition.inputs)
@@ -230,9 +592,9 @@ def _build_graph(
         steps.append(
             Step(
                 code_digests.get(definition, b"").hex(),
-                definition.inputs,
+                (*definition.inputs, *definition.virtual_inputs, *definition.virtual_sources),
                 order_only,
-                definition.outputs,
+                definition.keys,
                 definition.is_always,
                 None if definition.pool is None else pools[definition.pool],
             )
@@ -356,11 +718,13 @@ def _is_project_path(context: Context, path: str) -> bool:
     )
 
 
-def _define_all(context: Context, errors: list[Diagnostic]) -> Iterable[Definition]:
+def _define_all(
+    context: Context, stores: _Stores, errors: list[Diagnostic]
+) -> Iterable[Definition]:
     module_globals = sys.modules[MODULE_NAME].__dict__
     for declaration in context.declarations:
         problems: list[str] = []
-        definitions = _define(context, declaration, module_globals, problems)
+        definitions = _define(context, declaration, module_globals, stores, problems)
         errors.extend(_diagnose(declaration, problem) for problem in dict.fromkeys(problems))
         if not problems:
             yield from definitions
@@ -370,6 +734,7 @@ def _define(
     context: Context,
     declaration: Declaration,
     module_globals: dict[str, object],
+    stores: _Stores,
     problems: list[str],
 ) -> list[Definition]:
     decorator = "fac.task" if declaration.is_task else "fac.rule"
@@ -407,7 +772,7 @@ def _define(
         if bound is None:
             continue
         definition = _build_definition(
-            context, declaration, name, signature, slots, bound, problems
+            context, declaration, name, signature, slots, bound, stores, problems
         )
         if definition is not None:
             definitions.append(definition)
@@ -453,7 +818,7 @@ def _classify_parameters(
         slot = _classify(hints.get(parameter.name, inspect.Parameter.empty))
         if slot is None:
             problems.append(
-                f"parameter {parameter.name} has an annotation Facere can't read, and reads only fac.Input, list[fac.Input], fac.OrderOnly, list[fac.OrderOnly], fac.Output, list[fac.Output], and fac.Args"
+                f"parameter {parameter.name} has an annotation Facere can't read, and reads only fac.Input, fac.OrderOnly, fac.Output, fac.Input[fac.Virtual], and fac.Output[fac.Virtual], each alone or in a list, and fac.Args"
             )
             continue
         slots[parameter.name] = slot
@@ -465,27 +830,33 @@ def _classify(hint: object) -> _Slot | _PathSlot | None:
         return _Slot.ARGS
     if hint is str:
         return _Slot.TEXT
-    kind = _find_kind(hint)
-    if kind is not None:
-        return _PathSlot(kind, is_list=False)
+    slot = _find_path_slot(hint, is_list=False)
+    if slot is not None:
+        return slot
     args = typing.get_args(hint)
     if typing.get_origin(hint) is list and len(args) == 1:
-        kind = _find_kind(args[0])
-        if kind is not None:
-            return _PathSlot(kind, is_list=True)
+        slot = _find_path_slot(args[0], is_list=True)
+        if slot is not None:
+            return slot
         if args[0] is str:
             return _Slot.TEXT
     return None if _mentions_kind(hint) else _Slot.VALUE
 
 
-def _find_kind(hint: object) -> Kind | None:
+def _find_path_slot(hint: object, *, is_list: bool) -> _PathSlot | None:
+    """Return the slot of a fac.Input, fac.OrderOnly, or fac.Output annotation, whose bare form subscripts nothing, so its base is a TypeVar meaning str."""
     if typing.get_origin(hint) is not typing.Annotated:
         return None
     base, *metadata = typing.get_args(hint)
     kinds = [item for item in metadata if isinstance(item, Kind)]
-    if base is not str or len(kinds) != 1 or kinds[0] is Kind.ARGS:
+    if len(kinds) != 1 or kinds[0] is Kind.ARGS:
         return None
-    return kinds[0]
+    (kind,) = kinds
+    if base is str or isinstance(base, typing.TypeVar):
+        return _PathSlot(kind, is_list)
+    if base is Virtual and kind is not Kind.ORDER_ONLY:
+        return _PathSlot(kind, is_list, is_virtual=True)
+    return None
 
 
 def _mentions_kind(hint: object) -> bool:
@@ -539,9 +910,12 @@ def _build_definition(
     signature: inspect.Signature,
     slots: dict[str, _Slot | _PathSlot],
     bound: dict[str, object],
+    stores: _Stores,
     problems: list[str],
 ) -> Definition | None:
     paths_by_kind: dict[Kind, list[str]] = {kind: [] for kind in _PATH_ANNOTATIONS}
+    virtuals_by_kind: dict[Kind, dict[str, Virtual]] = {Kind.INPUT: {}, Kind.OUTPUT: {}}
+    virtual_sources: dict[str, Virtual] = {}
     filled: dict[str, object] = {}
     values: dict[str, object] = {}
     text_values: dict[str, object] = {}
@@ -552,6 +926,17 @@ def _build_definition(
         value = bound[parameter]
         if slot is _Slot.ARGS:
             args_parameters.append(parameter)
+        elif isinstance(slot, _PathSlot) and slot.is_virtual:
+            keyed = _key_virtuals(stores, parameter, slot, value, problems)
+            if keyed is None:
+                are_paths_valid = False
+                continue
+            for key, virtual in keyed:
+                held = virtual_sources if virtual.store is None else virtuals_by_kind[slot.kind]
+                held[key] = virtual
+            keys = [key for key, _ in keyed]
+            path_values[parameter] = keys if slot.is_list else keys[0]
+            value = [virtual for _, virtual in keyed] if slot.is_list else value
         elif isinstance(slot, _PathSlot):
             paths = _normalize_paths(context, parameter, slot, value, problems)
             if paths is None:
@@ -565,13 +950,19 @@ def _build_definition(
             values[parameter] = value
         filled[parameter] = value
     outputs = paths_by_kind[Kind.OUTPUT]
+    virtual_inputs = virtuals_by_kind[Kind.INPUT]
+    virtual_outputs = virtuals_by_kind[Kind.OUTPUT]
     if declaration.is_task and paths_by_kind[Kind.ORDER_ONLY]:
         problems.append(
             f"task {name} declares a fac.OrderOnly input, which only a rule's record can use, since a task records nothing"
         )
-    if declaration.is_task and outputs:
+    if declaration.is_task and (virtual_inputs or virtual_sources):
+        problems.append(
+            f"task {name} declares a fac.Input[fac.Virtual], which only a rule's record can track, since a task records nothing"
+        )
+    if declaration.is_task and (outputs or virtual_outputs):
         problems.append(f"task {name} declares an output, but a task writes no tracked output")
-    if not declaration.is_task and not outputs and are_paths_valid:
+    if not declaration.is_task and not (outputs or virtual_outputs) and are_paths_valid:
         problems.append(f"rule {name} declares no output")
     if args_parameters and not declaration.is_task:
         problems.append(
@@ -610,6 +1001,13 @@ def _build_definition(
         text_values=text_values,
         path_values=path_values,
         args_slot=args_slot,
+        virtual_inputs=virtual_inputs,
+        virtual_outputs=virtual_outputs,
+        virtual_sources=virtual_sources,
+        shown_outputs=(
+            *outputs,
+            *(stores.show(key, name) for key in virtual_outputs),
+        ),
     )
 
 
@@ -619,6 +1017,12 @@ def _normalize_paths(
     items = value if slot.is_list else [value]
     if isinstance(items, list | tuple):
         paths = [item for item in items if isinstance(item, str) and item]
+        uri = next((path for path in paths if _URI.match(path)), None)
+        if uri is not None and slot.kind is Kind.INPUT:
+            problems.append(
+                f"parameter {parameter} is annotated {slot.annotation} but holds the URI {uri!r}, not a path, and an input that is no file is a fac.Virtual"
+            )
+            return None
         if len(paths) == len(items):
             return [normalize(path, context.root) for path in paths]
     expected = "a list of paths" if slot.is_list else "a path"
@@ -626,6 +1030,33 @@ def _normalize_paths(
         f"parameter {parameter} is annotated {slot.annotation} but holds {value!r}, not {expected}"
     )
     return None
+
+
+def _key_virtuals(
+    stores: _Stores, parameter: str, slot: _PathSlot, value: object, problems: list[str]
+) -> list[tuple[str, Virtual]] | None:
+    """Return the engine key of each virtual output or virtual source a fac.Input[fac.Virtual] or fac.Output[fac.Virtual] parameter holds, with its fac.Virtual, or None where it holds anything else."""
+    items = value if slot.is_list else [value]
+    if not isinstance(items, list | tuple) or not all(isinstance(item, Virtual) for item in items):
+        expected = "a list of fac.Virtual values" if slot.is_list else "a fac.Virtual"
+        problems.append(
+            f"parameter {parameter} is annotated {slot.annotation} but holds {value!r}, not {expected}"
+        )
+        return None
+    keyed = []
+    for virtual in items:
+        assert isinstance(virtual, Virtual)
+        if virtual.store is None and slot.kind is Kind.OUTPUT:
+            problems.append(
+                f"parameter {parameter} is annotated {slot.annotation} but holds the virtual source {virtual!r}, which no rule writes, since Facere knows it only by its signature"
+            )
+            return None
+        try:
+            keyed.append((stores.add(virtual), virtual))
+        except _VirtualError as error:
+            problems.append(f"parameter {parameter} holds {error}")
+            return None
+    return keyed
 
 
 def _validate_outputs(
@@ -679,10 +1110,12 @@ def _hash_values(
     context: Context,
     definitions: tuple[Definition, ...],
     output_keys: Container[str],
+    stores: _Stores,
+    store_codes: dict[str, str],
     trees: dict[str, ast.Module],
     errors: list[Diagnostic],
 ) -> dict[Definition, bytes]:
-    """Return each rule's fingerprint of what collection knows: its code, values, and paths, the project's variables, and its epoch. A task records nothing, so neither hashes nor checks its values."""
+    """Return each rule's fingerprint of what collection knows: its code, values, and paths, the code of the store of each virtual output it writes, the project's variables, and its epoch. A task records nothing, so neither hashes nor checks its values."""
     function_digests: dict[Callable[..., object], hashlib._Hash | None] = {}
     digests: dict[Definition, bytes] = {}
     env = repr(sorted(context.env.items())).encode()
@@ -697,6 +1130,9 @@ def _hash_values(
         digest = function_digest.copy() if function_digest is not None else hashlib.sha256()
         feed(digest, b"env", env)
         feed(digest, b"epoch", str(context.epoch).encode())
+        written = {stores.entries[key][0] for key in definition.virtual_outputs}
+        for store_id in sorted(written):
+            feed(digest, b"store", store_codes.get(store_id, "").encode())
         problems = []
         lambdas: list[types.FunctionType] = []
         for kind, values, keys in (
@@ -862,6 +1298,7 @@ def _validate_inputs(
     producers: dict[str, Definition],
     outputs_by_key: dict[str, str],
     related: dict[str, tuple[str, ...]],
+    file_store_outputs: dict[str, tuple[str, ...]],
     errors: list[Diagnostic],
 ) -> None:
     for definition in definitions:
@@ -871,6 +1308,8 @@ def _validate_inputs(
                 errors.append(_diagnose(definition, message))
                 continue
             if related[path]:
+                continue
+            if path in definition.inputs and calc_path_key(path) in file_store_outputs:
                 continue
             output = outputs_by_key.get(calc_path_key(path))
             if output is not None:
@@ -898,14 +1337,27 @@ def _build_cycle_error(
     definitions: tuple[Definition, ...],
     cycle: tuple[tuple[int, str], ...],
     related: dict[str, tuple[str, ...]],
+    file_store_outputs: dict[str, tuple[str, ...]],
 ) -> Diagnostic:
     """Return the error for `cycle`, which holds each step with the output of the next that orders it after that one."""
     loop = [definitions[step] for step, _ in cycle]
     names = " -> ".join(definition.label for definition in [*loop, loop[0]])
     notes = []
     for index, (definition, (_, output)) in enumerate(zip(loop, cycle, strict=True)):
-        path = next(path for path in definition.prerequisites if output in related[path])
         rule = loop[(index + 1) % len(loop)]
+        if output in rule.virtual_outputs:
+            shown = dict(zip(rule.keys, rule.shown_outputs, strict=True))[output]
+            edge = f"{definition.label} inputs {shown}, which {rule.label} outputs"
+            if output not in definition.virtual_inputs:
+                path = next(
+                    path
+                    for path in definition.inputs
+                    if output in file_store_outputs.get(calc_path_key(path), ())
+                )
+                edge = f"{definition.label} inputs {path}, which holds {shown}, which {rule.label} outputs"
+            notes.append(Note(definition.location, edge))
+            continue
+        path = next(path for path in definition.prerequisites if output in related[path])
         notes.append(Note(definition.location, _describe_edge(definition, path, rule)))
     return _diagnose(loop[0], f"dependency cycle: {names}", tuple(notes))
 

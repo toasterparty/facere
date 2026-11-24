@@ -6,7 +6,7 @@ import os
 import posixpath
 import sys
 import threading
-from collections.abc import Callable, Container, Generator, Iterator
+from collections.abc import Callable, Container, Generator, Iterator, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, NamedTuple
 
@@ -81,7 +81,7 @@ class Pool:
 class Recipe:
     """One executing recipe, with what the undeclared-path check and fac.add_inputs track of it.
 
-    A task's commands and prints share Facere's own streams. A rule's are captured in `output`, in the order written, each chunk for stderr or else stdout, but for a command running `LIVE` and for everything after a `breakpoint()`, which sets `terminal_hold` to hold the terminal until the recipe ends, so the rest of its output shares Facere's streams as a task's does. Every path is keyed by calc_path_key, but `reported`, which keeps each reported path as normalize returns it, so two files differing only in case stay apart where the file system tells them apart. `tracked` holds the rule's inputs and outputs, `exempt` what its `str` parameters hold, and `output_keys` every output in the project. A recipe may open a shared module, but no command may name one, since what a command reads joins a fingerprint only as a declared input. `reported_names` holds the file name of every path reported outside `tracked`, dropped ones included. `undeclared`, the first use the check rejected, fails the rule however the recipe treats the error, as does `misuse`, the first call a thread the recipe started made that only the recipe's own thread may.
+    A task's commands and prints share Facere's own streams. A rule's are captured in `output`, in the order written, each chunk for stderr or else stdout, but for a command running `LIVE` and for everything after a `breakpoint()`, which sets `terminal_hold` to hold the terminal until the recipe ends, so the rest of its output shares Facere's streams as a task's does. Every path is keyed by calc_path_key, but `reported`, which keeps each reported path as normalize returns it, so two files differing only in case stay apart where the file system tells them apart. `tracked` holds the rule's inputs and outputs, `exempt` what its `str` parameters hold, and `output_keys` every output in the project. A recipe may open a shared module, but no command may name one, since what a command reads joins a fingerprint only as a declared input. `reported_names` holds the file name of every path reported outside `tracked`, dropped ones included. `virtual_inputs` and `virtual_outputs` map each fac.Virtual the rule declares to its engine key, `values` holds what fac.write set by engine key, with its digest, and `read_virtual_cb` returns a virtual input's value by engine key. `is_calling_store` holds while the recipe's thread calls a store's method, which the undeclared-path check exempts. `undeclared`, the first use the check rejected, fails the rule however the recipe treats the error, as does `misuse`, the first call a thread the recipe started made that only the recipe's own thread may.
     """
 
     is_task: bool
@@ -94,6 +94,11 @@ class Recipe:
     reported_keys: set[str] = field(default_factory=set)
     reported_names: set[str] = field(default_factory=set)
     written: set[str] = field(default_factory=set)
+    virtual_inputs: Mapping[object, str] = field(default_factory=dict)
+    virtual_outputs: Mapping[object, str] = field(default_factory=dict)
+    values: dict[str, tuple[object, str]] = field(default_factory=dict)
+    read_virtual_cb: Callable[[str], object] | None = None
+    is_calling_store: bool = False
     undeclared: UndeclaredUse | None = None
     misuse: str | None = None
     output: list[tuple[bool, bytes | str]] = field(default_factory=list)

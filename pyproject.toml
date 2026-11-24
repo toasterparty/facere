@@ -111,12 +111,14 @@ strict-generic-narrowing = true
 [tool.ty.terminal]
 error-on-warning = true
 
-# Fixtures misuse the API on purpose, so a decorator's rejected argument leaves its return unknown.
+# Fixtures misuse the API on purpose, so a decorator's rejected argument leaves its return unknown, and
+# keep to the Python of a fac.py, as the examples do.
 [[tool.ty.overrides]]
 include = ["test/*/test_*/**"]
 
 [tool.ty.overrides.rules]
 dynamic-function-decorator-return = "ignore"
+missing-override-decorator = "ignore"
 
 # Examples keep to beginner Python, and `typing.override` needs 3.12.
 [[tool.ty.overrides]]

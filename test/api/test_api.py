@@ -15,9 +15,12 @@ def test_all_exports_exactly_the_fac_py_interface() -> None:
     assert sorted(facere.__all__) == [
         "Args",
         "Console",
+        "FileStore",
         "Input",
         "OrderOnly",
         "Output",
+        "Store",
+        "Virtual",
         "add_inputs",
         "capture",
         "console",
@@ -28,11 +31,13 @@ def test_all_exports_exactly_the_fac_py_interface() -> None:
         "minimum_version",
         "out",
         "pool",
+        "read",
         "read_text",
         "rule",
         "run",
         "sources",
         "task",
+        "write",
         "write_text",
     ]
 

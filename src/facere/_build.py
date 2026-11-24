@@ -11,11 +11,12 @@ import shlex
 import threading
 import time
 from collections.abc import Callable, Container, Iterable
+from collections.abc import Set as AbstractSet
 from typing import Literal
 
 from facere import _state
 from facere._cache import HashCache, Hashed, Look, Snapshot, iter_listed_files
-from facere._collect import Definition, Project
+from facere._collect import Definition, Project, VirtualEntry
 from facere._context import (
     STATE_FILE_NAME,
     Context,
@@ -49,6 +50,13 @@ from facere._lock import OutputLock
 from facere._observed import Observed
 from facere._output import Chunk, Output
 from facere._schedule import Crew, Signals
+from facere._stores import (
+    Change,
+    SignatureError,
+    StoreError,
+    StoreSession,
+    fetch_signature_digest,
+)
 from facere._summary import Summary
 from facere._undeclared import ensure_audit_hook
 
@@ -94,7 +102,7 @@ class _EndedError(Exception):
 class Invocation:
     """What the command line gives a build, and what the build's batches share.
 
-    `collect_cb` loads the project again, `take_lock_cb` takes the output directory's lock unless it is held, and `calc_jobs` returns how many recipes may execute at once. `reached` counts the rules and tasks reached so far, and `built` holds each output this invocation built, with its rule and the hash it left.
+    `collect_cb` loads the project again, `take_lock_cb` takes the output directory's lock unless it is held, and `calc_jobs` returns how many recipes may execute at once. `reached` counts the rules and tasks reached so far, `built` holds each output this invocation built, with its rule and the hash it left, and `signatures` the digest of each virtual source's signature by engine key, or how its function failed, so each is taken at most once.
     """
 
     __slots__ = (
@@ -106,6 +114,7 @@ class Invocation:
         "lock",
         "reached",
         "signals",
+        "signatures",
         "start_dir",
         "summary",
         "take_lock_cb",
@@ -138,6 +147,7 @@ class Invocation:
         self.task_args = task_args
         self.reached = 0
         self.built: dict[str, tuple[Definition, str]] = {}
+        self.signatures: dict[str, str | SignatureError] = {}
 
     @property
     def output(self) -> Output:
@@ -241,6 +251,18 @@ def _format_failure(failure: _RecipeFailure, start_dir: str) -> list[Chunk]:
     return chunks
 
 
+def _format_store_failure(failure: StoreError, start_dir: str) -> list[Chunk]:
+    """Return what a store's failure prints: the exception its method raised, if any, then the line naming the store, the method, and what happened."""
+    chunks: list[Chunk] = []
+    if failure.error is not None:
+        chunks.append((True, _format_exception(failure.error)))
+    store = failure.store
+    message = f"store {store.name} failed: its {failure.method} {failure.reason}"
+    located = FacereError(Diagnostic(store.location, message))
+    chunks.append((True, "".join(f"{line}\n" for line in format_error(located, start_dir))))
+    return chunks
+
+
 def _plan(project: Project, root: str, targets: list[str]) -> list[_Target]:
     """Return `targets` as typed, or the default ones, raising FacereError for each typed one that resolves to nothing."""
     if not targets:
@@ -250,7 +272,7 @@ def _plan(project: Project, root: str, targets: list[str]) -> list[_Target]:
         return [
             _Target(definition.name, False, False)
             if definition.is_task
-            else _Target(definition.outputs[0], False, True)
+            else _Target(definition.keys[0], False, True)
             for definition in chosen
         ]
     planned = [_Target(target, True, "/" in target or "\\" in target) for target in targets]
@@ -265,12 +287,35 @@ def _plan(project: Project, root: str, targets: list[str]) -> list[_Target]:
 
 def _resolve(project: Project, root: str, target: _Target) -> list[Definition]:
     """Return the definitions `target` names in `project`, which are none where a default target is gone since the project was first loaded."""
+    if not target.is_typed:
+        if not target.is_path:
+            return [task for task in project.by_name.get(target.text, []) if task.is_task]
+        step = project.graph.producers.get(target.text)
+        return [] if step is None else [project.definitions[step]]
+    text = target.text.replace("\\", "/")
+    if text.endswith("]") and "[" in text:
+        found = _resolve_virtual(project, root, text)
+        # A path may end in brackets too, as a route directory such as `app/[slug]` does.
+        if found:
+            return found
     if not target.is_path:
-        found = project.by_name.get(target.text, [])
-        return found if target.is_typed else [task for task in found if task.is_task]
-    path = target.text.replace("\\", "/") if target.is_typed else target.text
-    step = project.graph.producers.get(normalize(path, root))
-    return [] if step is None else [project.definitions[step]]
+        return project.by_name.get(target.text, [])
+    path = normalize(text, root)
+    step = project.graph.producers.get(path)
+    if step is not None:
+        return [project.definitions[step]]
+    return list(project.store_writers.get(calc_path_key(path), ()))
+
+
+def _resolve_virtual(project: Project, root: str, text: str) -> list[Definition]:
+    """Return the rule writing the virtual output that `text` shows, as `build/rows.txt[7]` or `page[about]` do."""
+    prefix, _, key = text[:-1].rpartition("[")
+    if "/" in prefix:
+        prefix = normalize(prefix, root)
+    virtual = project.virtual_targets.get(f"{prefix}[{key}]")
+    if virtual is None:
+        return []
+    return [project.definitions[project.graph.producers[virtual]]]
 
 
 def _take_batch(
@@ -410,12 +455,20 @@ class _Builder:
         self.state_path = posixpath.join(context.state_dir, STATE_FILE_NAME)
         self.steps = {definition: step for step, definition in enumerate(project.definitions)}
         self.steps_by_key = {
-            _state.calc_key(definition.outputs): step
+            _state.calc_key(definition.keys): step
             for definition, step in self.steps.items()
             if not definition.is_task
         }
         state = _state.load(self.state_path)
         self.output_keys = frozenset(project.producers_by_key)
+        # A FileStore's path is an output of the rules writing to it, to the undeclared-path check.
+        self.store_paths = {
+            store.id: calc_path_key(store.path)
+            for store in project.stores.values()
+            if store.path is not None
+        }
+        self.recipe_output_keys = self.output_keys | frozenset(self.store_paths.values())
+        self.file_stores = {path: store for store, path in self.store_paths.items()}
         self.saved_declared = state.declared
         new_outputs = (
             self.output_keys - state.declared if state.declared is not None else frozenset()
@@ -424,6 +477,9 @@ class _Builder:
         try:
             stale_keys = [key for key in {*state.records, *state.moved} if key not in declared]
             _state.remove(self.state_path, stale_keys)
+            _state.remove_stores(
+                self.state_path, [store for store in state.stores if store not in project.stores]
+            )
             records = {key: record for key, record in state.records.items() if key in declared}
             self.records = _remove_shadowed(
                 context, self.state_path, records, state.listing, new_outputs
@@ -432,6 +488,16 @@ class _Builder:
             raise FacereError(Diagnostic(None, f"{error}")) from error
         self.moved = state.moved
         self.cache = HashCache(state.hashes, time.time_ns())
+        self.sessions = self._start_sessions(state.stores)
+        # The values each rule that executed set through fac.write, until the batch ends.
+        self.written_values: dict[int, dict[str, tuple[object, str]]] = {}
+        # The rules whose values await a flush, each with its record's key, the record it saves once every store it writes to took its values, and the stores still to flush.
+        self.unflushed: dict[int, tuple[tuple[str, ...], _state.Record | None, frozenset[str]]] = {}
+        # The stores whose flush failed, whose rules stay unrecorded. Only a flush, under its lock, reads or changes it.
+        self.failed_stores: set[str] = set()
+        self._flush_lock = threading.Lock()
+        # The virtual sources whose signature failed and that a failure printed its exception for.
+        self._shown_unsigned: set[str] = set()
         self.producers = project.graph.producers
         self.crew = Crew(invocation.calc_jobs)
         self._mutex = threading.Lock()
@@ -482,6 +548,9 @@ class _Builder:
             if self.context.observed is not None:
                 self._observe_sources([*steps, *upstream], task)
             self._build_steps([*steps, *upstream])
+            # Outside `finally`, since an interrupt flushes nothing, leaving the rules whose values it drops unrecorded.
+            for failure in self._flush():
+                self._report(failure)
             if task is not None and self._can_execute(upstream):
                 self._run_task(task)
         except KeyboardInterrupt:
@@ -514,6 +583,83 @@ class _Builder:
             if observed is not None:
                 observed.save(self.state_path)
 
+    def _start_sessions(self, recorded: dict[str, _state.StoreRecord]) -> dict[str, StoreSession]:
+        """Return a session per store a rule declares a virtual output of, by store id, with its virtual outputs in definition order."""
+        entries: dict[str, dict[str, VirtualEntry]] = {store: {} for store in self.project.stores}
+        for key, entry in self.project.virtuals.items():
+            entries[entry.store][key] = entry
+        return {
+            store.id: StoreSession(
+                store, entries[store.id], recorded.get(store.id), self.cache, self._note_calling
+            )
+            for store in self.project.stores.values()
+        }
+
+    def _note_calling(self, is_calling: bool) -> None:
+        """Exempt the calling thread's recipe, if any, from the undeclared-path check while it calls a store's method."""
+        recipe = self.context.find_rule_recipe()
+        if recipe is not None:
+            recipe.is_calling_store = is_calling
+
+    def _flush(self, stores: AbstractSet[str] | None = None) -> list[StoreError]:
+        """Write the values the finished rules set to `stores`, or to every store where None, store by store in definition order, then save the record of each rule once every store it writes to took its values, and what each store flushed holds. Return the failure of each store that failed, which leaves every rule writing to it unrecorded and out of the rules that succeeded."""
+        definitions = self.project.definitions
+        virtuals = self.project.virtuals
+        with self._flush_lock:
+            due = []
+            changes: dict[str, list[Change]] = {}
+            with self._mutex:
+                for step, (_, _, pending) in sorted(self.unflushed.items()):
+                    flushing = pending if stores is None else pending & stores
+                    if not flushing:
+                        continue
+                    due.append(step)
+                    written = self.written_values[step]
+                    for key in definitions[step].virtual_outputs:
+                        store = virtuals[key].store
+                        if store in flushing:
+                            changes.setdefault(store, []).append(Change(key, *written[key]))
+            if stores is not None and not changes:
+                return []
+            failures = []
+            for store, store_changes in changes.items():
+                try:
+                    self.sessions[store].flush(store_changes)
+                except StoreError as error:
+                    failures.append(error)
+                    self.failed_stores.add(store)
+            saved = []
+            with self._mutex:
+                for step in due:
+                    key, record, pending = self.unflushed[step]
+                    is_failed = not self.failed_stores.isdisjoint(
+                        virtuals[output].store for output in definitions[step].virtual_outputs
+                    )
+                    if is_failed:
+                        self.records.pop(key, None)
+                        self.succeeded.discard(step)
+                    left = pending - changes.keys()
+                    if left:
+                        self.unflushed[step] = (key, record, left)
+                        continue
+                    del self.unflushed[step]
+                    if not is_failed and record is not None:
+                        saved.append((key, record))
+            if not self.invocation.lock.is_held:
+                return failures
+            flushed = self.sessions.keys() if stores is None else changes.keys()
+            records = {}
+            for store in flushed:
+                record = self.sessions[store].build_record()
+                if store not in self.failed_stores and record is not None:
+                    records[store] = record
+            with self._state_lock, contextlib.suppress(OSError):
+                for key, record in saved:
+                    _state.save(self.state_path, key, record, self.cache.take_changes())
+                _state.remove_stores(self.state_path, [failure.store.id for failure in failures])
+                _state.save_stores(self.state_path, records)
+        return failures
+
     def _observe_sources(self, steps: list[int], task: Definition | None) -> None:
         """Hash each input no rule outputs of `steps`, the rules they depend on, and `task`, then save what the cycle observed, so a watch stops this cycle on an edit to one before any rule reached it, as in its first cycle, which no earlier one tells what to poll."""
         observed = self.context.observed
@@ -522,11 +668,12 @@ class _Builder:
         if task is not None:
             closure.add(self.steps[task])
         steps_by_index = self.project.graph.steps
+        # A watch observes no virtual source, whose content Facere knows only by its signature.
         sources = {
             key
             for step in closure
             for key in steps_by_index[step].inputs
-            if key not in self.producers
+            if key not in self.producers and key not in self.project.sources
         }
         absent = [path for path in sources if self.cache.fetch(path) is None]
         with self._mutex:
@@ -623,6 +770,16 @@ class _Builder:
 
     def _build_steps(self, steps: Iterable[int]) -> None:
         """Bring `steps` up to date by answering the engine's events until it has none."""
+        steps = list(steps)
+        definitions = self.project.definitions
+        virtuals = self.project.virtuals
+        needed: dict[str, dict[str, None]] = {store: {} for store in self.sessions}
+        for step in sorted(self.engine.find_closure(steps)):
+            definition = definitions[step]
+            for key in (*definition.virtual_inputs, *definition.virtual_outputs):
+                needed[virtuals[key].store][key] = None
+        for store, keys in needed.items():
+            self.sessions[store].needed = list(keys)
         with self._mutex:
             self.engine.request(steps)
         try:
@@ -654,10 +811,12 @@ class _Builder:
                 self.engine.stop()
                 self._notify()
 
-    def _work(self, first: Run | None, *, is_main: bool = False) -> Run | None:
+    def _work(
+        self, first: Run | NeedDigests | None, *, is_main: bool = False
+    ) -> Run | NeedDigests | None:
         """Answer the engine's events, starting with `first`, until it has none.
 
-        The main thread executes no recipe, so where `is_main` the first Run handed out is returned unanswered instead, for a worker to start with.
+        The main thread executes no recipe and calls no signature, so where `is_main` the first Run handed out, or NeedDigests naming a virtual source, is returned unanswered instead, for a worker to start with.
         """
         signals = self.invocation.signals
         engine = self.engine
@@ -676,6 +835,14 @@ class _Builder:
                     if is_main:
                         return event
                     start = self._start(event.step)
+                elif type(event) is NeedDigests and not self.project.sources.keys().isdisjoint(
+                    event.keys
+                ):
+                    # A signature may be slow, so it runs on a worker, and another takes the next event meanwhile.
+                    if is_main:
+                        return event
+                    if not self._idle:
+                        self._add_worker()
             if start is not None:
                 self._run(event.step, start)
                 continue
@@ -690,13 +857,15 @@ class _Builder:
             except OSError as error:
                 rule = self.project.definitions[event.step]
                 self._abort(event.step, _RecipeFailure(rule, reason=f"{error}"))
+            except StoreError as error:
+                self._abort(event.step, error)
 
     def _notify(self) -> None:
         """Wake the workers waiting for an event, after an answer. Call it with the mutex held."""
         if self._idle:
             self._wake.notify_all()
 
-    def _add_worker(self, first: Run | None = None) -> None:
+    def _add_worker(self, first: Run | NeedDigests | None = None) -> None:
         """Start a worker, unless as many as may execute at once already do."""
 
         def work() -> None:
@@ -734,7 +903,7 @@ class _Builder:
         self.has_executed = True
         if not self._idle:
             self._add_worker()
-        record = self.records.get(_state.calc_key(rule.outputs))
+        record = self.records.get(_state.calc_key(rule.keys))
         return _Start(rule, position, record, inputs_built, len(self.shadows))
 
     def _count_checked(self) -> None:
@@ -743,23 +912,30 @@ class _Builder:
         self.counted += len(checked)
         self.invocation.reached += len(checked)
         self.invocation.summary.outputs_current += sum(
-            len(self.project.definitions[step].outputs)
+            len(self.project.definitions[step].keys)
             for step, verdict in checked
             if verdict.reason is Reason.CURRENT
         )
 
     def _answer_failed(self, event: Failed) -> None:
+        failure = self._build_missing_failure(event)
         with self._mutex:
             self.finishing.pop(event.step, None)
+            self.written_values.pop(event.step, None)
             self._notify()
-        self._fail(self._build_missing_failure(event))
+        self._fail(failure)
 
-    def _observe(self, paths: Iterable[str]) -> None:
-        """Tell the engine the hash of what is at each of `paths`: of an output read afresh, and of any other path as the session first saw it."""
+    def _observe(self, keys: Iterable[str]) -> None:
+        """Tell the engine the hash of what is at each path of `keys`: of an output read afresh, of a FileStore's file once the values written to it are flushed, and of any other path as the session first saw it, and the digest of each virtual output and virtual source among them. Raises StoreError."""
         new_files: list[str] = []
         producers = self.producers
         fetch = self.cache.fetch
         built: list[tuple[str, Hashed]] = []
+        virtuals = self.project.virtuals
+        sources = self.project.sources
+        keys = tuple(keys)
+        paths = [key for key in keys if key not in virtuals and key not in sources]
+        self._flush_file_stores(paths)
         digests: dict[str, str | None] = {}
         for path in paths:
             if path not in producers:
@@ -769,10 +945,13 @@ class _Builder:
                 if hashed is not None:
                     built.append((path, hashed))
             digests[path] = None if hashed is None else hashed.digest
+        absent = [path for path, digest in digests.items() if digest is None]
+        digests.update(self._observe_virtual([key for key in keys if key in virtuals]))
+        digests.update(self._sign([key for key in keys if key in sources]))
         shadowed: list[tuple[str, ...]] = []
         with self._mutex:
             if self.context.observed is not None:
-                self.absent.update(path for path, digest in digests.items() if digest is None)
+                self.absent.update(absent)
             if new_files:
                 shadowed = self._forget_shadowed(new_files)
             for path, hashed in built:
@@ -783,6 +962,58 @@ class _Builder:
             self.engine.give_digests(digests)
             self._notify()
         self._remove_saved(shadowed)
+
+    def _flush_file_stores(self, paths: Iterable[str]) -> None:
+        """Flush each FileStore whose file is among `paths`, which a rule reading the whole file inputs, so its hash holds every value written to it. Raises StoreError."""
+        file_stores = self.file_stores
+        if not file_stores:
+            return
+        keys = {calc_path_key(path) for path in paths}
+        for store in sorted(file_stores[key] for key in keys if key in file_stores):
+            failures = self._flush({store})
+            if failures:
+                raise failures[0]
+
+    def _sign(self, keys: list[str]) -> dict[str, str | None]:
+        """Return the digest of each virtual source of `keys`: its signature as this invocation first took it, or None where its function failed, which fails every rule inputting it."""
+        signatures = self.invocation.signatures
+        digests: dict[str, str | None] = {}
+        for key in keys:
+            with self._mutex:
+                signed = signatures.get(key)
+            if signed is None:
+                try:
+                    signed = fetch_signature_digest(self.project.sources[key])
+                except SignatureError as error:
+                    signed = error
+                with self._mutex:
+                    signatures[key] = signed
+            digests[key] = signed if isinstance(signed, str) else None
+        return digests
+
+    def _observe_virtual(self, keys: list[str]) -> dict[str, str | None]:
+        """Return the digest of each virtual output of `keys`: as its rule's recipe set it where that rule executed in this batch, else as its store holds it. Raises StoreError."""
+        digests: dict[str, str | None] = {}
+        by_store: dict[str, list[str]] = {}
+        with self._mutex:
+            for key in keys:
+                step = self.producers[key]
+                if step in self.finishing:
+                    written = self.written_values.get(step, {})
+                    digests[key] = written[key][1] if key in written else None
+                else:
+                    by_store.setdefault(self.project.virtuals[key].store, []).append(key)
+        for store, store_keys in by_store.items():
+            digests.update(self.sessions[store].fetch_digests(store_keys))
+        return digests
+
+    def _read_virtual(self, key: str) -> object:
+        """Return the value of the virtual output `key`, which a recipe reads: as its rule's recipe set it in this batch, else as its store holds it."""
+        with self._mutex:
+            written = self.written_values.get(self.producers[key], {})
+        if key in written:
+            return written[key][0]
+        return self.sessions[self.project.virtuals[key].store].fetch_value(key)
 
     def _forget_shadowed(self, new_files: list[str]) -> list[tuple[str, ...]]:
         """Forget at once each record a file new in a directory output shadows, and return their keys, to forget in the saved state too. A rule executing now is judged against the names as it is recorded."""
@@ -822,6 +1053,8 @@ class _Builder:
                 self.engine.finish(step, Status.FAILED)
             else:
                 self.finishing[step] = _Finished(recipe, moved, start.shadow_mark)
+                if recipe.values:
+                    self.written_values[step] = recipe.values
                 status = Status.UNSETTLED if moved else Status.OK
                 self.engine.finish(step, status, sorted(recipe.reported))
             self._notify()
@@ -832,7 +1065,7 @@ class _Builder:
         self._validate_inputs_intact(start)
         before = {path: self.cache.fetch(path) for path in rule.inputs}
         if start.record is not None:
-            self._remove_saved([_state.calc_key(rule.outputs)])
+            self._remove_saved([_state.calc_key(rule.keys)])
             before.update((path, self.cache.fetch(path)) for path, _ in start.record.trace.found)
         for output in rule.outputs:
             os.makedirs(os.path.dirname(output) or ".", exist_ok=True)
@@ -855,7 +1088,7 @@ class _Builder:
     def _record(self, step: int, trace: Trace | None) -> None:
         """Save the `trace` of the rule at `step`, which executed and wrote every output, or where it must stay stale, the inputs that moved."""
         rule = self.project.definitions[step]
-        key = _state.calc_key(rule.outputs)
+        key = _state.calc_key(rule.keys)
         with self._mutex:
             finished = self.finishing.pop(step)
             recipe, moved, shadow_mark = finished.recipe, finished.moved, finished.shadow_mark
@@ -873,7 +1106,14 @@ class _Builder:
                 self.moved.pop(key, None)
             else:
                 self._leave_unrecorded(step, rule, key, moved)
+            if rule.virtual_outputs:
+                # Its record waits for its values to reach their stores.
+                virtuals = self.project.virtuals
+                stores = frozenset(virtuals[output].store for output in rule.virtual_outputs)
+                self.unflushed[step] = (key, record, stores)
             self._notify()
+        if record is not None and rule.virtual_outputs:
+            return
         with self._state_lock:
             changes = self.cache.take_changes()
             if record is not None:
@@ -895,15 +1135,36 @@ class _Builder:
     def _build_missing_failure(self, event: Failed) -> _RecipeFailure:
         rule = self.project.definitions[event.step]
         if event.missing is Missing.INPUT:
-            return _RecipeFailure(rule, reason=f"its input {event.key} is missing")
+            return self._build_input_failure(rule, event.key)
         if event.missing is Missing.FOUND:
             reason = f"its recipe reported reading {event.key}, which it then removed"
             return _RecipeFailure(rule, reason=reason)
+        with self._mutex:
+            written = self.written_values.get(event.step, {})
         missing = [
             output for output in _state.calc_key(rule.outputs) if self.cache.fetch(output) is None
         ]
-        reason = f"its recipe succeeded without writing {', '.join(missing or [event.key])}"
+        missing.extend(self._show(key) for key in rule.virtual_outputs if key not in written)
+        reason = (
+            f"its recipe succeeded without writing {', '.join(missing or [self._show(event.key)])}"
+        )
         return _RecipeFailure(rule, reason=reason)
+
+    def _build_input_failure(self, rule: Definition, key: str) -> _RecipeFailure:
+        """Return the failure of `rule`, whose input `key` has nothing there, or is a virtual source whose signature failed, whose exception only the first rule it fails prints."""
+        with self._mutex:
+            signed = self.invocation.signatures.get(key)
+            if not isinstance(signed, SignatureError):
+                return _RecipeFailure(rule, reason=f"its input {self._show(key)} is missing")
+            is_shown = key in self._shown_unsigned
+            self._shown_unsigned.add(key)
+        reason = f"the signature of its input {self._show(key)} {signed.reason}"
+        return _RecipeFailure(rule, error=None if is_shown else signed.error, reason=reason)
+
+    def _show(self, key: str) -> str:
+        """Return how messages show the engine key `key`: a path as it is, a virtual output as its store or rule and key, and a virtual source as its key."""
+        entry = self.project.virtuals.get(key) or self.project.sources.get(key)
+        return key if entry is None else entry.text
 
     def _fail(self, failure: _RecipeFailure, running_step: int | None = None) -> None:
         """Print `failure` and count it, telling the engine where the rule at `running_step` was executing."""
@@ -916,7 +1177,7 @@ class _Builder:
             self.engine.finish(running_step, Status.FAILED)
             self._notify()
 
-    def _abort(self, step: int, failure: _RecipeFailure) -> None:
+    def _abort(self, step: int, failure: "_RecipeFailure | StoreError") -> None:
         """Print `failure`, which left the engine an event about `step` that no worker can answer, and end the session once the rules executing finish."""
         self._report(failure)
         with self._mutex:
@@ -925,11 +1186,15 @@ class _Builder:
             self.engine.stop()
             self._notify()
 
-    def _report(self, failure: _RecipeFailure) -> None:
+    def _report(self, failure: "_RecipeFailure | StoreError") -> None:
         with self._mutex:
             self.failed += 1
             self.invocation.summary.failed += 1
-        self.invocation.output.write(_format_failure(failure, self.invocation.start_dir))
+        start_dir = self.invocation.start_dir
+        if isinstance(failure, StoreError):
+            self.invocation.output.write(_format_store_failure(failure, start_dir))
+        else:
+            self.invocation.output.write(_format_failure(failure, start_dir))
 
     def _validate_inputs_intact(self, start: _Start) -> None:
         """Fail the rule without executing it where an output this batch built, which it inputs or is ordered after, changed or vanished since its rule finished.
@@ -1039,13 +1304,23 @@ class _Builder:
             for text in iter_strings(value)
             if text
         }
+        virtuals = self.project.virtuals
+        store_paths = [
+            self.store_paths[virtuals[key].store]
+            for key in definition.virtual_outputs
+            if virtuals[key].store in self.store_paths
+        ]
+        tracked = map(calc_path_key, (*definition.inputs, *definition.outputs))
         return Recipe(
             is_task=definition.is_task,
-            tracked=frozenset(map(calc_path_key, (*definition.inputs, *definition.outputs))),
+            tracked=frozenset([*tracked, *store_paths]),
             order_only=frozenset(map(calc_path_key, definition.order_only)),
             exempt=frozenset(data_paths),
             shared_modules=self.project.shared_modules,
-            output_keys=self.project.producers_by_key.keys(),
+            output_keys=self.recipe_output_keys,
+            virtual_inputs={virtual: key for key, virtual in definition.virtual_inputs.items()},
+            virtual_outputs={virtual: key for key, virtual in definition.virtual_outputs.items()},
+            read_virtual_cb=self._read_virtual,
         )
 
     def _execute(self, definition: Definition, task_args: tuple[str, ...] | None = None) -> Recipe:

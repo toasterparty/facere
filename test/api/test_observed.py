@@ -107,6 +107,27 @@ def test_a_saved_observation_loads_as_it_was_saved_under_its_targets_alone(
     assert _state.fetch_observation_digest(state, "serve") is None
 
 
+def test_saving_an_observation_drops_those_of_other_watches_unsaved_for_30_days(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state = str(tmp_path / "state.db")
+    observation = _state.Observation({"fac.py": "Fabc"}, {}, frozenset())
+    day_ns = 24 * 60 * 60 * 10**9
+
+    def save_on_day(day: int, targets: str) -> None:
+        monkeypatch.setattr(_state.time, "time_ns", lambda: day * day_ns)
+        _state.save_observation(state, targets, targets, observation)
+
+    save_on_day(100, "old")
+    save_on_day(101, "recent")
+    save_on_day(130, "app")
+    save_on_day(131, "app")
+
+    assert _state.fetch_observation_digest(state, "old") is None
+    assert _state.fetch_observation_digest(state, "recent") == "recent"
+    assert _state.fetch_observation_digest(state, "app") == "app"
+
+
 def test_no_observation_loads_from_a_missing_or_unreadable_state(tmp_path: Path) -> None:
     missing = str(tmp_path / "missing.db")
     unreadable = tmp_path / "unreadable.db"

@@ -1,12 +1,13 @@
 """The decorators and helpers a fac.py calls to define rules and tasks."""
 
+import abc
 import errno
 import glob
 import os
 import posixpath
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Collection, Iterable, Mapping
 from pathlib import PurePosixPath
-from typing import Annotated, Any, TypeVar, overload
+from typing import TYPE_CHECKING, Annotated, Any, Protocol, TypeVar, overload
 
 from facere._context import (
     Console,
@@ -14,6 +15,7 @@ from facere._context import (
     Declaration,
     Kind,
     Pool,
+    Recipe,
     calc_path_key,
     find_context,
     get_context,
@@ -24,20 +26,106 @@ from facere._context import (
     iter_self_and_parents,
     normalize,
 )
-from facere._diagnostics import Diagnostic, FacereError, Note, find_caller_locations
+from facere._diagnostics import Diagnostic, FacereError, Note, find_caller_locations, override
+from facere._hash import UnhashableValueError, calc_value_digest
 from facere._undeclared import note_misuse
 from facere._version import VERSION
 
-Input = Annotated[str, Kind.INPUT]
-"""Annotates a parameter holding a file or directory the rule or task reads, as a path relative to the root. Use `list[fac.Input]` for several."""
+if TYPE_CHECKING:
+    import typing_extensions
+
+    # A default, which typing.TypeVar gains only in Python 3.13, makes bare fac.Input mean str.
+    _Target = typing_extensions.TypeVar("_Target", default=str)
+else:
+    _Target = TypeVar("_Target")
+
+_K = TypeVar("_K")
+_V = TypeVar("_V")
+
+Input = Annotated[_Target, Kind.INPUT]
+"""Annotates a parameter holding a file or directory the rule or task reads, as a path relative to the root. Use `list[fac.Input]` for several, and `fac.Input[fac.Virtual]` for a rule's parameter holding a virtual output another rule writes, or a virtual source."""
 OrderOnly = Annotated[str, Kind.ORDER_ONLY]
 """Annotates a rule's parameter holding a file or directory its recipe may read, as a path relative to the root. It is built first, and its path joins the fingerprint, but a change to its content makes the rule stale only once the recipe reports reading it through `fac.add_inputs`. Use `list[fac.OrderOnly]` for several."""
-Output = Annotated[str, Kind.OUTPUT]
-"""Annotates a parameter holding a file or directory the rule writes, as a path relative to the root. Use `list[fac.Output]` for several."""
+Output = Annotated[_Target, Kind.OUTPUT]
+"""Annotates a parameter holding a file or directory the rule writes, as a path relative to the root. Use `list[fac.Output]` for several, and `fac.Output[fac.Virtual]` for a virtual output the recipe sets through `fac.write`."""
 Args = Annotated[tuple[str, ...], Kind.ARGS]
 """Annotates a task's parameter holding the arguments after `--` on the command line."""
 
 _F = TypeVar("_F", bound=Callable[..., object])
+
+
+class Store(Protocol[_K, _V]):
+    """What a store class provides, for type checking only, so a store need not subclass it.
+
+    `stamp()` returns a token Facere can hash that changes whenever any virtual output does, or None where the store has none. `read(keys)` returns the virtual outputs among `keys` the store holds, and may return others. `update(changed)` writes the virtual outputs given and leaves the rest as they were. Facere calls one store's methods one at a time, with the root as working directory, and fails the invocation where one changes an attribute of the store.
+    """
+
+    def stamp(self) -> object: ...
+
+    def read(self, keys: Collection[_K], /) -> Mapping[_K, _V]: ...
+
+    def update(self, changed: Mapping[_K, _V], /) -> None: ...
+
+
+class FileStore(abc.ABC):
+    """A store kept in the one file at `path`, relative to the root, which identifies it.
+
+    A subclass implements `read()`, returning every virtual output the file holds as a dict from key to value, and `write(outputs)`, replacing the file with exactly the virtual outputs given. Facere never calls `read` while the file is missing, counts a file whose `read` raises before Facere first writes to it as holding nothing, and stamps it by the file's hash, which the hash cache vouches for with one stat. An update reads the file, replaces the virtual outputs that changed, and passes `write` every virtual output, first those the rules declare in definition order, then the rest in the order `read` returned them.
+    """
+
+    def __init__(self, path: str) -> None:
+        self.path = path
+
+    @abc.abstractmethod
+    def read(self) -> Mapping[Any, Any]: ...
+
+    @abc.abstractmethod
+    def write(self, outputs: Mapping[Any, Any], /) -> None: ...
+
+
+class Virtual:
+    """One virtual output, `key` in `store`, or a virtual source, `key` whose content `fingerprint(key)` signs. Exactly one of `store=` and `fingerprint=` is given.
+
+    A virtual output is a value, so it goes in `each=` rows, values, and module constants, and two compare equal when their keys are equal and they name the same store object or signature function. A rule declares one with `fac.Output[fac.Virtual]` to write it, or `fac.Input[fac.Virtual]` to read it.
+    """
+
+    __slots__ = ("fingerprint", "key", "store")
+
+    def __init__(
+        self,
+        key: object,
+        *,
+        store: Store[Any, Any] | FileStore | None = None,
+        fingerprint: Callable[[Any], object] | None = None,
+    ) -> None:
+        if (store is None) == (fingerprint is None):
+            raise TypeError("fac.Virtual takes exactly one of store= and fingerprint=")
+        self.key = key
+        self.store = store
+        self.fingerprint = fingerprint
+
+    @override
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Virtual):
+            return NotImplemented
+        return (
+            self.key == other.key
+            and self.store is other.store
+            and self.fingerprint is other.fingerprint
+        )
+
+    @override
+    def __hash__(self) -> int:
+        return hash((self.key, id(self.store), self.fingerprint))
+
+    @override
+    def __repr__(self) -> str:
+        if self.store is None:
+            assert self.fingerprint is not None
+            source = f"fingerprint={getattr(self.fingerprint, '__qualname__', self.fingerprint)}"
+        else:
+            source = f"store={type(self.store).__qualname__}"
+        return f"fac.Virtual({self.key!r}, {source})"
 
 
 @overload
@@ -69,7 +157,7 @@ def rule(
 ) -> _F | Callable[[_F], _F]:
     """Define rules from a function, returned unchanged.
 
-    The function's signature declares what each rule reads and writes: a parameter annotated `fac.Input` or `list[fac.Input]` holds the files or directories it reads, one annotated `fac.OrderOnly` or `list[fac.OrderOnly]` those it may read, one annotated `fac.Output` or `list[fac.Output]` files or directories it writes, and any other parameter a value. `each=` takes an iterable of dicts, read once here, and defines one rule per dict, each key filling the parameter it names. Keyword arguments fill the parameters they name in every rule, and defaults fill the rest. `name=` replaces the function's name, less one trailing underscore, on the command line, and `default=True` builds the rules when `fac` gets no targets, in place of every rule. `always=True` executes the rules whenever a target reaches them, for what Facere can't see change, such as a program's version, while the rules downstream execute only when an output's content changed. `pool=` takes what `fac.pool` returned, and caps how many of the rules given that pool execute at once.
+    The function's signature declares what each rule reads and writes: a parameter annotated `fac.Input` or `list[fac.Input]` holds the files or directories it reads, one annotated `fac.OrderOnly` or `list[fac.OrderOnly]` those it may read, one annotated `fac.Output` or `list[fac.Output]` files or directories it writes, one annotated `fac.Input[fac.Virtual]` or `fac.Output[fac.Virtual]`, alone or in a list, virtual outputs it reads or writes, the first also virtual sources, and any other parameter a value. `each=` takes an iterable of dicts, read once here, and defines one rule per dict, each key filling the parameter it names. Keyword arguments fill the parameters they name in every rule, and defaults fill the rest. `name=` replaces the function's name, less one trailing underscore, on the command line, and `default=True` builds the rules when `fac` gets no targets, in place of every rule. `always=True` executes the rules whenever a target reaches them, for what Facere can't see change, such as a program's version, while the rules downstream execute only when an output's content changed. `pool=` takes what `fac.pool` returned, and caps how many of the rules given that pool execute at once.
     """
     rows = None if each is None else tuple(each)
     return _declarator(
@@ -184,6 +272,63 @@ def add_inputs(paths: Iterable[str]) -> None:
             raise FileNotFoundError(errno.ENOENT, "fac.add_inputs got a missing file", relative)
         recipe.reported.add(relative)
         recipe.reported_keys.add(key)
+
+
+def write(output: Virtual, value: object) -> None:
+    """Set `output`, a virtual output the running rule's recipe declares, to `value`, replacing what an earlier call set. Facere writes it to its store once the batch of rules ends.
+
+    Raises TypeError for a value Facere can't hash, and ValueError for a virtual output the rule doesn't declare.
+    """
+    context = get_context("fac.write")
+    recipe = _get_rule_recipe(context, "fac.write")
+    key = recipe.virtual_outputs.get(_validate_virtual("fac.write", output))
+    if key is None:
+        raise ValueError(
+            f"fac.write got {output!r}, which the rule declares as no fac.Output[fac.Virtual]"
+        )
+    try:
+        digest = calc_value_digest(value)
+    except UnhashableValueError as error:
+        raise TypeError(
+            f"fac.write got a value of type {error.type_name}, which Facere can't hash, since {error.reason}"
+        ) from None
+    recipe.values[key] = (value, digest)
+
+
+def read(virtual_input: Virtual) -> Any:  # noqa: ANN401 - a fac.Virtual carries no value type
+    """Return the value of `virtual_input`, a virtual output the running rule's recipe declares as an input: as a rule wrote it earlier in the invocation, as its store returned it earlier, or else as its store's `read` returns it now.
+
+    Raises ValueError for a virtual source, whose content Facere knows only by its signature, and for a virtual output the rule doesn't declare.
+    """
+    context = get_context("fac.read")
+    recipe = _get_rule_recipe(context, "fac.read")
+    if _validate_virtual("fac.read", virtual_input).store is None:
+        raise ValueError(
+            f"fac.read got the virtual source {virtual_input!r}, whose content Facere knows only by its signature"
+        )
+    key = recipe.virtual_inputs.get(virtual_input)
+    if key is None:
+        raise ValueError(
+            f"fac.read got {virtual_input!r}, which the rule declares as no fac.Input[fac.Virtual]"
+        )
+    assert recipe.read_virtual_cb is not None
+    return recipe.read_virtual_cb(key)
+
+
+def _get_rule_recipe(context: Context, caller: str) -> Recipe:
+    recipe = context.find_rule_recipe()
+    if recipe is None:
+        note_misuse(context, caller)
+        raise RuntimeError(
+            f"{caller} works only in the recipe of a rule, on the recipe's own thread, since a task records nothing"
+        )
+    return recipe
+
+
+def _validate_virtual(caller: str, virtual: object) -> Virtual:
+    if not isinstance(virtual, Virtual):
+        raise TypeError(f"{caller} takes a fac.Virtual, not {virtual!r}")
+    return virtual
 
 
 def read_text(path: str) -> str:

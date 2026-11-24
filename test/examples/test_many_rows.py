@@ -6,8 +6,6 @@ import pytest
 
 from ..helpers import copy_example, edit, run_fac
 
-pytestmark = pytest.mark.skip(reason="planned: stores are in no release yet")
-
 
 @pytest.fixture
 def root(tmp_path: Path) -> Path:

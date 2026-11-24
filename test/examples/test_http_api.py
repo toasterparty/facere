@@ -10,8 +10,6 @@ import pytest
 
 from ..helpers import EXAMPLES, copy_example, edit, load_module, run_fac
 
-pytestmark = pytest.mark.skip(reason="planned: stores are in no release yet")
-
 
 class _Cms(Protocol):
     requests: list[str]
