@@ -295,7 +295,7 @@ $ fac -v
 Finished in 40ms. Executed 4 rules.
 ```
 
-*(0.4)* `fac --watch serve` builds the site and starts the server, then waits. Saving a page, or adding one to `pages/`, prints `fac: change in` with what changed, stops the server as `kill` would, and runs `fac serve` again in a fresh process, which rebuilds what changed and starts the server again. A change during a build stops that build once the rules executing finish, and the next one picks up from there. A save that leaves a file as it was, `touch`, a hidden file, and the files Facere itself writes start nothing, while an output you edit by hand is rebuilt. An error in `fac.py` waits for the next save. Each build ends with the line `fac: watching for changes`, which an editor's background task can match, and arguments after `--` reach every build, as in `fac --watch serve -- 8080`.
+*(0.4)* `fac --watch serve` builds the site and starts the server, then waits. Saving a page, or adding one to `pages/`, prints the file that changed, as in `fac: pages/new.html modified`, or a count where several did, stops the server as `kill` would, and runs `fac serve` again in a fresh process, which rebuilds what changed and starts the server again. A change during a build stops that build once the rules executing finish, and the next one picks up from there. A save that leaves a file as it was, `touch`, a hidden file, and the files Facere itself writes start nothing, while an output you edit by hand is rebuilt. An error in `fac.py` waits for the next save. Each build ends with the line `fac: watching for changes`, which an editor's background task can match, and arguments after `--` reach every build, as in `fac --watch serve -- 8080`.
 
 `fac --help` documents every flag, target, and exit status.
 

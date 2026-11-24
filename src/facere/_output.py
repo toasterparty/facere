@@ -6,7 +6,7 @@ import threading
 from collections.abc import Callable, Generator, Iterable
 from typing import TextIO, cast
 
-from facere._context import Context
+from facere._context import Context, Recipe
 
 Chunk = tuple[bool, bytes | str]
 """A piece of output, for stderr or else stdout: bytes a command wrote, written unaltered, or text."""
@@ -56,6 +56,13 @@ class Output:
                     waiting, self._waiting = self._waiting, []
                     self._write([*after, *waiting])
 
+    def end_hold(self) -> None:
+        """Write what waited and stop holding the terminal, for a holder an interrupt abandoned, such as a recipe waiting on its debugger."""
+        with self._lock:
+            self._is_held = False
+            waiting, self._waiting = self._waiting, []
+            self._write(waiting)
+
     def _write(self, chunks: Iterable[Chunk]) -> None:
         for is_stderr, data in chunks:
             if data:
@@ -80,7 +87,7 @@ def write_data(stream: TextIO, data: bytes | str) -> None:
 def capture_recipes(context: Context) -> Generator[tuple[TextIO, TextIO]]:
     """Keep what each rule's recipe writes to `sys.stdout` and `sys.stderr` from its own thread in that recipe's output, for the length of the block, and yield the two streams as they were.
 
-    A task's writes pass through, as do those of any thread a recipe started.
+    A task's writes pass through, as do those of any thread a recipe started, and a rule's once ensure_held_for_debugger holds the terminal for it.
     """
     stdout = cast("TextIO", sys.stdout)
     stderr = cast("TextIO", sys.stderr)
@@ -90,6 +97,17 @@ def capture_recipes(context: Context) -> Generator[tuple[TextIO, TextIO]]:
         yield stdout, stderr
     finally:
         sys.stdout, sys.stderr = stdout, stderr
+
+
+def ensure_held_for_debugger(context: Context, recipe: Recipe) -> None:
+    """Hold the terminal for the rule's `recipe` until it ends, first writing what it wrote so far, so a debugger's prompt reaches the terminal while the recipe waits on it, and its output keeps its order."""
+    if recipe.terminal_hold is not None or context.output is None:
+        return
+    before = list(recipe.output)
+    recipe.output.clear()
+    hold = contextlib.ExitStack()
+    hold.enter_context(context.output.hold_terminal(before, []))
+    recipe.terminal_hold = hold
 
 
 class _RecipeBytes:
@@ -102,7 +120,7 @@ class _RecipeBytes:
 
     def write(self, data: bytes) -> int:
         recipe = self._context.find_rule_recipe()
-        if recipe is None:
+        if recipe is None or recipe.terminal_hold is not None:
             self._stream.flush()
             return self._stream.buffer.write(data)
         recipe.output.append((self._is_stderr, bytes(data)))
@@ -127,7 +145,7 @@ class _RecipeText:
 
     def write(self, text: str) -> int:
         recipe = self._context.find_rule_recipe()
-        if recipe is None:
+        if recipe is None or recipe.terminal_hold is not None:
             return self._stream.write(text)
         recipe.output.append((self._is_stderr, text))
         return len(text)

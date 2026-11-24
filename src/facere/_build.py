@@ -479,6 +479,8 @@ class _Builder:
         upstream = () if task is None else self.project.graph.upstream[self.steps[task]]
         self._plan_total([*steps, *upstream], task, pending)
         try:
+            if self.context.observed is not None:
+                self._observe_sources([*steps, *upstream], task)
             self._build_steps([*steps, *upstream])
             if task is not None and self._can_execute(upstream):
                 self._run_task(task)
@@ -511,6 +513,29 @@ class _Builder:
                 self.saved_declared = self.output_keys
             if observed is not None:
                 observed.save(self.state_path)
+
+    def _observe_sources(self, steps: list[int], task: Definition | None) -> None:
+        """Hash each input no rule outputs of `steps`, the rules they depend on, and `task`, then save what the cycle observed, so a watch stops this cycle on an edit to one before any rule reached it, as in its first cycle, which no earlier one tells what to poll."""
+        observed = self.context.observed
+        assert observed is not None
+        closure = self.engine.find_closure(steps)
+        if task is not None:
+            closure.add(self.steps[task])
+        steps_by_index = self.project.graph.steps
+        sources = {
+            key
+            for step in closure
+            for key in steps_by_index[step].inputs
+            if key not in self.producers
+        }
+        absent = [path for path in sources if self.cache.fetch(path) is None]
+        with self._mutex:
+            self.absent.update(absent)
+        if not self.invocation.lock.is_held:
+            return
+        with self._state_lock, contextlib.suppress(OSError):
+            self._add_observed(observed)
+            observed.save(self.state_path)
 
     def _add_observed(self, observed: Observed) -> None:
         """Add to `observed` what the session saw, noting which paths lie in a declared output, then hash the files collection opened."""
@@ -565,6 +590,7 @@ class _Builder:
         deadline_s = time.monotonic() + _INTERRUPT_GRACE_S
         with contextlib.suppress(KeyboardInterrupt):
             self.crew.wait(lambda: time.monotonic() < deadline_s)
+        self.invocation.output.end_hold()
 
     def _plan_total(
         self, steps: list[int], task: Definition | None, pending: list[_Target]

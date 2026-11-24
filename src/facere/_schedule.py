@@ -1,6 +1,7 @@
 """The threads recipes execute on, and the main thread's wait on them, since only the main thread receives the signals that end a build early."""
 
 import contextlib
+import os
 import signal
 import sys
 import threading
@@ -25,6 +26,12 @@ class Signals:
     def on_hangup(self, signum: int, frame: FrameType | None) -> None:
         self.is_hung_up = True
         raise KeyboardInterrupt
+
+    def end_if_hung_up(self) -> None:
+        """End the process by SIGHUP, as it would have ended but for on_hangup, where the terminal closed. Call it once everything is cleaned up."""
+        if self.is_hung_up and sys.platform != "win32":
+            signal.signal(signal.SIGHUP, signal.SIG_DFL)
+            os.kill(os.getpid(), signal.SIGHUP)
 
 
 @contextlib.contextmanager

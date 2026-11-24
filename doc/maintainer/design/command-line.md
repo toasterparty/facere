@@ -46,7 +46,7 @@ A caller may parse:
 - each line `--inputs` and `--outputs` print
 - the documented keys of `--json` from `--list` and `--check`
 - diagnostics, as `<location>: <severity>: <text>`, where the location is `path:line:column` or `fac` and the severity is `error`, `warning`, or `note`
-- the `fac: Entering directory` and `fac: Leaving directory` lines, and watch mode's `fac: change in` line and `fac: watching for changes` line
+- the `fac: Entering directory` and `fac: Leaving directory` lines, and watch mode's `fac: <file> modified` and `fac: N files modified` lines and `fac: watching for changes` line
 - the closing line's first word, `Finished`, `Failed`, `Stopped`, or `Interrupted`, which every invocation that parsed its arguments ends on, `Failed` for each status from `1` to `4`
 
 Everything else may change in any release: the text of any message, the rest of the closing line, the status row, `--list` and `--check` as text, `-v`, and all of `--timings`, JSON included, since its phases are Facere's internals.

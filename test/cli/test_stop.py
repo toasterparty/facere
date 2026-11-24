@@ -98,6 +98,33 @@ def _send_ctrl_break(process: subprocess.Popen[str]) -> None:
 
 
 @_POSIX_ONLY
+@pytest.mark.project("breakpoint")
+def test_interrupt_at_a_rule_s_debugger_prints_the_output_that_waited_behind_it(
+    root: Path,
+) -> None:
+    # Its stdin stays open, since the debugger would quit at its end and release the terminal itself.
+    process = subprocess.Popen(
+        [sys.executable, "-m", "facere", "-j2"],
+        cwd=root,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        wait_for(root / "build" / "other-done")
+        process.send_signal(signal.SIGINT)
+        status = process.wait(timeout=30)
+    finally:
+        process.kill()
+    stdout, stderr = process.communicate()
+
+    assert status == 130, stderr
+    assert stdout.startswith("before\n")
+    assert stdout.endswith("other\n")
+
+
+@_POSIX_ONLY
 @pytest.mark.project("stop")
 def test_graceful_stop_lets_the_rule_executing_finish_and_starts_no_other(root: Path) -> None:
     process = start_fac(root)

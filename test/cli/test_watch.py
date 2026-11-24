@@ -122,7 +122,7 @@ def test_a_save_rebuilds(root: Path, watch: Callable[..., _Watch]) -> None:
     (root / "source.txt").write_text("two\n")
 
     assert session.read_cycle() == [
-        "fac: change in source.txt",
+        "fac: source.txt modified",
         "Finished in <elapsed>. Executed 1 rule.",
         WATCHING,
     ]
@@ -137,7 +137,7 @@ def test_a_save_to_a_file_a_glob_matched_rebuilds(root: Path, watch: Callable[..
     (root / "pages" / "a.txt").write_text("edited\n")
 
     assert session.read_cycle() == [
-        "fac: change in pages/a.txt",
+        "fac: pages/a.txt modified",
         "Finished in <elapsed>. Executed 1 rule.",
         WATCHING,
     ]
@@ -154,11 +154,34 @@ def test_a_new_file_in_a_directory_a_glob_listed_rebuilds(
     (root / "pages" / "b.txt").write_text("b\n")
 
     assert session.read_cycle() == [
-        "fac: change in pages/",
+        "fac: pages/b.txt modified",
         "Finished in <elapsed>. Executed 1 rule.",
         WATCHING,
     ]
     assert (root / "build" / "index.txt").read_text() == "a\nb\n"
+
+
+@pytest.mark.project("pages")
+def test_a_file_removed_from_a_directory_a_glob_listed_is_named_once(
+    root: Path, watch: Callable[..., _Watch]
+) -> None:
+    session = watch("index")
+    session.read_cycle()
+
+    (root / "pages" / "a.txt").unlink()
+
+    assert session.read_cycle()[0] == "fac: pages/a.txt modified"
+
+
+@pytest.mark.project("copy")
+def test_a_change_to_several_files_counts_them(root: Path, watch: Callable[..., _Watch]) -> None:
+    session = watch("copy")
+    session.read_cycle()
+
+    (root / "source.txt").write_text("two\n")
+    (root / "other.txt").write_text("changed\n")
+
+    assert session.read_cycle()[0] == "fac: 2 files modified"
 
 
 @pytest.mark.project("copy")
@@ -174,7 +197,7 @@ def test_an_unchanged_save_a_touch_and_facere_s_own_writes_start_no_cycle(
     (root / "other.txt").write_text("changed\n")
 
     # Had the first cycle's own output or either write to source.txt counted, the line would name it.
-    assert session.read_cycle()[0] == "fac: change in other.txt"
+    assert session.read_cycle()[0] == "fac: other.txt modified"
 
 
 @pytest.mark.project("copy")
@@ -185,7 +208,7 @@ def test_a_hand_edited_output_rebuilds(root: Path, watch: Callable[..., _Watch])
     (root / "build" / "copy.txt").write_text("edited\n")
 
     assert session.read_cycle() == [
-        "fac: change in build/copy.txt",
+        "fac: build/copy.txt modified",
         "Finished in <elapsed>. Executed 1 rule.",
         WATCHING,
     ]
@@ -204,12 +227,29 @@ def test_a_change_during_a_cycle_stops_it_gracefully_and_the_next_cycle_finishes
     (root / "source.txt").write_text("two\n")
 
     assert session.read_cycle() == [
-        "fac: change in source.txt",
+        "fac: source.txt modified",
         "Stopped after <elapsed>. Executed 1 rule.",
         WATCHING,
     ]
     assert session.read_cycle() == [
-        "fac: change in source.txt",
+        "fac: source.txt modified",
+        "Finished in <elapsed>. Executed 1 rule.",
+        WATCHING,
+    ]
+    assert (root / "build" / "slow.txt").read_text() == "two\n"
+
+
+@pytest.mark.project("stop")
+def test_a_change_during_the_first_cycle_stops_it(root: Path, watch: Callable[..., _Watch]) -> None:
+    (root / "source.txt").write_text("wait\n")
+    session = watch("slow")
+    wait_for(root / "build" / "started")
+
+    (root / "source.txt").write_text("two\n")
+
+    assert session.read_cycle() == ["Stopped after <elapsed>. Executed 1 rule.", WATCHING]
+    assert session.read_cycle() == [
+        "fac: source.txt modified",
         "Finished in <elapsed>. Executed 1 rule.",
         WATCHING,
     ]
@@ -225,9 +265,24 @@ def test_a_change_restarts_a_named_task(root: Path, watch: Callable[..., _Watch]
     (root / "source.txt").write_text("two\n")
 
     assert session.read_cycle()[-2:] == ["Stopped after <elapsed>.", WATCHING]
-    assert session.read_line() == "fac: change in source.txt"
+    assert session.read_line() == "fac: source.txt modified"
     _wait_for_text(starts, "one\ntwo\n")
     assert session.stop() == 143
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows has no SIGHUP")
+@pytest.mark.project("copy")
+def test_a_hangup_ends_the_watch_by_the_signal_after_its_closing_line(
+    root: Path, watch: Callable[..., _Watch]
+) -> None:
+    assert sys.platform != "win32"
+    session = watch("copy")
+    session.read_cycle()
+
+    session.process.send_signal(signal.SIGHUP)
+
+    assert session.read_line() == "Interrupted after <elapsed>."
+    assert session.process.wait(_DEADLINE_S) == -signal.SIGHUP
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="console control events exist only on Windows")
@@ -254,15 +309,15 @@ def test_a_failed_collection_keeps_watching_and_recovers_once_fac_py_is_fixed(
     session = watch("copy")
     session.read_cycle()
     edit(root / "fac.py", "def copy(", "def copy(:")
-    assert session.read_cycle()[::3] == ["fac: change in fac.py", WATCHING]
+    assert session.read_cycle()[::3] == ["fac: fac.py modified", WATCHING]
 
     # What the last collected cycle read still starts a cycle.
     (root / "source.txt").write_text("two\n")
-    assert session.read_cycle()[0] == "fac: change in source.txt"
+    assert session.read_cycle()[0] == "fac: source.txt modified"
 
     edit(root / "fac.py", "def copy(:", "def copy(")
     assert session.read_cycle() == [
-        "fac: change in fac.py",
+        "fac: fac.py modified",
         "Finished in <elapsed>. Executed 1 rule.",
         WATCHING,
     ]

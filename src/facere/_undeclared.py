@@ -1,4 +1,4 @@
-"""The undeclared-path check: a rule's recipe fails when it uses a file under the root, or a path a rule outputs, that its rule doesn't declare and its recipe hasn't reported. The same audit hook notes what collection reads and lists, for a cycle of a watch."""
+"""The undeclared-path check: a rule's recipe fails when it uses a file under the root, or a path a rule outputs, that its rule doesn't declare and its recipe hasn't reported. The same audit hook notes what collection reads and lists, for a cycle of a watch, and gives the terminal to a rule's recipe that calls `breakpoint()`."""
 
 import os
 import re
@@ -18,6 +18,7 @@ from facere._context import (
     normalize,
 )
 from facere._observed import note_listed, note_read
+from facere._output import ensure_held_for_debugger
 
 _FLAG_SEPARATORS = re.compile("[=,]")
 _WRITE_ACCESS = os.O_WRONLY | os.O_RDWR
@@ -52,7 +53,7 @@ def validate_program(context: Context, recipe: Recipe, program: str) -> None:
 
 
 def ensure_audit_hook() -> None:
-    """Add the hook that checks what recipes open, and notes what collection opens and lists for a watch, once per process, since PEP 578 hooks can't be removed."""
+    """Add the hook that checks what recipes open, gives the terminal to a rule's debugger, and notes what collection opens and lists for a watch, once per process, since PEP 578 hooks can't be removed."""
     global _is_audit_hook_added
     if not _is_audit_hook_added:
         sys.addaudithook(_on_audit)
@@ -72,6 +73,8 @@ def _on_audit(event: str, args: tuple[object, ...]) -> None:
             _on_thread_start(args)
         elif event == "os.scandir":
             _on_scandir(args)
+        elif event == "builtins.breakpoint":
+            _on_breakpoint()
         return
     context = find_context()
     if context is None:
@@ -119,6 +122,16 @@ def _on_scandir(args: tuple[object, ...]) -> None:
 
 def _to_absolute(path: object) -> str:
     return os.path.abspath(os.fsdecode(cast("str | bytes | os.PathLike[str]", path)))
+
+
+def _on_breakpoint() -> None:
+    context = find_context()
+    # Python's own hook reads the variable on every call, and 0 makes breakpoint() do nothing.
+    if context is None or os.environ.get("PYTHONBREAKPOINT") == "0":
+        return
+    recipe = context.find_rule_recipe()
+    if recipe is not None:
+        ensure_held_for_debugger(context, recipe)
 
 
 def _on_thread_start(args: tuple[object, ...]) -> None:

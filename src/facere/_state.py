@@ -6,13 +6,13 @@ The database is open only while it is read or written, so a task may delete the 
 import contextlib
 import os
 import sqlite3
-from collections.abc import Generator
+from collections.abc import Generator, Iterable
 from typing import Any, NamedTuple
 
 from facere._cache import Entry, HashChanges
 from facere._engine import Trace
 
-_SCHEMA_VERSION = 8
+_SCHEMA_VERSION = 9
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS records (outputs TEXT PRIMARY KEY, digest TEXT NOT NULL, inputs TEXT NOT NULL, output_hashes TEXT NOT NULL, added_inputs TEXT NOT NULL, added_names TEXT NOT NULL) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS listing (id INTEGER PRIMARY KEY CHECK (id = 0), paths TEXT NOT NULL);
@@ -22,6 +22,8 @@ CREATE TABLE IF NOT EXISTS hashes (path TEXT PRIMARY KEY, stamp TEXT NOT NULL, d
 CREATE TABLE IF NOT EXISTS observed (targets TEXT PRIMARY KEY, digest TEXT NOT NULL, files TEXT NOT NULL, dirs TEXT NOT NULL, outputs TEXT NOT NULL) WITHOUT ROWID;
 """
 _SEPARATOR = "\0"
+# Joins a directory's entries, since no file name holds it.
+_ENTRY_SEPARATOR = "/"
 
 
 class Record(NamedTuple):
@@ -32,10 +34,10 @@ class Record(NamedTuple):
 
 
 class Observation(NamedTuple):
-    """What a cycle of a watch observed: the hash of each file it read as it found it, or `""` where none was there, calc_entries_digest of each directory it listed, and which of those paths lie in a declared output. Paths are as normalize returns them."""
+    """What a cycle of a watch observed: the hash of each file it read as it found it, or `""` where none was there, the entries of each directory it listed, as calc_entries gives them, and which of those paths lie in a declared output. Paths are as normalize returns them."""
 
     files: dict[str, str]
-    dirs: dict[str, str]
+    dirs: dict[str, tuple[str, ...]]
     outputs: frozenset[str]
 
 
@@ -134,43 +136,21 @@ def save_declared(path: str, outputs: frozenset[str]) -> None:
 
 def load_observation(path: str, targets: str) -> tuple[str, Observation] | None:
     """Return the digest save_observation was given for the watch of `targets` with its observation, or None where none is saved or the state can't be read."""
-    if not os.path.exists(path):
+    row = _find_observed(path, "digest, files, dirs, outputs", targets)
+    if row is None:
         return None
-    try:
-        with contextlib.closing(sqlite3.connect(path)) as connection:
-            rows = _fetch_where(
-                connection,
-                "SELECT digest, files, dirs, outputs FROM observed WHERE targets = ?",
-                targets,
-            )
-    except sqlite3.DatabaseError:
-        return None
-    if not rows:
-        return None
-    digest, files, dirs, outputs = rows[0]
-    assert isinstance(digest, str)
-    observation = Observation(
-        dict(_pair(_split(files))), dict(_pair(_split(dirs))), frozenset(_split(outputs))
-    )
-    return digest, observation
+    digest, files, dirs, outputs = row
+    entries = {
+        path: tuple(joined.split(_ENTRY_SEPARATOR)) if joined else ()
+        for path, joined in _pair(_split(dirs))
+    }
+    return digest, Observation(dict(_pair(_split(files))), entries, frozenset(_split(outputs)))
 
 
 def fetch_observation_digest(path: str, targets: str) -> str | None:
     """Return the digest save_observation was given for the watch of `targets`, or None where none is saved or the state can't be read."""
-    if not os.path.exists(path):
-        return None
-    try:
-        with contextlib.closing(sqlite3.connect(path)) as connection:
-            rows = _fetch_where(
-                connection, "SELECT digest FROM observed WHERE targets = ?", targets
-            )
-    except sqlite3.DatabaseError:
-        return None
-    if not rows:
-        return None
-    digest = rows[0][0]
-    assert isinstance(digest, str)
-    return digest
+    row = _find_observed(path, "digest", targets)
+    return None if row is None else row[0]
 
 
 def save_observation(path: str, targets: str, digest: str, observation: Observation) -> None:
@@ -181,8 +161,11 @@ def save_observation(path: str, targets: str, digest: str, observation: Observat
             (
                 targets,
                 digest,
-                _join_pairs(tuple(sorted(observation.files.items()))),
-                _join_pairs(tuple(sorted(observation.dirs.items()))),
+                _join_pairs(sorted(observation.files.items())),
+                _join_pairs(
+                    (path, _ENTRY_SEPARATOR.join(entries))
+                    for path, entries in sorted(observation.dirs.items())
+                ),
                 _SEPARATOR.join(sorted(observation.outputs)),
             ),
         )
@@ -227,8 +210,17 @@ def _fetch(connection: sqlite3.Connection, query: str) -> list[Any]:
     return connection.execute(query).fetchall()
 
 
-def _fetch_where(connection: sqlite3.Connection, query: str, value: str) -> list[Any]:
-    return connection.execute(query, (value,)).fetchall()
+def _find_observed(path: str, columns: str, targets: str) -> tuple[str, ...] | None:
+    """Return the `columns` saved for the watch of `targets`, or None where none is saved or the state can't be read."""
+    if not os.path.exists(path):
+        return None
+    try:
+        with contextlib.closing(sqlite3.connect(path)) as connection:
+            query = f"SELECT {columns} FROM observed WHERE targets = ?"
+            row = connection.execute(query, (targets,)).fetchone()
+    except sqlite3.DatabaseError:
+        return None
+    return None if row is None else tuple(map(str, row))
 
 
 def _write_hashes(connection: sqlite3.Connection, changes: HashChanges) -> None:
@@ -259,7 +251,7 @@ def _pair(items: tuple[str, ...]) -> tuple[tuple[str, str], ...]:
     return tuple(zip(items[::2], items[1::2], strict=True))
 
 
-def _join_pairs(pairs: tuple[tuple[str, str], ...]) -> str:
+def _join_pairs(pairs: Iterable[tuple[str, str]]) -> str:
     return _SEPARATOR.join(item for pair in pairs for item in pair)
 
 

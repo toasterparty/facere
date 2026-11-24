@@ -38,6 +38,14 @@ class Entry(NamedTuple):
     is_racy: bool
 
 
+class Listing(NamedTuple):
+    """A directory's entries, as calc_entries gives them, with the stamp of the stat taken before listing it. `is_racy` holds as an entry's does."""
+
+    stamp: str
+    entries: tuple[str, ...]
+    is_racy: bool
+
+
 class Hashed(NamedTuple):
     stamp: Stamp
     digest: str
@@ -136,11 +144,11 @@ class HashCache:
                 if hashed.digest[0] in "FX"
             }
 
-    def get_listed(self) -> dict[str, str]:
-        """Return calc_entries_digest of each directory the session walked in a tree, as it last saw it, by path."""
+    def get_listed(self) -> dict[str, tuple[str, ...]]:
+        """Return calc_entries of each directory the session walked in a tree, as it last saw it, by path."""
         with self._lock:
             listed = dict(self._listed)
-        return {path: calc_entries_digest(names) for path, names in listed.items()}
+        return {path: calc_entries(names) for path, names in listed.items()}
 
     def take_changes(self, *, is_final: bool = False) -> HashChanges:
         """Return the changes since the last call, and forget them. Where `is_final`, also drop the entries of files gone from the trees walked."""
@@ -322,13 +330,9 @@ def iter_listed_files(out_dir: str) -> Iterator[str]:
             yield posixpath.normpath(posixpath.join(relative, name))
 
 
-def calc_entries_digest(names: Iterable[str]) -> str:
-    """Return a digest of the entry names a directory listing gave, less hidden ones, so a change to them shows as a different digest whatever order the listing gave them in."""
-    return hashlib.sha256(
-        "\0".join(sorted(name for name in names if not name.startswith("."))).encode(
-            "utf-8", "surrogateescape"
-        )
-    ).hexdigest()
+def calc_entries(names: Iterable[str]) -> tuple[str, ...]:
+    """Return the entry names a directory listing gave, less hidden ones, sorted, so they compare equal whatever order the listing gave them in."""
+    return tuple(sorted(name for name in names if not name.startswith(".")))
 
 
 def fetch_file_stamp(path: str) -> str | None:
@@ -360,9 +364,9 @@ def poll_file(
 
 
 def poll_directory(
-    path: str, last: Entry | None, start_ns: int, file_systems: FileSystems
-) -> Entry | None:
-    """Return calc_entries_digest of the directory at `path` with its stamp, as poll_file does for a file: `last` where a stat vouches for it, or else a listing read now. None where no directory is there."""
+    path: str, last: Listing | None, start_ns: int, file_systems: FileSystems
+) -> Listing | None:
+    """Return the entries of the directory at `path` with its stamp, as poll_file does for a file: `last` where a stat vouches for it, or else a listing read now. None where no directory is there."""
     try:
         info = os.stat(path)
         if not stat.S_ISDIR(info.st_mode):
@@ -370,14 +374,18 @@ def poll_directory(
         stamp, change_ns = _calc_stamp(path, info)
         if _is_vouched(last, stamp, path, info, file_systems):
             return last
-        digest = calc_entries_digest(os.listdir(path))
+        entries = calc_entries(os.listdir(path))
     except OSError:
         return None
-    return Entry(stamp, digest, change_ns >= start_ns - _RACY_MARGIN_NS)
+    return Listing(stamp, entries, change_ns >= start_ns - _RACY_MARGIN_NS)
 
 
 def _is_vouched(
-    last: Entry | None, stamp: str, path: str, info: os.stat_result, file_systems: FileSystems
+    last: Entry | Listing | None,
+    stamp: str,
+    path: str,
+    info: os.stat_result,
+    file_systems: FileSystems,
 ) -> bool:
     return (
         last is not None

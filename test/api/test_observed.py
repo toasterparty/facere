@@ -87,3 +87,32 @@ def test_the_outputs_of_a_failed_rule_are_left_out(root: Path, fac: Fac) -> None
     observation = _load(root, "half", "whole")
     assert sorted(observation.files) == ["build/whole.txt", "fac.py", "source.txt"]
     assert observation.outputs == {"build/whole.txt"}
+
+
+def test_a_saved_observation_loads_as_it_was_saved_under_its_targets_alone(
+    tmp_path: Path,
+) -> None:
+    state = str(tmp_path / "state.db")
+    observation = _state.Observation(
+        {"fac.py": "Fabc", "gone.txt": ABSENT},
+        {"empty": (), "src": ("a.c", "b.c")},
+        frozenset({"build/app"}),
+    )
+
+    _state.save_observation(state, "app", "digest", observation)
+
+    assert _state.load_observation(state, "app") == ("digest", observation)
+    assert _state.fetch_observation_digest(state, "app") == "digest"
+    assert _state.load_observation(state, "serve") is None
+    assert _state.fetch_observation_digest(state, "serve") is None
+
+
+def test_no_observation_loads_from_a_missing_or_unreadable_state(tmp_path: Path) -> None:
+    missing = str(tmp_path / "missing.db")
+    unreadable = tmp_path / "unreadable.db"
+    unreadable.write_text("not a database")
+
+    assert _state.load_observation(missing, "app") is None
+    assert _state.fetch_observation_digest(missing, "app") is None
+    assert _state.load_observation(str(unreadable), "app") is None
+    assert _state.fetch_observation_digest(str(unreadable), "app") is None

@@ -17,7 +17,7 @@ def wait_for_stop():
 
 @fac.rule
 def slow(source: fac.Input = "source.txt", target: fac.Output = fac.out("slow.txt")):
-    # A watch learns what to poll from the cycle before, so the second cycle is the first it can stop.
+    # Blocks only when told to, so a test picks which cycle a change stops.
     if fac.read_text(source) == "wait\n":
         fac.write_text(fac.out("started"), "started")
         wait_for_stop()

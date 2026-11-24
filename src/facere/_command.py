@@ -261,7 +261,7 @@ def _locate(
 def _show(recipe: Recipe, chunks: list[Chunk], cwd: str | None) -> None:
     entering, leaving = _frame(cwd)
     chunks = [*entering, *chunks, *leaving]
-    if recipe.is_task:
+    if recipe.shares_streams:
         _write_now(chunks)
     else:
         recipe.output.extend(chunks)
@@ -269,9 +269,9 @@ def _show(recipe: Recipe, chunks: list[Chunk], cwd: str | None) -> None:
 
 @contextlib.contextmanager
 def _share_streams(context: Context, recipe: Recipe, cwd: str | None) -> Generator[None]:
-    """Frame the block with the lines naming `cwd`, and in a rule hold the terminal for it, first writing what the recipe wrote so far, so its output keeps its order."""
+    """Frame the block with the lines naming `cwd`, and in a rule that does not already share Facere's streams hold the terminal for it, first writing what the recipe wrote so far, so its output keeps its order."""
     entering, leaving = _frame(cwd)
-    if recipe.is_task:
+    if recipe.shares_streams:
         _write_now(entering)
         try:
             yield

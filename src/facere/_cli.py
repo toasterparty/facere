@@ -5,7 +5,6 @@ import contextlib
 import importlib
 import os
 import posixpath
-import signal
 import sys
 import time
 import types
@@ -56,8 +55,8 @@ exit status:
 
 Every invocation that parsed its arguments ends on a line starting with
 Finished, Failed, Stopped, or Interrupted. With --watch, each build starts
-with a line starting with "fac: change in", but for the first, and ends with
-the line "fac: watching for changes".
+with a line "fac: FILE modified" or "fac: N files modified", but for the
+first, and ends with the line "fac: watching for changes".
 """
 _AUTO = "auto"
 
@@ -157,11 +156,10 @@ def console_main() -> int:
 def _watch(options: argparse.Namespace, args: list[str], task_args: tuple[str, ...] | None) -> int:
     """Watch the targets, each cycle running fac on `args`, the arguments before any `--`, less --watch, then `--` and `task_args`."""
     root = _resolve_root(options.directory) if options.directory is not None else os.getcwd()
-    state_dir = os.path.join(root, normalize(options.out, root), STATE_DIR_NAME)
+    state_path = os.path.join(root, normalize(options.out, root), STATE_DIR_NAME, STATE_FILE_NAME)
     cycle_args = [arg for arg in args if arg != "--watch"]
     if task_args is not None:
         cycle_args.extend(["--", *task_args])
-    state_path = os.path.join(state_dir, STATE_FILE_NAME)
     # Imported here, since it imports subprocess, which a build that runs no command never needs.
     from facere._watch import watch
 
@@ -205,10 +203,7 @@ def _invoke(options: argparse.Namespace, task_args: tuple[str, ...] | None) -> i
     if options.directory is not None:
         print(format_leaving(root), file=sys.stderr)
     print(format_summary(summary, time.perf_counter() - start_s, outcome), file=sys.stderr)
-    if signals.is_hung_up and sys.platform != "win32":
-        # Everything is cleaned up, so the signal now ends the process as it would have.
-        signal.signal(signal.SIGHUP, signal.SIG_DFL)
-        os.kill(os.getpid(), signal.SIGHUP)
+    signals.end_if_hung_up()
     return outcome.value
 
 

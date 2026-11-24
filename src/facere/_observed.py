@@ -1,4 +1,4 @@
-"""What a cycle of a watch observed, saved in the state so the watch knows what to poll: each file it read with the hash of what it found, each directory it listed with a digest of its entries, and which of those lie in a declared output, so the watch tells Facere's own writes from an edit.
+"""What a cycle of a watch observed, saved in the state so the watch knows what to poll: each file it read with the hash of what it found, each directory it listed with its entries, and which of those lie in a declared output, so the watch tells Facere's own writes from an edit.
 
 Only a cycle records it, since an invocation that built nothing leaves no output directory, while a cycle must leave what to wait on. A hidden path is never kept, so it never starts a cycle.
 """
@@ -9,7 +9,7 @@ import time
 from collections.abc import Iterable
 
 from facere import _state
-from facere._cache import HashCache, calc_entries_digest, fetch_file_stamp
+from facere._cache import HashCache, calc_entries, fetch_file_stamp
 from facere._context import Context, is_under_root, is_within, normalize
 
 ABSENT = ""
@@ -22,7 +22,7 @@ _MOVED = "?"
 class Observed:
     """What one invocation observed, through all its batches, for the watch of `targets`.
 
-    `files` holds each file's hash, `dirs` each directory's calc_entries_digest, and `outputs` the paths among them that lie in a declared output. `reads` holds each file collection opened that awaits its hash, with the stamp it had as it was opened, or None where nothing was there. Once a collection fails, `is_extending` holds, and the saved observation is extended rather than replaced, so the watch still waits on what the last collected cycle observed.
+    `files` holds each file's hash, `dirs` each directory's entries, as calc_entries gives them, and `outputs` the paths among them that lie in a declared output. `reads` holds each file collection opened that awaits its hash, with the stamp it had as it was opened, or None where nothing was there. Once a collection fails, `is_extending` holds, and the saved observation is extended rather than replaced, so the watch still waits on what the last collected cycle observed.
     """
 
     __slots__ = ("dirs", "files", "is_extending", "outputs", "reads", "saved_digest", "targets")
@@ -30,7 +30,7 @@ class Observed:
     def __init__(self, targets: list[str]) -> None:
         self.targets = calc_watch_key(targets)
         self.files: dict[str, str] = {}
-        self.dirs: dict[str, str] = {}
+        self.dirs: dict[str, tuple[str, ...]] = {}
         self.outputs: set[str] = set()
         self.reads: dict[str, str | None] = {}
         self.is_extending = False
@@ -39,7 +39,7 @@ class Observed:
     def add(
         self,
         files: dict[str, str],
-        dirs: dict[str, str],
+        dirs: dict[str, tuple[str, ...]],
         absent: Iterable[str],
         outputs: set[str],
         excluded: Iterable[str],
@@ -107,7 +107,7 @@ def note_read(observed: Observed, context: Context, path: str) -> None:
 
 
 def note_listed(observed: Observed, context: Context, path: str) -> None:
-    """Keep calc_entries_digest of the directory at the absolute `path`, which collection is about to list, where it is the project's own. Listed first, so an entry added before collection lists it starts a cycle rather than going unseen."""
+    """Keep calc_entries of the directory at the absolute `path`, which collection is about to list, where it is the project's own. Listed first, so an entry added before collection lists it starts a cycle rather than going unseen."""
     relative = _find_project_path(context, path)
     if relative is None or relative in observed.dirs:
         return
@@ -115,7 +115,7 @@ def note_listed(observed: Observed, context: Context, path: str) -> None:
         names = os.listdir(path)
     except OSError:
         return
-    observed.dirs[relative] = calc_entries_digest(names)
+    observed.dirs[relative] = calc_entries(names)
 
 
 def _find_project_path(context: Context, path: str) -> str | None:
