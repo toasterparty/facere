@@ -134,14 +134,15 @@ $ fac
 Finished in 19ms. Executed 2 rules.
 ```
 
-The fingerprint holds the recipe's own code, but not the code of `fill` or any other function it calls, which is why `page` passes `SITE_NAME` to `fill` rather than `fill` reading it. After an edit to `fill`, `fac` warns once and executes nothing. *(0.4)* Where the edit changes what rules build, add `fac.epoch(1)` near the top of `fac.py`, or raise the number it already passes, and every rule executes once, on every machine that builds the project:
+The fingerprint holds the recipe's own code, but not the code of `fill` or any other function it calls, which is why `page` passes `SITE_NAME` to `fill` rather than `fill` reading it. An edit to `fill` executes nothing, which suits most edits to a helper, such as a refactor:
 
 ```
 $ sed -i 's/text.replace(/text.strip().replace(/' fac.py
 $ fac
-fac.py:1:1: warning: code outside recipes changed, which executes no rule until fac.epoch rises
 Finished in 17ms. No work to do. 2 outputs up to date.
 ```
+
+*(0.4)* Where the edit changes what rules build, add `fac.epoch(1)` near the top of `fac.py`, or raise the number it already passes, and every rule executes once, on every machine that builds the project.
 
 Facere compares a value only if `fac.py` reads it as it loads. [Hidden inputs](./7-best-practices.md#hidden-inputs) lists what Facere cannot see.
 
@@ -335,8 +336,8 @@ SITEMAP = fac.out("pages/sitemap.txt")
 SITE = [rule["html"] for rule in PAGE_RULES] + [INDEX, SITEMAP]
 
 
-# A fingerprint holds a recipe's own code, not this function's, so editing it executes nothing, and
-# fac warns once. It takes the site's name from its callers, whose fingerprints hold SITE_NAME.
+# A fingerprint holds a recipe's own code, not this function's, so editing it executes nothing.
+# It takes the site's name from its callers, whose fingerprints hold SITE_NAME.
 def fill(template, site, title, body):
     text = template.replace("{site}", site)
     return text.replace("{title}", title).replace("{body}", body)

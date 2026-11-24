@@ -27,7 +27,6 @@ from facere._context import (
     calc_path_key,
     is_under_root,
     is_within,
-    is_within_any,
     iter_self_and_parents,
     normalize,
 )
@@ -36,7 +35,6 @@ from facere._engine import Graph, Step
 from facere._hash import (
     UnhashableValueError,
     calc_code_text,
-    calc_unfingerprinted_digest,
     feed,
     feed_value,
     find_closure_values,
@@ -137,7 +135,7 @@ class Definition:
 
 @dataclass(frozen=True, slots=True)
 class Project:
-    """A root's rules and tasks. `graph` holds one step per definition, in order, whose keys are paths as normalize returns them, `pool_sizes` how many steps of each pool the graph names may run at once, and `producers_by_key` maps the path key of each output to its rule. `unfingerprinted` maps each of the project's Python files that loading imported, as normalize returns it, to a digest of its code that no fingerprint holds, and `epoch` is what fac.epoch set."""
+    """A root's rules and tasks. `graph` holds one step per definition, in order, whose keys are paths as normalize returns them, `pool_sizes` how many steps of each pool the graph names may run at once, and `producers_by_key` maps the path key of each output to its rule."""
 
     definitions: tuple[Definition, ...]
     by_name: dict[str, list[Definition]]
@@ -145,8 +143,6 @@ class Project:
     pool_sizes: dict[str, int]
     producers_by_key: dict[str, Definition]
     shared_modules: frozenset[str]
-    unfingerprinted: dict[str, str]
-    epoch: int
 
 
 def collect(context: Context) -> Project:
@@ -190,40 +186,7 @@ def collect(context: Context) -> Project:
         pool_sizes,
         producers_by_key,
         shared_modules,
-        _hash_unfingerprinted(context, definitions, imported, trees),
-        context.epoch,
     )
-
-
-def _hash_unfingerprinted(
-    context: Context,
-    definitions: tuple[Definition, ...],
-    imported: list[str],
-    trees: dict[str, ast.Module],
-) -> dict[str, str]:
-    """Return calc_unfingerprinted_digest of each of the `imported` sources, by path, treating every recipe and the function it wraps as fingerprinted, a task's too, since a task executes whenever requested. A source a rule inputs is left out whole, since its content joins that rule's fingerprint."""
-    recipes = [
-        code.__code__
-        for declaration in context.declarations
-        if isinstance(declaration.fn, types.FunctionType)
-        for code in _find_recipe_code(declaration.fn)
-    ]
-    input_keys = {
-        calc_path_key(path)
-        for definition in definitions
-        if not definition.is_task
-        for path in definition.inputs
-    }
-    digests = {}
-    for path in imported:
-        relative = normalize(path, context.root)
-        if is_within_any(calc_path_key(relative), input_keys):
-            continue
-        try:
-            digests[relative] = calc_unfingerprinted_digest(path, recipes, trees)
-        except _UNREADABLE_SOURCE:
-            continue
-    return digests
 
 
 def _map_related_outputs(

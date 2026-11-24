@@ -1,7 +1,9 @@
 """Which rules execute: a rule is stale without a record, with a changed fingerprint, or with a missing or changed output."""
 
+import contextlib
 import os
 import shutil
+import sqlite3
 import stat
 import sys
 from pathlib import Path
@@ -134,44 +136,17 @@ def test_changed_closure_variable_reruns_the_rule(root: Path, fac: Fac) -> None:
 
 
 @pytest.mark.project("helpers")
-def test_changed_helper_the_recipe_calls_executes_nothing_and_warns(root: Path, fac: Fac) -> None:
+def test_changed_helper_the_recipe_calls_executes_nothing(root: Path, fac: Fac) -> None:
     fac()
     edit(root / "fac.py", "text.strip()", "text.strip().lower()")
+    edit(root / "textutil.py", "mark + text + mark", "mark + text")
 
-    result = fac()
-
-    assert result.err.splitlines() == [
-        "fac.py:1:1: warning: code outside recipes changed, which executes no rule until fac.epoch rises",
-        "Finished in <elapsed>. No work to do. 1 output up to date.",
-    ]
+    assert fac().err == "Finished in <elapsed>. No work to do. 1 output up to date.\n"
     assert (root / "build" / "a.txt").read_text() == "*HI!*"
 
 
 @pytest.mark.project("helpers")
-def test_edit_outside_recipes_warns_only_once(root: Path, fac: Fac) -> None:
-    fac()
-    edit(root / "fac.py", "text.upper()", "text.title()")
-    fac()
-
-    assert fac().err == "Finished in <elapsed>. No work to do. 1 output up to date.\n"
-
-
-@pytest.mark.project("helpers")
-def test_edits_outside_recipes_in_two_files_share_one_warning(root: Path, fac: Fac) -> None:
-    fac()
-    edit(root / "fac.py", "text.upper()", "text.title()")
-    edit(root / "textutil.py", "mark + text + mark", "mark + text")
-
-    assert fac().err.splitlines() == [
-        "fac.py:1:1: warning: code outside recipes changed, which executes no rule until fac.epoch rises, as in 1 more file",
-        "Finished in <elapsed>. No work to do. 1 output up to date.",
-    ]
-
-
-@pytest.mark.project("helpers")
-def test_epoch_raised_with_an_edit_outside_recipes_executes_every_rule_without_a_warning(
-    root: Path, fac: Fac
-) -> None:
+def test_raised_epoch_executes_every_rule(root: Path, fac: Fac) -> None:
     fac()
     edit(root / "textutil.py", "mark + text + mark", "mark + text")
     edit(root / "fac.py", "fac.epoch(0)", "fac.epoch(1)")
@@ -181,9 +156,7 @@ def test_epoch_raised_with_an_edit_outside_recipes_executes_every_rule_without_a
 
 
 @pytest.mark.project("helpers")
-def test_changed_constant_only_a_helper_reads_executes_nothing_and_warns_nothing(
-    root: Path, fac: Fac
-) -> None:
+def test_changed_constant_only_a_helper_reads_executes_nothing(root: Path, fac: Fac) -> None:
     fac()
     edit(root / "fac.py", 'END = "!"', 'END = "?"')
 
@@ -233,23 +206,6 @@ def test_shared_module_edit_keeping_size_and_mtime_runs_the_new_code_when_python
 
     assert result.err == "Finished in <elapsed>. Executed 1 rule.\n"
     assert (root / "build" / "a.txt").read_text() == "_HI!_"
-
-
-@pytest.mark.project("helpers")
-def test_comments_docstrings_and_unread_constants_outside_recipes_change_nothing(
-    root: Path, fac: Fac
-) -> None:
-    fac()
-    edit(root / "textutil.py", "UNREAD = 1", "UNREAD = 2")
-    edit(
-        root / "fac.py",
-        "def exclaim(text):",
-        'def exclaim(text):\n    # add the mark\n    """Exclaim."""',
-    )
-
-    result = fac()
-
-    assert result.err == "Finished in <elapsed>. No work to do. 1 output up to date.\n"
 
 
 @pytest.mark.project("namespace_package")
@@ -693,3 +649,17 @@ def test_reader_of_a_rule_marked_always_executes_when_its_output_changes(
 
     assert fac().err == "Finished in <elapsed>. Executed 2 rules.\n"
     assert (root / "build" / "app.txt").read_text() == "built with 2.0"
+
+
+@pytest.mark.project("shout")
+def test_state_of_another_schema_version_is_dropped_whole(root: Path, fac: Fac) -> None:
+    fac()
+    with contextlib.closing(sqlite3.connect(root / "build" / ".fac" / "state.db")) as connection:
+        connection.executescript("CREATE TABLE retired (id INTEGER); PRAGMA user_version = 1;")
+
+    result = fac()
+
+    assert result.err == "Finished in <elapsed>. Executed 1 rule.\n"
+    with contextlib.closing(sqlite3.connect(root / "build" / ".fac" / "state.db")) as connection:
+        tables = connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+        assert "retired" not in {name for (name,) in tables}

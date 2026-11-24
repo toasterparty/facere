@@ -17,7 +17,6 @@ from facere._context import (
     STATE_DIR_NAME,
     STATE_FILE_NAME,
     Context,
-    Location,
     activate,
     normalize,
 )
@@ -61,9 +60,6 @@ with a line starting with "fac: change in", but for the first, and ends with
 the line "fac: watching for changes".
 """
 _AUTO = "auto"
-_EDITED_OUTSIDE_RECIPES = (
-    "code outside recipes changed, which executes no rule until fac.epoch rises"
-)
 
 
 def main(args: list[str]) -> int:
@@ -201,11 +197,6 @@ def _invoke(options: argparse.Namespace, task_args: tuple[str, ...] | None) -> i
         print(format_entering(root), file=sys.stderr)
     with watch_signals() as signals:
         outcome = _try_run(options, task_args, root, start_dir, summary, signals)
-    if summary.edited:
-        edits = [
-            Diagnostic(Location(path, 1, 1), _EDITED_OUTSIDE_RECIPES) for path in summary.edited
-        ]
-        print_warning(_merge(edits, ", as in {} more file{}"), start_dir)
     if summary.unsettled:
         print_warning(_merge(summary.unsettled, ", as for {} more rule{}"), start_dir)
     if summary.ended:

@@ -30,8 +30,8 @@ SITEMAP = fac.out("pages/sitemap.txt")
 SITE = [rule["html"] for rule in PAGE_RULES] + [INDEX, SITEMAP]
 
 
-# A fingerprint holds a recipe's own code, not this function's, so editing it executes nothing, and
-# fac warns once. It takes the site's name from its callers, whose fingerprints hold SITE_NAME.
+# A fingerprint holds a recipe's own code, not this function's, so editing it executes nothing.
+# It takes the site's name from its callers, whose fingerprints hold SITE_NAME.
 def fill(template, site, title, body):
     text = template.replace("{site}", site)
     return text.replace("{title}", title).replace("{body}", body)

@@ -227,7 +227,7 @@ def env(**variables: str | None) -> None:
 def epoch(number: int) -> None:
     """Join `number`, a whole number from 0, to every rule's fingerprint, so raising it executes every rule once, on every machine that builds the commit.
 
-    Call it while the root's fac.py loads, as in `fac.epoch(1)`, and raise it after editing code a recipe calls, such as a helper, a class, or a shared module, which no fingerprint holds. Without a call the epoch is 0. Calls may repeat the number but never change it.
+    Call it while the root's fac.py loads, as in `fac.epoch(1)`, and raise it where an edit to code a recipe calls, such as a helper, a class, or a shared module, which no fingerprint holds, changes what rules build. Without a call the epoch is 0. Calls may repeat the number but never change it.
     """
     context = _get_loading_context("fac.epoch")
     if isinstance(number, bool) or not isinstance(number, int) or number < 0:

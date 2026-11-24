@@ -1,4 +1,4 @@
-"""Content hashes of values and recipe code, from which fingerprints are built, and of the code no fingerprint holds."""
+"""Content hashes of values and recipe code, from which fingerprints are built."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ import hashlib
 import os
 import types
 import typing
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterator
 from pathlib import PurePath
 
 _GLOBAL_LOADS = frozenset({"LOAD_GLOBAL", "LOAD_NAME", "LOAD_FROM_DICT_OR_GLOBALS"})
@@ -256,41 +256,6 @@ def calc_code_text(fn: types.FunctionType, trees: dict[str, ast.Module]) -> str:
     stripped = _strip_docstrings(_find_function_node(fn, trees))
     stripped.decorator_list = []
     return ast.dump(stripped, include_attributes=False)
-
-
-def calc_unfingerprinted_digest(
-    path: str, recipes: Iterable[types.CodeType], trees: dict[str, ast.Module]
-) -> str:
-    """Return a digest of the code in the Python file at `path` that no fingerprint holds: its functions and classes, less the `recipes` defined there wherever they lie, ignoring positions and docstrings. Top-level statements are left out, since a fingerprint holds the values a recipe reads of them. Parses the file into `trees` once."""
-    codes = [code for code in recipes if code.co_filename == path]
-    stripped = _strip_docstrings(parse(path, trees))
-    _remove_definitions(stripped, codes)
-    digest = hashlib.sha256()
-    for node in _iter_definitions(stripped):
-        feed(digest, b"code", ast.dump(node, include_attributes=False).encode())
-    return digest.hexdigest()
-
-
-def _remove_definitions(tree: ast.AST, codes: list[types.CodeType]) -> None:
-    """Remove from `tree`, wherever they lie, the definitions of the functions whose code is among `codes`."""
-    for node in ast.walk(tree):
-        for name, value in ast.iter_fields(node):
-            if isinstance(value, list):
-                kept = [
-                    item
-                    for item in value
-                    if not any(_is_definition_of(item, code) for code in codes)
-                ]
-                setattr(node, name, kept)
-
-
-def _iter_definitions(node: ast.AST) -> Iterator[ast.AST]:
-    """Yield the functions and classes `node` holds outside any function or class, as in the branches of a top-level `if`."""
-    for child in ast.iter_child_nodes(node):
-        if isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
-            yield child
-        else:
-            yield from _iter_definitions(child)
 
 
 def _find_function_node(
